@@ -15,7 +15,9 @@
       "Bash(.venv/Scripts/python.exe -c ' *)",
       "Bash(.venv/Scripts/python.exe -m pytest tests/test_gridlines.py -v)",
       "Bash(.venv/Scripts/python.exe -m pytest -v)",
-      "Bash(echo \"---exit code: $?---\")"
+      "Bash(echo \"---exit code: $?---\")",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_members.py -v)",
+      "Bash(echo \"exit: $?\")"
     ]
   }
 }

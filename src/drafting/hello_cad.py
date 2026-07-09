@@ -19,9 +19,15 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from ezdxf.enums import TextEntityAlignment
-
 from src.drafting.gridlines import build_grid_system, draw_grid, draw_grid_dimensions
+from src.drafting.members import (
+    Beam,
+    Column,
+    beam_label_text,
+    draw_beam,
+    draw_beam_label,
+    draw_column,
+)
 from src.standards.loader import apply_standard, load_standard, new_document
 
 
@@ -40,18 +46,6 @@ BEAM_DEPTH = 235     # 梁深/梁高(對應斷面標示的「深」)
 # 標註/文字高度(模型單位 mm)。250 對應 1:100 出圖(紙上約 2.5mm)。
 # 待確認:實際字高待業主確認;標準檔的文字型高度目前設 0(可變),故在這裡帶入。
 TEXT_HEIGHT = 250
-
-
-def _add_rectangle(msp, cx: float, cy: float, width: float, height: float, layer: str):
-    """以 (cx, cy) 為中心,畫一個 width×height 的封閉矩形(掛在指定圖層)。"""
-    hw, hh = width / 2, height / 2
-    points = [
-        (cx - hw, cy - hh),
-        (cx + hw, cy - hh),
-        (cx + hw, cy + hh),
-        (cx - hw, cy + hh),
-    ]
-    msp.add_lwpolyline(points, close=True, dxfattribs={"layer": layer})
 
 
 def build_hello_cad():
@@ -79,33 +73,21 @@ def build_hello_cad():
     text_b = layers["S-TEXTB"]
 
     # ── 柱(掛在 COLUMN 圖層:紅色實線)────────────────────────────────────
-    column = layers["COLUMN"]
+    column_layer = layers["COLUMN"]
     for x in col_x:
-        _add_rectangle(msp, x, 0, COLUMN_SIZE, COLUMN_SIZE, column)
+        draw_column(msp, Column(center=(x, 0), width=COLUMN_SIZE, depth=COLUMN_SIZE), column_layer)
 
     # ── 梁(掛在 S-RCBMB 圖層:青色;梁主要輪廓)──────────────────────────
-    #    梁沿 y=0 連接兩柱,寬 = BEAM_WIDTH;只畫柱內側之間的段落。
-    beam = layers["S-RCBMB"]
+    #    梁沿 y=0 連接兩柱,寬 = BEAM_WIDTH;只畫柱內側之間的淨跨(不含柱身)。
     inner_left = col_x[0] + COLUMN_SIZE / 2
     inner_right = col_x[1] - COLUMN_SIZE / 2
-    beam_len = inner_right - inner_left
-    _add_rectangle(
-        msp,
-        cx=(inner_left + inner_right) / 2,
-        cy=0,
-        width=beam_len,
-        height=BEAM_WIDTH,
-        layer=beam,
-    )
+    beam = Beam(start=(inner_left, 0), end=(inner_right, 0), width=BEAM_WIDTH, depth=BEAM_DEPTH)
+    draw_beam(msp, beam, layers["S-RCBMB"])
 
     # ── 梁斷面標示文字(掛 S-TEXTB,用標準定義的「寬×深」格式)──────────────
     #    beam_section_format 來自設定檔,例如 "{width}×{depth}" → "240×235"。
-    beam_label = standard.beam_section_format.format(width=BEAM_WIDTH, depth=BEAM_DEPTH)
-    msp.add_text(
-        beam_label,
-        height=TEXT_HEIGHT,
-        dxfattribs={"layer": text_b, "style": "STRUCT"},
-    ).set_placement((SPAN / 2, BEAM_WIDTH / 2 + 200), align=TextEntityAlignment.BOTTOM_CENTER)
+    label = beam_label_text(beam, standard.beam_section_format)
+    draw_beam_label(msp, beam, label, text_b, text_height=TEXT_HEIGHT)
 
     # ── 標題(掛 S-TEXTB)──────────────────────────────────────────────────
     #    放在軸線編號圈(X 方向圈心在 y = -extension - bubble_offset = -3200,半徑 350)
