@@ -21,6 +21,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from ezdxf.enums import TextEntityAlignment
 
+from src.drafting.gridlines import build_grid_system, draw_grid, draw_grid_dimensions
 from src.standards.loader import apply_standard, load_standard, new_document
 
 
@@ -68,30 +69,14 @@ def build_hello_cad():
     # 兩根柱子的中心位置:x=0 與 x=SPAN,都在軸線 y=0 上。
     col_x = [0, SPAN]
 
-    # ── 軸線(掛在 AXIS 圖層:紅色 CENTER 中心線)──────────────────────────
-    axis = layers["AXIS"]
-    # 一條水平主軸(沿 y=0),兩端各外伸一點。
-    msp.add_line((-1200, 0), (SPAN + 1200, 0), dxfattribs={"layer": axis})
-    # 每根柱心一條垂直軸線。
-    for x in col_x:
-        msp.add_line((x, -1200), (x, 1200), dxfattribs={"layer": axis})
+    # ── 軸網(掛在 AXIS / S-TEXTB 圖層,由 gridlines 模組產生)───────────────
+    #    X 方向兩條軸線(數字編號 1、2)對應兩根柱心;
+    #    Y 方向只有一條軸線(y_spacings=[] → 單一軸線在 0,編號 A)對應柱列所在的那條軸。
+    grid = build_grid_system(x_spacings=[SPAN], y_spacings=[])
+    draw_grid(msp, grid, layers)
+    draw_grid_dimensions(msp, grid, layers)
 
-    # ── 軸線圈與編號(圈掛 AXIS;編號文字掛 S-TEXTB,用 STRUCT 文字型)────────
     text_b = layers["S-TEXTB"]
-    for i, x in enumerate(col_x, start=1):
-        # 軸線圈畫在柱心下方。圈仍留在 AXIS 圖層,但用 by-entity 指定實線,
-        # 蓋掉圖層的 CENTER 線型——工程慣例上軸線圈是實線圓(只有軸線本身是中心線)。
-        bubble_y = -2000
-        msp.add_circle(
-            (x, bubble_y),
-            radius=350,
-            dxfattribs={"layer": axis, "linetype": "CONTINUOUS"},
-        )
-        msp.add_text(
-            str(i),
-            height=TEXT_HEIGHT,
-            dxfattribs={"layer": text_b, "style": "STRUCT"},
-        ).set_placement((x, bubble_y), align=TextEntityAlignment.MIDDLE_CENTER)
 
     # ── 柱(掛在 COLUMN 圖層:紅色實線)────────────────────────────────────
     column = layers["COLUMN"]
@@ -123,11 +108,13 @@ def build_hello_cad():
     ).set_placement((SPAN / 2, BEAM_WIDTH / 2 + 200), align=TextEntityAlignment.BOTTOM_CENTER)
 
     # ── 標題(掛 S-TEXTB)──────────────────────────────────────────────────
+    #    放在軸線編號圈(X 方向圈心在 y = -extension - bubble_offset = -3200,半徑 350)
+    #    下方,避免重疊。
     mtext = msp.add_mtext(
         "Hello CAD — 柱 / 梁 / 軸線(標準版)",
         dxfattribs={"layer": text_b, "style": "STRUCT", "char_height": TEXT_HEIGHT},
     )
-    mtext.set_location((-1200, -3200))
+    mtext.set_location((-1200, -4200))
 
     return doc, standard, layers
 
