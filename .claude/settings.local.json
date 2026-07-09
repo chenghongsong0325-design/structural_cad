@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(.venv\\\\Scripts\\\\python.exe -m pytest tests/test_standards.py -v)",
+      "PowerShell(.venv\\\\Scripts\\\\python.exe src/drafting/hello_cad.py)",
+      "PowerShell(.venv\\\\Scripts\\\\python.exe -c \"import sys; sys.argv=['x']; import importlib.util, pathlib; spec=importlib.util.spec_from_file_location\\('hc','src/drafting/hello_cad.py'\\); m=importlib.util.module_from_spec\\(spec\\); spec.loader.exec_module\\(m\\); doc,std,layers=m.build_hello_cad\\(\\); out=pathlib.Path\\('output/hello_cad_std.dxf'\\); doc.saveas\\(out\\); print\\('[OK] �s����N��:', out\\); print\\('�ϼh�`��\\(�t����\\):', len\\(doc.layers\\)\\); print\\('�W�ϼh:', layers['COLUMN']\\); print\\('��ϼh:', layers['S-RCBMB']\\); print\\('�b�u�ϼh:', layers['AXIS']\\)\")",
+      "PowerShell(.venv\\\\Scripts\\\\python.exe -c \"import matplotlib; matplotlib.use\\('Agg'\\); import matplotlib.pyplot as plt, ezdxf, pathlib; from ezdxf.addons.drawing import RenderContext, Frontend; from ezdxf.addons.drawing.matplotlib import MatplotlibBackend; doc=ezdxf.readfile\\('output/hello_cad_std.dxf'\\); msp=doc.modelspace\\(\\); fig=plt.figure\\(figsize=\\(10,6\\)\\); ax=fig.add_axes\\([0,0,1,1]\\); ax.set_facecolor\\('black'\\); fig.patch.set_facecolor\\('black'\\); Frontend\\(RenderContext\\(doc\\), MatplotlibBackend\\(ax\\)\\).draw_layout\\(msp, finalize=True\\); out=pathlib.Path\\('output/hello_cad_std_preview.png'\\); fig.savefig\\(out, dpi=120, facecolor='black'\\); print\\('[OK]', out\\)\")",
+      "PowerShell(.venv\\\\Scripts\\\\python.exe scripts/preview.py)",
+      "Bash(git init *)",
+      "Bash(git add *)"
+    ]
+  }
+}

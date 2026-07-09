@@ -1,0 +1,172 @@
+# =============================================================================
+# 結構繪圖標準設定檔(公司預設) — default.yaml
+# =============================================================================
+# 這份檔案用「設定」的方式描述一套繪圖標準:圖層、線型、文字型、標註型。
+# 之後要換客戶,只要複製一份改成 client_XXX.yaml,不動任何程式碼。
+#
+# 由 src/standards/loader.py 讀取,套用到一份 ezdxf 文件上。
+#
+# ⚠️ 標記說明:凡是註解裡出現「待確認」,都代表這是暫定值/預設值,
+#    需要跟公司(或業主)確認實際圖例後再改。全部集中用這個關鍵字,
+#    方便日後用搜尋一次找出來。
+# -----------------------------------------------------------------------------
+
+meta:
+  name: default
+  description: 公司預設結構繪圖標準(從實際案子的 AutoCAD 圖層清單整理)
+
+  # ── 圖層命名慣例 ────────────────────────────────────────────────────────
+  # 實際圖層名 = 樓層前綴 + 分隔符 + 英文代碼
+  #   例如:  2F建築底圖$0$COLUMN
+  #          └─ 前綴 ──┘└分隔┘└代碼┘
+  #
+  # 「$0$」是 AutoCAD 把外部參考(xref)「併入(bind)」到主圖時,
+  # 自動加在原圖層名前面的分隔符;前綴「2F建築底圖」其實就是那個 xref 的檔名。
+  # 也因此同一套結構圖層,套到不同樓層時只是「前綴」不同、代碼與樣式都一樣。
+  #
+  # loader 會用下面這個分隔符,把「代碼」組成完整圖層名。
+  # 沒有前綴時(prefix="")就直接用代碼本身當圖層名。
+  layer_separator: "$0$"
+
+  # ── 梁斷面標示格式慣例(僅記錄,供日後文字/標註模組產生標籤時參考)─────────
+  # 梁斷面尺寸習慣寫成「寬 × 深(mm)」,例如 240×235 = 寬 240mm、深 235mm。
+  # (深 = 梁高;寬在前、深在後,中間用全形或半形的乘號 ×)
+  beam_section_format: "{width}×{depth}"   # width=寬(mm), depth=深/梁高(mm)
+
+# 繪圖單位:結構圖一律用公釐。loader 會對應到 ezdxf.units.MM。
+units: MM
+
+# 全域線型比例($LTSCALE)。太小 → 虛線/中心線看起來像實線;太大 → 整段變一長劃。
+# 以 mm 為單位、數千 mm 尺度的結構圖,30 是合理起點。
+# 待確認:實際出圖尺度(1:50 vs 1:100)可能要微調此值。
+ltscale: 30
+
+# -----------------------------------------------------------------------------
+# 線型(linetype)
+# -----------------------------------------------------------------------------
+# CONTINUOUS(實線)一定存在,不必定義。
+# CENTER 若文件是用 ezdxf.new(setup=True) 建的也已內建;這裡仍給一組 pattern,
+# 讓 loader 在沒有 setup 的文件上也能自行建立(自我完整、不依賴外部前置)。
+#
+# pattern 格式:第一個數字 = 一個完整循環的總長度;其餘正數 = 實線段、負數 = 空白段
+# (單位為繪圖單位,實際顯示長度再乘上 ltscale)。
+linetypes:
+  - name: CONTINUOUS
+    description: 實線
+  - name: CENTER
+    description: 中心線(長劃-點-長劃),用於軸線
+    pattern: [2.0, 1.25, -0.25, 0.25, -0.25]
+
+  # 待確認:S-RCBMB / S-RCBMG 原圖用的是「自訂線型」,樣式尚未取得。
+  #        目前先在下方圖層定義裡當成 CONTINUOUS 處理。
+  #        取得實際 pattern 後,在這裡新增一個 linetype 再回去改圖層的 linetype 欄位。
+
+# -----------------------------------------------------------------------------
+# 文字型(text style / STYLE 表)
+# -----------------------------------------------------------------------------
+# height = 0.0 代表「可變高度」:字型本身不鎖死高度,建立文字時再指定,
+# 這是結構圖常見做法(同一個文字型可用在不同比例尺)。
+text_styles:
+  - name: STRUCT
+    # 待確認:中文字型檔。先用「標楷體」kaiu.ttf(Windows 內建、支援中文)。
+    #        若公司統一用某個 .shx 中文字型,改成該檔名即可。
+    font: kaiu.ttf
+    height: 0.0
+    # 建議文字高度(模型單位 mm,約等於紙上 2.5mm 的常見標註字):
+    #   1:100 出圖 → 250 mm
+    #   1:50  出圖 → 125 mm
+    # 待業主確認實際字高後,由標註/文字模組在建立文字時帶入。
+
+# -----------------------------------------------------------------------------
+# 標註型(dimension style / DIMSTYLE 表)
+# -----------------------------------------------------------------------------
+# ⚠️ 待確認:以下所有數值都是「業界常見預設」,務必依公司標準圖例調整。
+#    這些欄位對應 AutoCAD 的 DIM 系統變數(括號內為變數名)。
+dim_styles:
+  - name: STRUCT
+    text_style: STRUCT   # 用哪個文字型(需在上面 text_styles 有定義)
+    text_height: 250     # (DIMTXT) 標註文字高度,對應 1:100;1:50 改 125
+    arrow_size: 250      # (DIMASZ) 箭頭/建築斜線大小
+    ext_beyond: 125      # (DIMEXE) 尺寸界線超出尺寸線的長度
+    ext_offset: 250      # (DIMEXO) 尺寸界線起點與標註物的間隙
+    text_gap: 90         # (DIMGAP) 文字與尺寸線的間隙
+    scale: 1.0           # (DIMSCALE) 標註整體比例;若改用圖紙空間出圖再議
+    decimals: 0          # (DIMDEC) 小數位數;結構標註常用整數 mm
+
+# -----------------------------------------------------------------------------
+# 圖層(layer)
+# -----------------------------------------------------------------------------
+# 每個圖層記「代碼(code)」而非完整名稱;完整名稱由 loader 依樓層前綴組出來。
+#   color   : AutoCAD ACI 色號(1~255)。 1=紅 2=黃 3=綠 4=青 5=藍 6=洋紅 7=白/黑 8=灰
+#   linetype: 對應上面 linetypes 的 name(未列出的線型 loader 會退回 CONTINUOUS)
+layers:
+  - code: COLUMN
+    color: 1            # 紅。待確認:部分客戶改用 210(較深的紅),切換客戶時改此值
+    linetype: CONTINUOUS
+    description: 結構柱
+
+  - code: S-RCBMB
+    color: 140          # 青
+    linetype: CONTINUOUS   # 待確認:原為自訂線型,暫當實線;取得樣式後改
+    description: 梁的主要輪廓
+
+  - code: S-RCBMG
+    color: 140          # 青
+    linetype: CONTINUOUS   # 待確認:原為自訂線型,暫當實線;取得樣式後改
+    description: 梁的另一部分標示
+
+  - code: S-SLAB
+    color: 140          # 青
+    linetype: CONTINUOUS
+    description: 樓板
+
+  - code: S-SLAB2
+    color: 8            # 灰
+    linetype: CONTINUOUS
+    description: 樓板的第二種畫法(如版筋/斜線填充)
+
+  - code: S-HATCH
+    color: 140          # 青
+    linetype: CONTINUOUS
+    description: 結構相關的剖面線/填充
+
+  - code: S-HATCH2
+    color: 140          # 青
+    linetype: CONTINUOUS
+    description: 結構相關的剖面線/填充(第二種)
+
+  - code: S-TEXTB
+    color: 140          # 青
+    linetype: CONTINUOUS
+    description: 結構標註文字(B)
+
+  - code: S-TEXTG
+    color: 140          # 青
+    linetype: CONTINUOUS
+    description: 結構標註文字(G)
+
+  - code: S-THIN
+    color: 140          # 青
+    linetype: CONTINUOUS
+    description: 結構細線(輔助線)
+
+  - code: S-LEADER
+    color: 2            # 黃
+    linetype: CONTINUOUS
+    description: 結構引出線/指線
+
+  - code: S-CLOUD
+    color: 140          # 青
+    linetype: CONTINUOUS
+    description: 變更雲線
+
+  - code: DIM
+    color: 5            # 藍。待確認:部分客戶改用 132(較深的藍),切換客戶時改此值
+    linetype: CONTINUOUS
+    description: 標註/尺寸線
+
+  # 待確認:AXIS 為暫定代碼,實際的軸線圖層名稱尚未確認(可能另有命名)。
+  - code: AXIS
+    color: 1            # 紅
+    linetype: CENTER
+    description: 軸線/軸網
