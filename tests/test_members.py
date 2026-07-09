@@ -14,9 +14,11 @@ from src.drafting.members import (
     Beam,
     Column,
     beam_label_text,
+    column_label_text,
     draw_beam,
     draw_beam_label,
     draw_column,
+    draw_column_label,
 )
 from src.standards.loader import apply_standard, load_standard, new_document
 
@@ -133,6 +135,38 @@ def test_draw_beam_vertical_bounding_box(doc_and_layers) -> None:
     assert max(xs) == pytest.approx(120)
     assert min(ys) == pytest.approx(0)
     assert max(ys) == pytest.approx(6000)
+
+
+def test_column_label_text_default_format() -> None:
+    col = Column(center=(0, 0), width=500, depth=600)
+    assert column_label_text(col) == "500×600"
+
+
+def test_draw_column_label_places_text_at_center(doc_and_layers) -> None:
+    doc, layers, _ = doc_and_layers
+    msp = doc.modelspace()
+
+    col = Column(center=(3000, 4000), width=500, depth=500)
+    draw_column_label(msp, col, column_label_text(col), layers["S-TEXTB"])
+
+    texts = list(msp.query("TEXT"))
+    assert len(texts) == 1
+    text = texts[0]
+    assert text.dxf.layer == layers["S-TEXTB"]
+    assert text.dxf.text == "500×500"
+
+
+def test_draw_column_label_offset(doc_and_layers) -> None:
+    """offset 應該把標籤從柱心往指定方向挪開。"""
+    doc, layers, _ = doc_and_layers
+    msp = doc.modelspace()
+
+    col = Column(center=(0, 0), width=500, depth=500)
+    draw_column_label(msp, col, "C1", layers["S-TEXTB"], offset=(0, 800))
+
+    text = list(msp.query("TEXT"))[0]
+    _, point, _ = text.get_placement()
+    assert point.y == pytest.approx(800)
 
 
 def test_draw_beam_label_places_text_above_beam(doc_and_layers) -> None:

@@ -13,10 +13,11 @@
 典型用法::
 
     from src.drafting.members import Column, Beam, draw_column, draw_beam, \\
-        beam_label_text, draw_beam_label
+        column_label_text, draw_column_label, beam_label_text, draw_beam_label
 
     col = Column(center=(0, 0), width=500, depth=500)
     draw_column(msp, col, layers["COLUMN"])
+    draw_column_label(msp, col, column_label_text(col), layers["S-TEXTB"])
 
     beam = Beam(start=(250, 0), end=(5750, 0), width=240, depth=235)
     draw_beam(msp, beam, layers["S-RCBMB"])
@@ -95,6 +96,38 @@ def draw_column(msp, column: Column, layer: str) -> None:
         (cx - hw, cy + hd),
     ]
     msp.add_lwpolyline(points, close=True, dxfattribs={"layer": layer})
+
+
+def column_label_text(column: Column, fmt: str = "{width}×{depth}") -> str:
+    """依斷面標示格式(如"{width}×{depth}"),產生柱的斷面標籤文字。
+
+    沿用跟梁相同的「寬×深」慣例;呼叫端通常傳 standard.beam_section_format,
+    讓柱、梁的斷面標示格式一致。
+    """
+
+    return fmt.format(width=column.width, depth=column.depth)
+
+
+def draw_column_label(
+    msp,
+    column: Column,
+    text: str,
+    layer: str,
+    text_height: float = 250,
+    offset: Point = (0.0, 0.0),
+) -> None:
+    """把柱斷面標籤文字放在柱中心(可用 offset 微調位置),文字置中對齊。
+
+    預設放在柱心正中央;若跟軸線/梁重疊不易閱讀,可用 offset 往旁邊挪。
+    """
+
+    cx, cy = column.center
+    position = (cx + offset[0], cy + offset[1])
+    msp.add_text(
+        text,
+        height=text_height,
+        dxfattribs={"layer": layer, "style": "STRUCT"},
+    ).set_placement(position, align=TextEntityAlignment.MIDDLE_CENTER)
 
 
 # ---------------------------------------------------------------------------

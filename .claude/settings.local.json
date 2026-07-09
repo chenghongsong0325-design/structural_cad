@@ -17,7 +17,13 @@
       "Bash(.venv/Scripts/python.exe -m pytest -v)",
       "Bash(echo \"---exit code: $?---\")",
       "Bash(.venv/Scripts/python.exe -m pytest tests/test_members.py -v)",
-      "Bash(echo \"exit: $?\")"
+      "Bash(echo \"exit: $?\")",
+      "Bash(echo \"===程式 exit code: $?===\")",
+      "Bash(.venv/Scripts/python.exe -m pytest)",
+      "Bash(echo \"===預覽 exit code: $?===\")",
+      "PowerShell(Invoke-Item \"output\\\\hello_cad_preview.png\")",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_members.py tests/test_titleblock.py -v)",
+      "Bash(.venv/Scripts/python.exe src/drafting/floor_plan.py)"
     ]
   }
 }
