@@ -11,9 +11,16 @@ from __future__ import annotations
 import pytest
 
 from src.drafting.titleblock import (
+    A3_HEIGHT,
+    A3_WIDTH,
     BLOCK_NAME,
+    COMP_BLOCK_NAME,
+    CompetitionTitleData,
     TitleBlockData,
+    competition_title_size,
     create_title_block_definition,
+    draw_sheet_border,
+    insert_competition_title_block,
     insert_title_block,
 )
 from src.standards.loader import apply_standard, load_standard, new_document
@@ -117,6 +124,72 @@ def test_insert_with_floor_prefix(sample_data) -> None:
 
     ref = insert_title_block(msp, sample_data, layers, insert=(0, 0))
     # S-THIN→OTHER、S-TEXTB→TEXT(經別名對應到規範圖層)。
+    assert ref.dxf.layer == "2F建築底圖$0$OTHER"
+    for att in ref.attribs:
+        assert att.dxf.layer == "2F建築底圖$0$TEXT"
+
+
+# ---------------------------------------------------------------------------
+# 競賽格式:圖紙外框 + 競賽標題欄
+# ---------------------------------------------------------------------------
+def test_draw_sheet_border_two_rectangles(doc_and_layers) -> None:
+    doc, layers = doc_and_layers
+    msp = doc.modelspace()
+
+    outer, inner = draw_sheet_border(msp, layers["OTHER"])
+    polys = list(msp.query("LWPOLYLINE"))
+    assert len(polys) == 2                       # 外框 + 內框
+    for p in polys:
+        assert p.dxf.layer == layers["OTHER"]
+    # A3 橫式 1:100 → 42000×29700。
+    assert outer[2] == (A3_WIDTH, A3_HEIGHT)
+    # 內框在外框之內。
+    assert inner[0][0] > outer[0][0] and inner[2][0] < outer[2][0]
+
+
+def test_competition_title_size() -> None:
+    w, h = competition_title_size()
+    assert (w, h) == (18000, 4000)
+
+
+def test_competition_block_has_all_attdefs(doc_and_layers) -> None:
+    doc, layers = doc_and_layers
+    from src.drafting.titleblock import create_competition_title_block
+    blk = create_competition_title_block(doc, layers)
+    tags = {e.dxf.tag for e in blk if e.dxftype() == "ATTDEF"}
+    assert tags == {
+        "DWG_NAME", "SCALE", "EXAM_TIME", "EXAM_DATE", "APPROVAL",
+        "EXAM_NO", "QUESTION_NO", "EXAMINEE", "CATEGORY",
+    }
+
+
+def test_insert_competition_fills_values(doc_and_layers) -> None:
+    doc, layers = doc_and_layers
+    msp = doc.modelspace()
+
+    data = CompetitionTitleData(
+        drawing_name="標準層平面圖", scale="1:100", exam_time="繪圖2小時30分",
+        exam_date="115年8月", approval_unit="技能檢定中心",
+        exam_number="A1", question_number="21101-107-0302", examinee="成弘",
+    )
+    ref = insert_competition_title_block(msp, data, layers, insert=(0, 0))
+
+    assert ref.dxf.name == COMP_BLOCK_NAME
+    assert ref.dxf.layer == layers["OTHER"]
+    values = {a.dxf.tag: a.dxf.text for a in ref.attribs}
+    assert values["DWG_NAME"] == "標準層平面圖"
+    assert values["QUESTION_NO"] == "21101-107-0302"
+    assert values["EXAMINEE"] == "成弘"
+    assert values["CATEGORY"]  # 類別橫幅有預設值
+
+
+def test_insert_competition_with_prefix() -> None:
+    standard = load_standard()
+    doc = new_document()
+    layers = apply_standard(doc, standard, prefix="2F建築底圖")
+    msp = doc.modelspace()
+
+    ref = insert_competition_title_block(msp, CompetitionTitleData(drawing_name="X"), layers)
     assert ref.dxf.layer == "2F建築底圖$0$OTHER"
     for att in ref.attribs:
         assert att.dxf.layer == "2F建築底圖$0$TEXT"

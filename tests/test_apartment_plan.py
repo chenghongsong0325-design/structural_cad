@@ -105,9 +105,10 @@ def test_draw_floor_plan_layers(doc_and_layers) -> None:
     assert by_layer.get("COL") == 12
     # 牆(聯集後的輪廓)至少一條。
     assert by_layer.get("WALL", 0) >= 1
-    # 門 6 + 窗 7 = 13 個 INSERT 在 DW;標題欄 INSERT 在 OTHER。
+    # 門 6 + 窗 7 = 13 個 INSERT 在 DW。
     assert by_layer.get("DW") == 13
-    assert by_layer.get("OTHER") == 1
+    # OTHER:A3 圖框(外框+內框 2 條)+ 競賽標題欄 INSERT 1 個 = 3。
+    assert by_layer.get("OTHER") == 3
     # 尺度(軸距標註)在 DIM:X 3 跨 + Y 2 跨 = 5 個。
     assert by_layer.get("DIM") == 5
     # 文字(軸網編號 7 + 房間名稱/面積 7×2 = 21)在 TEXT 之上(軸網圈在 AXIS)。

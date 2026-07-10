@@ -50,7 +50,17 @@ from src.drafting.gridlines import (
 )
 from src.drafting.members import Column, column_corners, draw_column
 from src.drafting.room import Room, draw_room_label
-from src.drafting.titleblock import TitleBlockData, insert_title_block
+from src.drafting.titleblock import (
+    A3_HEIGHT,
+    A3_WIDTH,
+    SHEET_MARGIN,
+    CompetitionTitleData,
+    TitleBlockData,
+    competition_title_size,
+    draw_sheet_border,
+    insert_competition_title_block,
+    insert_title_block,
+)
 from src.drafting.wall import Wall
 from src.drafting.wall_join import draw_walls_joined
 
@@ -106,8 +116,13 @@ class FloorPlanSpec:
     room_text_height: float = 300     # 房間標註字高(待確認)
 
     # ── 圖面 ──────────────────────────────────────────────────────────
-    title_block: Optional[TitleBlockData] = None
-    title_insert: Optional[Point] = None   # None = 自動放地界線右下外側
+    # 標題欄:可放一般 TitleBlockData 或競賽格式 CompetitionTitleData。
+    title_block: Optional[object] = None
+    title_insert: Optional[Point] = None   # None = 自動放右下(有圖框則貼內框右下)
+    # 圖紙外框(A3 橫式 1:100)。sheet=True 時畫外框;sheet_origin=None 自動定位。
+    sheet: bool = False
+    sheet_origin: Optional[Point] = None
+    sheet_margin: float = SHEET_MARGIN
 
     # ── 尚未實作(ROADMAP 階段 B 逐項補;填了會報 NotImplementedError)──
     stairs: list = field(default_factory=list)      # 尚未實作:樓梯(B1)
@@ -156,15 +171,35 @@ def resolve_columns(spec: FloorPlanSpec, grid: GridSystem) -> list[Column]:
     return [Column(center=c, width=s, depth=s) for c in centers]
 
 
-def _default_title_insert(spec: FloorPlanSpec) -> Point:
-    """標題欄自動位置:地界線右下角外側。
-
-    間隙取 2600:要低於 X 軸編號圈的最低點(軸線外伸 1200 + 圈外推 2000 +
-    圈半徑 350 ≈ 3550,再留餘裕),避免④之類的編號圈壓到標題欄。待確認。
-    """
+def _auto_sheet_origin(spec: FloorPlanSpec) -> Point:
+    """A3 圖紙左下角座標:讓圖面落在圖紙左上區、右下留給標題欄。"""
     xs = [p[0] for p in spec.site_boundary]
     ys = [p[1] for p in spec.site_boundary]
-    return (max(xs) - 6000, min(ys) - 2400 - 2600)
+    pad = 3000
+    ox = min(xs) - pad - spec.sheet_margin
+    oy = max(ys) + pad + spec.sheet_margin - A3_HEIGHT
+    return (ox, oy)
+
+
+def _title_insert(spec: FloorPlanSpec) -> Point:
+    """標題欄自動位置。
+
+    有圖框:貼齊圖框內框的右下角。
+    無圖框:地界線右下角外側,間隙 2600 以避開 X 軸編號圈(軸線外伸 1200 +
+            圈外推 2000 + 圈半徑 350 ≈ 3550)。待確認。
+    """
+    is_comp = isinstance(spec.title_block, CompetitionTitleData)
+    tb_w, tb_h = competition_title_size() if is_comp else (6000.0, 2400.0)
+
+    if spec.sheet:
+        ox, oy = spec.sheet_origin or _auto_sheet_origin(spec)
+        inner_right = ox + A3_WIDTH - spec.sheet_margin
+        inner_bottom = oy + spec.sheet_margin
+        return (inner_right - tb_w, inner_bottom)
+
+    xs = [p[0] for p in spec.site_boundary]
+    ys = [p[1] for p in spec.site_boundary]
+    return (max(xs) - tb_w, min(ys) - tb_h - 2600)
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +217,11 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
     ):
         if items:
             raise NotImplementedError(f"{name} 尚未實作(見 ROADMAP.md 階段 B)")
+
+    # (0.5) 圖紙外框(A3 橫式 1:100),最外層先畫。
+    if spec.sheet:
+        origin = spec.sheet_origin or _auto_sheet_origin(spec)
+        draw_sheet_border(msp, layers["OTHER"], origin=origin, margin=spec.sheet_margin)
 
     # (1) 地界線(BORDER,PHANTOM)。
     msp.add_lwpolyline(spec.site_boundary, close=True, dxfattribs={"layer": layers["BORDER"]})
@@ -220,10 +260,13 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
     for room in spec.rooms:
         draw_room_label(msp, room, layers["A-TEXT"], text_height=spec.room_text_height)
 
-    # (8) 標題欄。
+    # (8) 標題欄(競賽格式或一般格式)。
     if spec.title_block is not None:
-        insert = spec.title_insert or _default_title_insert(spec)
-        insert_title_block(msp, spec.title_block, layers, insert=insert)
+        insert = spec.title_insert or _title_insert(spec)
+        if isinstance(spec.title_block, CompetitionTitleData):
+            insert_competition_title_block(msp, spec.title_block, layers, insert=insert)
+        else:
+            insert_title_block(msp, spec.title_block, layers, insert=insert)
 
 
 # ---------------------------------------------------------------------------
@@ -310,14 +353,10 @@ def demo_spec() -> FloorPlanSpec:
         rooms=rooms,
         doors=doors,
         windows=windows,
-        title_block=TitleBlockData(
-            drawing_name="標準層平面圖",
-            drawing_number="A-01",
-            scale="1:100",
-            date="2026-07-10",
-            drawn_by="成弘",
-            checked_by="—",
-        ),
+        sheet=True,   # A3 橫式圖框
+        # 競賽圖框:欄位標題保留、值一律留空(比照檢定發下的空白圖框,應檢人自填)。
+        # 只保留頂端類別橫幅(考項名稱)。
+        title_block=CompetitionTitleData(),
     )
 
 
