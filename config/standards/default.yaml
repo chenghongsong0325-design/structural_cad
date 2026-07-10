@@ -181,3 +181,10 @@ layers:
     color: 7            # 白/黑。待確認:建築牆的實際色號未定,暫用中性色
     linetype: CONTINUOUS
     description: 建築牆(內外牆共用,以厚度區分)。待確認:暫定圖層
+
+  # 待確認:建築文字圖層(房間名稱/面積等標註)。同 A-WALL,為 AIA 慣例暫定代碼,
+  #        取得公司建築圖層標準後再改。
+  - code: A-TEXT
+    color: 7            # 白/黑。待確認:暫用中性色
+    linetype: CONTINUOUS
+    description: 建築標註文字(房間名稱/面積)。待確認:暫定圖層
