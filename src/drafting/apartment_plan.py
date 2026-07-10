@@ -50,6 +50,7 @@ from src.drafting.gridlines import (
 )
 from src.drafting.members import Column, column_corners, draw_column
 from src.drafting.room import Room, draw_room_label
+from src.drafting.stair import Stair, UStair, draw_stair, draw_u_stair
 from src.drafting.titleblock import (
     A3_HEIGHT,
     A3_WIDTH,
@@ -124,8 +125,9 @@ class FloorPlanSpec:
     sheet_origin: Optional[Point] = None
     sheet_margin: float = SHEET_MARGIN
 
+    # ── 樓梯(B1 已完成:src/drafting/stair.py 的 Stair)──────────────────
+    stairs: list = field(default_factory=list)
     # ── 尚未實作(ROADMAP 階段 B 逐項補;填了會報 NotImplementedError)──
-    stairs: list = field(default_factory=list)      # 尚未實作:樓梯(B1)
     elevators: list = field(default_factory=list)   # 尚未實作:電梯(B3)
     balconies: list = field(default_factory=list)   # 尚未實作:陽台(B3)
     fixtures: list = field(default_factory=list)    # 尚未實作:衛浴廚具(B4)
@@ -210,7 +212,6 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
 
     # (0) 尚未實作的元素:明確擋下,避免使用者以為有畫。
     for name, items in (
-        ("樓梯(stairs)", spec.stairs),
         ("電梯(elevators)", spec.elevators),
         ("陽台(balconies)", spec.balconies),
         ("衛浴廚具(fixtures)", spec.fixtures),
@@ -259,6 +260,13 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
     # (7) 房間標註(名稱 + 面積)。
     for room in spec.rooms:
         draw_room_label(msp, room, layers["A-TEXT"], text_height=spec.room_text_height)
+
+    # (7.5) 樓梯(踏步線/折斷線/方向箭頭,HANDRAIL 層;直梯或折返梯)。
+    for stair in spec.stairs:
+        if isinstance(stair, UStair):
+            draw_u_stair(msp, stair, layers)
+        else:
+            draw_stair(msp, stair, layers)
 
     # (8) 標題欄(競賽格式或一般格式)。
     if spec.title_block is not None:
@@ -314,10 +322,21 @@ def demo_spec() -> FloorPlanSpec:
              openings=[Opening(1250, 800, "door"), Opening(3750, 900, "door")]),
         # 8 浴廁/廚房 隔牆 y=4500
         Wall((11000, 4500), (14000, 4500), INT),
+        # ── 樓梯間(真實建築的樓梯必須有牆圍起來)────────────────────────
+        # 9 樓梯間西牆 x=6600:樓梯間的門(y=2700,開向客廳)
+        Wall((6600, 2000), (6600, 4800), INT,
+             openings=[Opening(700, 900, "door")]),
+        # 10 樓梯間北牆 y=4800
+        Wall((6600, 4800), (8000, 4800), INT),
+        # 11 樓梯間東牆 x=8000(兼客廳/餐廳分界的南段)
+        Wall((8000, 2000), (8000, 4800), INT),
     ]
 
     rooms = [
-        Room("客廳", [(2000, 2000), (8000, 2000), (8000, 7000), (2000, 7000)], kind="living"),
+        # 客廳:L 形(東南角讓給樓梯間)。
+        Room("客廳", [(2000, 2000), (6600, 2000), (6600, 4800), (8000, 4800),
+                      (8000, 7000), (2000, 7000)], kind="living"),
+        Room("樓梯間", [(6600, 2000), (8000, 2000), (8000, 4800), (6600, 4800)], kind="stair"),
         Room("餐廳", [(8000, 2000), (11000, 2000), (11000, 7000), (8000, 7000)], kind="dining"),
         Room("浴廁", [(11000, 2000), (14000, 2000), (14000, 4500), (11000, 4500)], kind="bathroom"),
         Room("廚房", [(11000, 4500), (14000, 4500), (14000, 7000), (11000, 7000)], kind="kitchen"),
@@ -333,6 +352,7 @@ def demo_spec() -> FloorPlanSpec:
         DoorPlacement(4, 2, Door(hinge="left", swing="out")),   # 臥室B門
         DoorPlacement(7, 0, Door(hinge="left", swing="in")),    # 浴廁門,開向浴廁
         DoorPlacement(7, 1, Door(hinge="left", swing="in")),    # 廚房門,開向廚房
+        DoorPlacement(9, 0, Door(hinge="left", swing="out")),   # 樓梯間門,開向客廳
     ]
     windows = [
         WindowPlacement(0, 1), WindowPlacement(1, 0), WindowPlacement(1, 1),
@@ -353,6 +373,10 @@ def demo_spec() -> FloorPlanSpec:
         rooms=rooms,
         doors=doors,
         windows=windows,
+        # 樓梯:放在「樓梯間」牆內(牆 9/10/11 圍出 x6600~8000 × y2000~4800,
+        # 內淨空約 1280×2665)。直梯往北上樓,9 級 × 260 = 2340 ≤ 2500。
+        stairs=[Stair(origin=(6680, 2150), width=1200, length=2500,
+                      direction="north", steps=9, tread=260)],
         sheet=True,   # A3 橫式圖框
         # 競賽圖框:欄位標題保留、值一律留空(比照檢定發下的空白圖框,應檢人自填)。
         # 只保留頂端類別橫幅(考項名稱)。
