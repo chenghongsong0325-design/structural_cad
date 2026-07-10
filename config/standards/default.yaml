@@ -188,3 +188,15 @@ layers:
     color: 7            # 白/黑。待確認:暫用中性色
     linetype: CONTINUOUS
     description: 建築標註文字(房間名稱/面積)。待確認:暫定圖層
+
+  # 待確認:門、窗圖層。AIA 慣例:門用 A-DOOR、窗(玻璃)用 A-GLAZ。暫定色號,
+  #        取得公司建築圖層標準後再改。
+  - code: A-DOOR
+    color: 3            # 綠。待確認:暫定色號
+    linetype: CONTINUOUS
+    description: 建築門(開啟弧線/門扇)。待確認:暫定圖層
+
+  - code: A-GLAZ
+    color: 4            # 青。待確認:暫定色號
+    linetype: CONTINUOUS
+    description: 建築窗/玻璃(窗符號)。待確認:暫定圖層
