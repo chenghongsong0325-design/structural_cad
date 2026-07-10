@@ -14,6 +14,7 @@ from src.drafting.members import (
     Beam,
     Column,
     beam_label_text,
+    column_corners,
     column_label_text,
     draw_beam,
     draw_beam_label,
@@ -82,6 +83,16 @@ def doc_and_layers():
     doc = new_document()
     layers = apply_standard(doc, standard)
     return doc, layers, standard
+
+
+def test_column_corners() -> None:
+    corners = column_corners(Column(center=(1000, 2000), width=500, depth=400))
+    assert corners == [
+        (750, 1800),
+        (1250, 1800),
+        (1250, 2200),
+        (750, 2200),
+    ]
 
 
 def test_draw_column_creates_polyline_on_correct_layer(doc_and_layers) -> None:

@@ -84,18 +84,26 @@ class Beam:
 # ---------------------------------------------------------------------------
 # 畫圖:柱
 # ---------------------------------------------------------------------------
-def draw_column(msp, column: Column, layer: str) -> None:
-    """畫一根柱:以 column.center 為中心的 width×depth 矩形(軸對齊,封閉多義線)。"""
+def column_corners(column: Column) -> list[Point]:
+    """回傳柱斷面矩形的四個角點(軸對齊,逆時針)。
 
+    給畫圖與幾何運算共用——例如把柱範圍從牆 footprint 減掉(柱內不畫牆線)時,
+    呼叫端可用這四個點組出柱的多邊形。
+    """
     cx, cy = column.center
     hw, hd = column.width / 2, column.depth / 2
-    points = [
+    return [
         (cx - hw, cy - hd),
         (cx + hw, cy - hd),
         (cx + hw, cy + hd),
         (cx - hw, cy + hd),
     ]
-    msp.add_lwpolyline(points, close=True, dxfattribs={"layer": layer})
+
+
+def draw_column(msp, column: Column, layer: str) -> None:
+    """畫一根柱:以 column.center 為中心的 width×depth 矩形(軸對齊,封閉多義線)。"""
+
+    msp.add_lwpolyline(column_corners(column), close=True, dxfattribs={"layer": layer})
 
 
 def column_label_text(column: Column, fmt: str = "{width}×{depth}") -> str:

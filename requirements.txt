@@ -4,6 +4,9 @@ ezdxf==1.4.4
 # 核心:讀取繪圖標準設定檔(config/standards/*.yaml)
 PyYAML>=6.0
 
+# 核心:2D 幾何運算(牆角接合的多邊形聯集;日後房間布林/剖面線邊界也會用)
+shapely>=2.0
+
 # 選用:把 DXF 渲染成 PNG 預覽(沒有 AutoCAD 時檢查用)
 matplotlib>=3.7
 
