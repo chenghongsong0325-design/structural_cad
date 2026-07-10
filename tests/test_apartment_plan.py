@@ -109,8 +109,8 @@ def test_draw_floor_plan_layers(doc_and_layers) -> None:
     assert by_layer.get("DW") == 14
     # OTHER:A3 圖框(外框+內框 2 條)+ 競賽標題欄 INSERT 1 個 = 3。
     assert by_layer.get("OTHER") == 3
-    # 尺度(軸距標註)在 DIM:X 3 跨 + Y 2 跨 = 5 個。
-    assert by_layer.get("DIM") == 5
+    # 尺度在 DIM:四邊三層尺寸鏈(細部 20 + 軸距 10 + 總長 4)= 34 個。
+    assert by_layer.get("DIM") == 34
     # 文字(軸網編號 7 + 房間名稱/面積 7×2 = 21)在 TEXT 之上(軸網圈在 AXIS)。
     assert by_layer.get("TEXT", 0) >= 21
 

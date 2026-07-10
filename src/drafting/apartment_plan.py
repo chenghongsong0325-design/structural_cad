@@ -41,6 +41,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from shapely.geometry import Polygon
 
+from src.drafting.dim_chains import draw_dim_chains
 from src.drafting.door_window import Door, Window
 from src.drafting.gridlines import (
     GridSystem,
@@ -124,6 +125,10 @@ class FloorPlanSpec:
     sheet: bool = False
     sheet_origin: Optional[Point] = None
     sheet_margin: float = SHEET_MARGIN
+
+    # ── 尺寸鏈(B2):True = 四邊三層(細部/軸距/總長,dim_chains 模組),
+    #    False = 只有上/右兩邊的單層軸距(gridlines.draw_grid_dimensions)。
+    dim_chains: bool = False
 
     # ── 樓梯(B1 已完成:src/drafting/stair.py 的 Stair)──────────────────
     stairs: list = field(default_factory=list)
@@ -230,10 +235,16 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
     # (2) 建築線(ARCH,CENTER):地界線退縮 setback。
     msp.add_lwpolyline(building_line(spec), close=True, dxfattribs={"layer": layers["ARCH"]})
 
-    # (3) 軸網 + 軸距標註。
+    # (3) 軸網 + 尺寸標註。
+    #     開尺寸鏈時:編號圈退到最外層尺寸(2800)之外,並用 dim_chains 標四邊三層;
+    #     否則維持單層軸距標註(上/右兩邊)。
     grid = build_grid(spec)
-    draw_grid(msp, grid, layers)
-    draw_grid_dimensions(msp, grid, layers)
+    if spec.dim_chains:
+        draw_grid(msp, grid, layers, bubble_offset=2600)
+        draw_dim_chains(msp, spec, layers)
+    else:
+        draw_grid(msp, grid, layers)
+        draw_grid_dimensions(msp, grid, layers)
 
     # (4) 柱。
     columns = resolve_columns(spec, grid)
@@ -377,6 +388,7 @@ def demo_spec() -> FloorPlanSpec:
         # 內淨空約 1280×2665)。直梯往北上樓,9 級 × 260 = 2340 ≤ 2500。
         stairs=[Stair(origin=(6680, 2150), width=1200, length=2500,
                       direction="north", steps=9, tread=260)],
+        dim_chains=True,   # 四邊三層尺寸鏈(細部/軸距/總長)
         sheet=True,   # A3 橫式圖框
         # 競賽圖框:欄位標題保留、值一律留空(比照檢定發下的空白圖框,應檢人自填)。
         # 只保留頂端類別橫幅(考項名稱)。
