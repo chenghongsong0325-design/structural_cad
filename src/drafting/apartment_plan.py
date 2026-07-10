@@ -41,6 +41,14 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from shapely.geometry import Polygon
 
+from src.drafting.balcony_elevator import (
+    Balcony,
+    Elevator,
+    balcony_walls,
+    draw_balcony_railing,
+    draw_elevator_symbol,
+    elevator_walls,
+)
 from src.drafting.dim_chains import draw_dim_chains
 from src.drafting.door_window import Door, Window
 from src.drafting.gridlines import (
@@ -130,11 +138,11 @@ class FloorPlanSpec:
     #    False = 只有上/右兩邊的單層軸距(gridlines.draw_grid_dimensions)。
     dim_chains: bool = False
 
-    # ── 樓梯(B1 已完成:src/drafting/stair.py 的 Stair)──────────────────
-    stairs: list = field(default_factory=list)
+    # ── 樓梯(B1)/ 電梯與陽台(B3)────────────────────────────────────────
+    stairs: list = field(default_factory=list)      # Stair / UStair
+    elevators: list = field(default_factory=list)   # Elevator(牆自動併聯集)
+    balconies: list = field(default_factory=list)   # Balcony(牆自動併聯集)
     # ── 尚未實作(ROADMAP 階段 B 逐項補;填了會報 NotImplementedError)──
-    elevators: list = field(default_factory=list)   # 尚未實作:電梯(B3)
-    balconies: list = field(default_factory=list)   # 尚未實作:陽台(B3)
     fixtures: list = field(default_factory=list)    # 尚未實作:衛浴廚具(B4)
 
 
@@ -216,13 +224,8 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
     """依 FloorPlanSpec 畫出一整張平面圖(順序見模組說明)。"""
 
     # (0) 尚未實作的元素:明確擋下,避免使用者以為有畫。
-    for name, items in (
-        ("電梯(elevators)", spec.elevators),
-        ("陽台(balconies)", spec.balconies),
-        ("衛浴廚具(fixtures)", spec.fixtures),
-    ):
-        if items:
-            raise NotImplementedError(f"{name} 尚未實作(見 ROADMAP.md 階段 B)")
+    if spec.fixtures:
+        raise NotImplementedError("衛浴廚具(fixtures)尚未實作(見 ROADMAP.md 階段 B4)")
 
     # (0.5) 圖紙外框(A3 橫式 1:100),最外層先畫。
     if spec.sheet:
@@ -252,10 +255,16 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
         draw_column(msp, col, layers["COLUMN"])
 
     # (5) 牆:整組聯集接角,柱範圍內不畫牆。
-    if spec.walls:
+    #     陽台矮牆、電梯井牆一起併入聯集 → 與建築牆自然接角。
+    all_walls = list(spec.walls)
+    for elev in spec.elevators:
+        all_walls += elevator_walls(elev)
+    for bal in spec.balconies:
+        all_walls += balcony_walls(bal)
+    if all_walls:
         draw_walls_joined(
             msp,
-            spec.walls,
+            all_walls,
             layers["A-WALL"],
             subtract=[column_corners(c) for c in columns],
         )
@@ -278,6 +287,12 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
             draw_u_stair(msp, stair, layers)
         else:
             draw_stair(msp, stair, layers)
+
+    # (7.6) 電梯轎廂符號 + 陽台欄杆線(牆已在步驟 5 併入聯集)。
+    for elev in spec.elevators:
+        draw_elevator_symbol(msp, elev, layers)
+    for bal in spec.balconies:
+        draw_balcony_railing(msp, bal, layers)
 
     # (8) 標題欄(競賽格式或一般格式)。
     if spec.title_block is not None:
@@ -337,17 +352,17 @@ def demo_spec() -> FloorPlanSpec:
         # 9 樓梯間西牆 x=6600:樓梯間的門(y=2700,開向客廳)
         Wall((6600, 2000), (6600, 4800), INT,
              openings=[Opening(700, 900, "door")]),
-        # 10 樓梯間北牆 y=4800
-        Wall((6600, 4800), (8000, 4800), INT),
-        # 11 樓梯間東牆 x=8000(兼客廳/餐廳分界的南段)
+        # 10 樓梯間東牆 x=8000(兼客廳/餐廳分界的南段)
         Wall((8000, 2000), (8000, 4800), INT),
+        # 註:樓梯間北牆(y=4800)由電梯井的南牆(RC20)取代——電梯疊在樓梯間
+        #    正上方(x6600~8000 × y4800~7000),牆由 spec.elevators 自動併入。
     ]
 
     rooms = [
-        # 客廳:L 形(東南角讓給樓梯間)。
-        Room("客廳", [(2000, 2000), (6600, 2000), (6600, 4800), (8000, 4800),
-                      (8000, 7000), (2000, 7000)], kind="living"),
+        # 客廳(東側整條讓給 樓梯間+電梯 的垂直動線核)。
+        Room("客廳", [(2000, 2000), (6600, 2000), (6600, 7000), (2000, 7000)], kind="living"),
         Room("樓梯間", [(6600, 2000), (8000, 2000), (8000, 4800), (6600, 4800)], kind="stair"),
+        Room("電梯", [(6600, 4800), (8000, 4800), (8000, 7000), (6600, 7000)], kind="elevator"),
         Room("餐廳", [(8000, 2000), (11000, 2000), (11000, 7000), (8000, 7000)], kind="dining"),
         Room("浴廁", [(11000, 2000), (14000, 2000), (14000, 4500), (11000, 4500)], kind="bathroom"),
         Room("廚房", [(11000, 4500), (14000, 4500), (14000, 7000), (11000, 7000)], kind="kitchen"),
@@ -384,10 +399,18 @@ def demo_spec() -> FloorPlanSpec:
         rooms=rooms,
         doors=doors,
         windows=windows,
-        # 樓梯:放在「樓梯間」牆內(牆 9/10/11 圍出 x6600~8000 × y2000~4800,
-        # 內淨空約 1280×2665)。直梯往北上樓,9 級 × 260 = 2340 ≤ 2500。
+        # 樓梯:放在「樓梯間」牆內(x6600~8000 × y2000~4800,內淨空約 1280×2665)。
+        # 直梯往北上樓,9 級 × 260 = 2340 ≤ 2500。
         stairs=[Stair(origin=(6680, 2150), width=1200, length=2500,
                       direction="north", steps=9, tread=260)],
+        # 電梯:疊在樓梯間正上方(井道中心線 x6600~8000 × y4800~7000,RC20 牆),
+        # 門洞開東面(通餐廳);井牆自動併入牆聯集。
+        elevators=[Elevator(origin=(6600, 4800), width=1400, depth=2200,
+                            door_side="east")],
+        # 陽台:突出建築南側、正對餐廳窗(x8300~10700 × y800~2000,矮牆厚 100,
+        # 北邊貼建築外牆中心線,牆自動併入聯集);欄杆線掛 HANDRAIL。
+        balconies=[Balcony(origin=(8300, 800), width=2400, depth=1200,
+                           attach="north")],
         dim_chains=True,   # 四邊三層尺寸鏈(細部/軸距/總長)
         sheet=True,   # A3 橫式圖框
         # 競賽圖框:欄位標題保留、值一律留空(比照檢定發下的空白圖框,應檢人自填)。
