@@ -207,5 +207,6 @@ def test_door_window_with_prefix() -> None:
 
     door = Door().place_in_wall(msp, wall, op_d, layers)
     window = Window().place_in_wall(msp, wall, op_w, layers)
-    assert door.dxf.layer == "2F建築底圖$0$A-DOOR"
-    assert window.dxf.layer == "2F建築底圖$0$A-GLAZ"
+    # A-DOOR / A-GLAZ 都經別名對應到規範圖層 DW(開口門窗)。
+    assert door.dxf.layer == "2F建築底圖$0$DW"
+    assert window.dxf.layer == "2F建築底圖$0$DW"

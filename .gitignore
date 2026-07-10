@@ -17,3 +17,6 @@ output/
 
 # pytest
 .pytest_cache/
+
+# AutoCAD 當機回報(開 DXF 時 AutoCAD 自己產生的,與專案無關)
+ErrorReports/

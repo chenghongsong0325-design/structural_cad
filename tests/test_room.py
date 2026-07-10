@@ -155,5 +155,6 @@ def test_draw_room_label_with_prefix() -> None:
 
     draw_room_label(msp, Room("廁所", [(0, 0), (2000, 0), (2000, 1500), (0, 1500)]), layers["A-TEXT"])
 
+    # A-TEXT 經別名對應到規範圖層 TEXT。
     for t in msp.query("TEXT"):
-        assert t.dxf.layer == "2F建築底圖$0$A-TEXT"
+        assert t.dxf.layer == "2F建築底圖$0$TEXT"

@@ -161,5 +161,6 @@ def test_draw_wall_with_prefix(doc_and_layers) -> None:
     wall = Wall(start=(0, 0), end=(4000, 0))
     draw_wall(msp, wall, layers["A-WALL"])
 
+    # A-WALL 經別名對應到規範圖層 WALL。
     for poly in msp.query("LWPOLYLINE"):
-        assert poly.dxf.layer == "2F建築底圖$0$A-WALL"
+        assert poly.dxf.layer == "2F建築底圖$0$WALL"

@@ -1,19 +1,24 @@
 # =============================================================================
-# 結構繪圖標準設定檔(公司預設) — default.yaml
+# 繪圖標準設定檔 — default.yaml(依競賽「圖層規定」)
 # =============================================================================
 # 這份檔案用「設定」的方式描述一套繪圖標準:圖層、線型、文字型、標註型。
-# 之後要換客戶,只要複製一份改成 client_XXX.yaml,不動任何程式碼。
+# 之後要換標準,只要複製一份改成 client_XXX.yaml,不動任何程式碼。
 #
 # 由 src/standards/loader.py 讀取,套用到一份 ezdxf 文件上。
 #
-# ⚠️ 標記說明:凡是註解裡出現「待確認」,都代表這是暫定值/預設值,
-#    需要跟公司(或業主)確認實際圖例後再改。全部集中用這個關鍵字,
-#    方便日後用搜尋一次找出來。
+# 【圖層】完全依競賽規範的「圖層規定」表(TEXT/DIM/DW/HIDDEN/COL/WALL/
+#   HANDRAIL/BORDER/ARCH/OTHER),含線型、顏色、出圖線粗。規範沒列、但引擎模組
+#   仍需要的圖層(如結構軸網 AXIS、梁 S-RCBMB)沿用舊圖層(見下方「其餘照舊」)。
+#
+# 【別名】既有模組用語意代碼(COLUMN/A-WALL/A-DOOR…),透過檔尾的 layer_aliases
+#   自動對應到規範圖層(COL/WALL/DW…),模組程式不必改、輸出 DXF 用規範圖層名。
+#
+# ⚠️ 註解裡「待確認」= 暫定值/預設值,需再確認;方便日後搜尋一次找出。
 # -----------------------------------------------------------------------------
 
 meta:
   name: default
-  description: 公司預設結構繪圖標準(從實際案子的 AutoCAD 圖層清單整理)
+  description: 繪圖標準(依競賽圖層規定;結構/建築共用一套圖層)
 
   # ── 圖層命名慣例 ────────────────────────────────────────────────────────
   # 實際圖層名 = 樓層前綴 + 分隔符 + 英文代碼
@@ -54,12 +59,16 @@ linetypes:
   - name: CONTINUOUS
     description: 實線
   - name: CENTER
-    description: 中心線(長劃-點-長劃),用於軸線
+    description: 中心線(長劃-點-長劃),用於建築線 ARCH
     pattern: [2.0, 1.25, -0.25, 0.25, -0.25]
-
-  # 待確認:S-RCBMB / S-RCBMG 原圖用的是「自訂線型」,樣式尚未取得。
-  #        目前先在下方圖層定義裡當成 CONTINUOUS 處理。
-  #        取得實際 pattern 後,在這裡新增一個 linetype 再回去改圖層的 linetype 欄位。
+  - name: HIDDEN
+    description: 虛線,用於 HIDDEN 圖層(排水溝等)
+    pattern: [0.75, 0.5, -0.25]
+  - name: PHANTOM
+    description: 假想線(長劃-兩短劃),用於地界線 BORDER
+    pattern: [3.5, 2.5, -0.25, 0.5, -0.25, 0.5, -0.25]
+  # 註:HIDDEN / PHANTOM / CENTER 在 ezdxf.new(setup=True) 的文件已內建,
+  #     這裡仍給 pattern,讓沒有 setup 的文件也能自行建立(自我完整)。
 
 # -----------------------------------------------------------------------------
 # 文字型(text style / STYLE 表)
@@ -94,109 +103,103 @@ dim_styles:
     decimals: 0          # (DIMDEC) 小數位數;結構標註常用整數 mm
 
 # -----------------------------------------------------------------------------
-# 圖層(layer)
+# 圖層(layer)——依競賽「圖層規定」表
 # -----------------------------------------------------------------------------
 # 每個圖層記「代碼(code)」而非完整名稱;完整名稱由 loader 依樓層前綴組出來。
-#   color   : AutoCAD ACI 色號(1~255)。 1=紅 2=黃 3=綠 4=青 5=藍 6=洋紅 7=白/黑 8=灰
-#   linetype: 對應上面 linetypes 的 name(未列出的線型 loader 會退回 CONTINUOUS)
+#   color     : AutoCAD ACI 色號(1~255)。 1=紅 2=黃 3=綠 4=青 5=藍 6=洋紅 7=白/黑 9=灰
+#   linetype  : 對應上面 linetypes 的 name(未列出的線型 loader 會退回 CONTINUOUS)
+#   lineweight: 出圖線粗,單位 1/100 mm(0.25mm→25、0.15mm→15、0.35mm→35、0.50mm→50)
 layers:
-  - code: COLUMN
-    color: 1            # 紅。待確認:部分客戶改用 210(較深的紅),切換客戶時改此值
+  # ── 競賽規範圖層(圖層規定表,10 層)──────────────────────────────────
+  - code: TEXT
+    color: 1            # 紅
     linetype: CONTINUOUS
-    description: 結構柱
-
-  - code: S-RCBMB
-    color: 140          # 青
-    linetype: CONTINUOUS   # 待確認:原為自訂線型,暫當實線;取得樣式後改
-    description: 梁的主要輪廓
-
-  - code: S-RCBMG
-    color: 140          # 青
-    linetype: CONTINUOUS   # 待確認:原為自訂線型,暫當實線;取得樣式後改
-    description: 梁的另一部分標示
-
-  - code: S-SLAB
-    color: 140          # 青
-    linetype: CONTINUOUS
-    description: 樓板
-
-  - code: S-SLAB2
-    color: 8            # 灰
-    linetype: CONTINUOUS
-    description: 樓板的第二種畫法(如版筋/斜線填充)
-
-  - code: S-HATCH
-    color: 140          # 青
-    linetype: CONTINUOUS
-    description: 結構相關的剖面線/填充
-
-  - code: S-HATCH2
-    color: 140          # 青
-    linetype: CONTINUOUS
-    description: 結構相關的剖面線/填充(第二種)
-
-  - code: S-TEXTB
-    color: 140          # 青
-    linetype: CONTINUOUS
-    description: 結構標註文字(B)
-
-  - code: S-TEXTG
-    color: 140          # 青
-    linetype: CONTINUOUS
-    description: 結構標註文字(G)
-
-  - code: S-THIN
-    color: 140          # 青
-    linetype: CONTINUOUS
-    description: 結構細線(輔助線)
-
-  - code: S-LEADER
-    color: 2            # 黃
-    linetype: CONTINUOUS
-    description: 結構引出線/指線
-
-  - code: S-CLOUD
-    color: 140          # 青
-    linetype: CONTINUOUS
-    description: 變更雲線
+    lineweight: 25      # 0.25mm
+    description: 文字
 
   - code: DIM
-    color: 5            # 藍。待確認:部分客戶改用 132(較深的藍),切換客戶時改此值
+    color: 4            # 青
     linetype: CONTINUOUS
-    description: 標註/尺寸線
+    lineweight: 15      # 0.15mm
+    description: 尺度
 
-  # 待確認:AXIS 為暫定代碼,實際的軸線圖層名稱尚未確認(可能另有命名)。
+  - code: DW
+    color: 3            # 綠
+    linetype: CONTINUOUS
+    lineweight: 15      # 0.15mm
+    description: 開口(門窗)
+
+  - code: HIDDEN
+    color: 5            # 藍
+    linetype: HIDDEN
+    lineweight: 15      # 0.15mm
+    description: 虛線(排水溝)
+
+  - code: COL
+    color: 6            # 洋紅
+    linetype: CONTINUOUS
+    lineweight: 50      # 0.50mm
+    description: 柱剖面線
+
+  - code: WALL
+    color: 2            # 黃
+    linetype: CONTINUOUS
+    lineweight: 35      # 0.35mm
+    description: 牆
+
+  - code: HANDRAIL
+    color: 9            # 灰
+    linetype: CONTINUOUS
+    lineweight: 15      # 0.15mm
+    description: 樓梯、扶手、陽台
+
+  - code: BORDER
+    color: 70
+    linetype: PHANTOM
+    lineweight: 25      # 0.25mm
+    description: 地界線
+
+  - code: ARCH
+    color: 10
+    linetype: CENTER
+    lineweight: 25      # 0.25mm
+    description: 建築線
+
+  - code: OTHER
+    color: 7            # 白/黑
+    linetype: CONTINUOUS
+    lineweight: 15      # 0.15mm
+    description: 其他
+
+  # ── 其餘照舊:規範未列、但引擎模組仍需要的舊圖層 ─────────────────────
+  # 結構軸網(gridlines 模組用);規範的圖層表沒有軸網層,沿用舊 AXIS。
   - code: AXIS
     color: 1            # 紅
     linetype: CENTER
-    description: 軸線/軸網
+    description: 軸線/軸網(規範未列,沿用舊圖層)
 
-  # ── 建築圖層 ──────────────────────────────────────────────────────────
-  # 待確認:以下為「建築牆」圖層。原公司圖層清單以結構為主(S-* 系列),
-  #        尚未取得建築專業的圖層命名慣例。這裡先用 AIA 常見的 A-WALL 代碼、
-  #        白色實線當暫定值;取得公司/業主的建築圖層標準後再改。
-  #        另:目前內牆、外牆共用同一圖層,僅以「厚度」區分(見 src/drafting/wall.py);
-  #        若公司習慣把內外牆分不同圖層,屆時在此拆成兩個代碼。
-  - code: A-WALL
-    color: 7            # 白/黑。待確認:建築牆的實際色號未定,暫用中性色
+  # 梁輪廓(members 模組畫梁用);規範無梁層,沿用舊 S-RCBMB/S-RCBMG。
+  - code: S-RCBMB
+    color: 140          # 青
     linetype: CONTINUOUS
-    description: 建築牆(內外牆共用,以厚度區分)。待確認:暫定圖層
+    description: 梁的主要輪廓(規範未列,沿用舊圖層)
 
-  # 待確認:建築文字圖層(房間名稱/面積等標註)。同 A-WALL,為 AIA 慣例暫定代碼,
-  #        取得公司建築圖層標準後再改。
-  - code: A-TEXT
-    color: 7            # 白/黑。待確認:暫用中性色
+  - code: S-RCBMG
+    color: 140          # 青
     linetype: CONTINUOUS
-    description: 建築標註文字(房間名稱/面積)。待確認:暫定圖層
+    description: 梁的另一部分標示(規範未列,沿用舊圖層)
 
-  # 待確認:門、窗圖層。AIA 慣例:門用 A-DOOR、窗(玻璃)用 A-GLAZ。暫定色號,
-  #        取得公司建築圖層標準後再改。
-  - code: A-DOOR
-    color: 3            # 綠。待確認:暫定色號
-    linetype: CONTINUOUS
-    description: 建築門(開啟弧線/門扇)。待確認:暫定圖層
-
-  - code: A-GLAZ
-    color: 4            # 青。待確認:暫定色號
-    linetype: CONTINUOUS
-    description: 建築窗/玻璃(窗符號)。待確認:暫定圖層
+# -----------------------------------------------------------------------------
+# 圖層別名(layer_aliases)——語意代碼 → 實際規範圖層代碼
+# -----------------------------------------------------------------------------
+# 既有模組習慣用「語意代碼」(COLUMN、A-WALL、A-DOOR…)去 layers 對照表取圖層。
+# 這裡把它們對應到規範圖層,loader 會讓 layers["COLUMN"] 直接拿到 COL 的完整圖層名,
+# 因此模組程式一行都不用改,輸出的 DXF 就是規範的圖層名(COL/WALL/DW/TEXT…)。
+layer_aliases:
+  COLUMN: COL      # 柱 → 柱剖面線
+  A-WALL: WALL     # 建築牆 → 牆
+  A-DOOR: DW       # 門 → 開口(門窗)
+  A-GLAZ: DW       # 窗 → 開口(門窗)
+  A-TEXT: TEXT     # 建築標註文字 → 文字
+  S-TEXTB: TEXT    # 結構標註文字 → 文字
+  S-THIN: OTHER    # 細線(圖框框線等) → 其他

@@ -78,6 +78,9 @@ class LayerDef:
     color: int
     linetype: str = "CONTINUOUS"
     description: str = ""
+    # 出圖線粗(對應 AutoCAD 的圖層線粗,單位 1/100 mm;例如 0.25mm → 25)。
+    # None 代表不設定(用 ezdxf 預設)。
+    lineweight: Optional[int] = None
 
 
 @dataclass
@@ -94,6 +97,9 @@ class Standard:
     text_styles: list[TextStyleDef] = field(default_factory=list)
     dim_styles: list[DimStyleDef] = field(default_factory=list)
     layers: list[LayerDef] = field(default_factory=list)
+    # 語意代碼 → 實際圖層代碼的別名對應。讓既有模組用的語意代碼(如 COLUMN、A-WALL)
+    # 自動對應到規範圖層(如 COL、WALL),模組程式不必改;輸出的 DXF 用規範的圖層名。
+    aliases: dict[str, str] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -147,9 +153,12 @@ def load_standard(path: Path | str = DEFAULT_STANDARD_PATH) -> Standard:
             color=int(ly["color"]),
             linetype=ly.get("linetype", "CONTINUOUS"),
             description=ly.get("description", ""),
+            lineweight=(int(ly["lineweight"]) if ly.get("lineweight") is not None else None),
         )
         for ly in raw.get("layers", [])
     ]
+
+    aliases = dict(raw.get("layer_aliases", {}) or {})
 
     return Standard(
         name=meta.get("name", path.stem),
@@ -162,6 +171,7 @@ def load_standard(path: Path | str = DEFAULT_STANDARD_PATH) -> Standard:
         text_styles=text_styles,
         dim_styles=dim_styles,
         layers=layers,
+        aliases=aliases,
     )
 
 
@@ -264,7 +274,16 @@ def apply_standard(
         layer = doc.layers.add(name=name, color=ly.color, linetype=linetype)
         if ly.description:
             layer.description = ly.description
+        if ly.lineweight is not None:
+            layer.dxf.lineweight = ly.lineweight
 
         created[ly.code] = name
+
+    # (6) 別名:讓語意代碼對應到實際圖層代碼的完整名稱。
+    #     例如 aliases={"COLUMN": "COL"} → created["COLUMN"] = created["COL"],
+    #     這樣呼叫端用 layers["COLUMN"] 也能拿到規範圖層 COL 的完整名稱。
+    for alias_code, target_code in standard.aliases.items():
+        if target_code in created:
+            created[alias_code] = created[target_code]
 
     return created

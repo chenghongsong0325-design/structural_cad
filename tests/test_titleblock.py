@@ -116,6 +116,7 @@ def test_insert_with_floor_prefix(sample_data) -> None:
     msp = doc.modelspace()
 
     ref = insert_title_block(msp, sample_data, layers, insert=(0, 0))
-    assert ref.dxf.layer == "2F建築底圖$0$S-THIN"
+    # S-THIN→OTHER、S-TEXTB→TEXT(經別名對應到規範圖層)。
+    assert ref.dxf.layer == "2F建築底圖$0$OTHER"
     for att in ref.attribs:
-        assert att.dxf.layer == "2F建築底圖$0$S-TEXTB"
+        assert att.dxf.layer == "2F建築底圖$0$TEXT"
