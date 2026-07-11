@@ -64,7 +64,8 @@ from src.drafting.gridlines import (
     draw_grid_dimensions,
 )
 from src.drafting.members import Column, column_corners, draw_column
-from src.drafting.room import Room, draw_room_label
+from src.drafting.annotations import draw_floor_label, place_north_arrow
+from src.drafting.room import Room, draw_room_label, draw_room_tag
 from src.drafting.stair import Stair, UStair, draw_stair, draw_u_stair
 from src.drafting.titleblock import (
     A3_HEIGHT,
@@ -78,7 +79,7 @@ from src.drafting.titleblock import (
     insert_title_block,
 )
 from src.drafting.wall import Wall
-from src.drafting.wall_join import draw_walls_joined
+from src.drafting.wall_join import draw_wall_hatch, draw_walls_joined
 
 Point = tuple[float, float]
 
@@ -132,6 +133,13 @@ class FloorPlanSpec:
     room_text_height: float = 300     # 房間標註字高(待確認)
 
     # ── 圖面 ──────────────────────────────────────────────────────────
+    # 牆體剖面線(B5):True 時 RC 牆(厚≥140)填 ANSI31 斜線、磚牆填 ANSI37。
+    wall_hatch: bool = False
+    # 樓層標示大字(如 "3F";空字串=不畫)與北向箭頭(B5)。insert=None 自動定位。
+    floor_label: str = ""
+    floor_label_insert: Optional[Point] = None
+    north_arrow: bool = False
+    north_arrow_insert: Optional[Point] = None
     # 標題欄:可放一般 TitleBlockData 或競賽格式 CompetitionTitleData。
     title_block: Optional[object] = None
     title_insert: Optional[Point] = None   # None = 自動放右下(有圖框則貼內框右下)
@@ -262,13 +270,21 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
         all_walls += elevator_walls(elev)
     for bal in spec.balconies:
         all_walls += balcony_walls(bal)
+    col_rings = [column_corners(c) for c in columns]
     if all_walls:
-        draw_walls_joined(
-            msp,
-            all_walls,
-            layers["A-WALL"],
-            subtract=[column_corners(c) for c in columns],
-        )
+        draw_walls_joined(msp, all_walls, layers["A-WALL"], subtract=col_rings)
+
+    # (5.5) 牆體剖面線(B5):RC 牆(厚≥140,外牆/電梯井)斜線、磚牆(內牆/陽台)
+    #       交叉線;柱內不填。兩組交會處可能小範圍疊填(見 PENDING)。
+    if spec.wall_hatch and all_walls:
+        rc = [w for w in all_walls if w.thickness >= 140]
+        brick = [w for w in all_walls if w.thickness < 140]
+        if rc:
+            draw_wall_hatch(msp, rc, layers["A-WALL"], subtract=col_rings,
+                            pattern="ANSI31", scale=30)
+        if brick:
+            draw_wall_hatch(msp, brick, layers["A-WALL"], subtract=col_rings,
+                            pattern="ANSI37", scale=30)
 
     # (6) 門窗:對齊到指定牆的指定洞口。
     for dp in spec.doors:
@@ -278,9 +294,10 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
         wall = spec.walls[wp.wall_index]
         wp.window.place_in_wall(msp, wall, wall.openings[wp.opening_index], layers)
 
-    # (7) 房間標註(名稱 + 面積)。
+    # (7) 房間標註(名稱 + 面積)+ 房型帶框標籤(有 code 的房間)。
     for room in spec.rooms:
         draw_room_label(msp, room, layers["A-TEXT"], text_height=spec.room_text_height)
+        draw_room_tag(msp, room, layers["A-TEXT"])
 
     # (7.5) 樓梯(踏步線/折斷線/方向箭頭,HANDRAIL 層;直梯或折返梯)。
     for stair in spec.stairs:
@@ -309,6 +326,29 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
             insert_competition_title_block(msp, spec.title_block, layers, insert=insert)
         else:
             insert_title_block(msp, spec.title_block, layers, insert=insert)
+
+    # (9) 圖面配件:樓層標示大字 + 北向箭頭(B5)。
+    xs = [p[0] for p in spec.site_boundary]
+    ys = [p[1] for p in spec.site_boundary]
+    if spec.floor_label:
+        if spec.floor_label_insert is not None:
+            pos = spec.floor_label_insert
+        elif spec.sheet:
+            ox, oy = spec.sheet_origin or _auto_sheet_origin(spec)
+            pos = (ox + spec.sheet_margin + 2200, oy + spec.sheet_margin + 1800)
+        else:
+            pos = (min(xs) + 1500, min(ys) - 5000)
+        draw_floor_label(msp, spec.floor_label, pos, layers)
+    if spec.north_arrow:
+        if spec.north_arrow_insert is not None:
+            pos = spec.north_arrow_insert
+        elif spec.sheet:
+            ox, oy = spec.sheet_origin or _auto_sheet_origin(spec)
+            pos = (ox + A3_WIDTH - spec.sheet_margin - 2200,
+                   oy + A3_HEIGHT - spec.sheet_margin - 2200)
+        else:
+            pos = (max(xs) + 2500, max(ys))
+        place_north_arrow(msp, pos, layers)
 
 
 # ---------------------------------------------------------------------------
@@ -366,17 +406,28 @@ def demo_spec() -> FloorPlanSpec:
         #    正上方(x6600~8000 × y4800~7000),牆由 spec.elevators 自動併入。
     ]
 
+    # 房型代碼(仿真實建案:同類型同代碼)——X01樓梯間/X02電梯/X03客廳/
+    # X04餐廳/X05臥室/X07廚房/X08浴廁。代碼規則待確認。
     rooms = [
         # 客廳(東側整條讓給 樓梯間+電梯 的垂直動線核)。
-        Room("客廳", [(2000, 2000), (6600, 2000), (6600, 7000), (2000, 7000)], kind="living"),
-        Room("樓梯間", [(6600, 2000), (8000, 2000), (8000, 4800), (6600, 4800)], kind="stair"),
-        Room("電梯", [(6600, 4800), (8000, 4800), (8000, 7000), (6600, 7000)], kind="elevator"),
-        Room("餐廳", [(8000, 2000), (11000, 2000), (11000, 7000), (8000, 7000)], kind="dining"),
-        Room("浴廁", [(11000, 2000), (14000, 2000), (14000, 4500), (11000, 4500)], kind="bathroom"),
-        Room("廚房", [(11000, 4500), (14000, 4500), (14000, 7000), (11000, 7000)], kind="kitchen"),
-        Room("主臥室", [(2000, 7000), (7000, 7000), (7000, 12000), (2000, 12000)], kind="bedroom"),
-        Room("臥室A", [(7000, 7000), (10500, 7000), (10500, 12000), (7000, 12000)], kind="bedroom"),
-        Room("臥室B", [(10500, 7000), (14000, 7000), (14000, 12000), (10500, 12000)], kind="bedroom"),
+        Room("客廳", [(2000, 2000), (6600, 2000), (6600, 7000), (2000, 7000)],
+             kind="living", code="X03"),
+        Room("樓梯間", [(6600, 2000), (8000, 2000), (8000, 4800), (6600, 4800)],
+             kind="stair", code="X01"),
+        Room("電梯", [(6600, 4800), (8000, 4800), (8000, 7000), (6600, 7000)],
+             kind="elevator", code="X02"),
+        Room("餐廳", [(8000, 2000), (11000, 2000), (11000, 7000), (8000, 7000)],
+             kind="dining", code="X04"),
+        Room("浴廁", [(11000, 2000), (14000, 2000), (14000, 4500), (11000, 4500)],
+             kind="bathroom", code="X08"),
+        Room("廚房", [(11000, 4500), (14000, 4500), (14000, 7000), (11000, 7000)],
+             kind="kitchen", code="X07"),
+        Room("主臥室", [(2000, 7000), (7000, 7000), (7000, 12000), (2000, 12000)],
+             kind="bedroom", code="X05"),
+        Room("臥室A", [(7000, 7000), (10500, 7000), (10500, 12000), (7000, 12000)],
+             kind="bedroom", code="X05"),
+        Room("臥室B", [(10500, 7000), (14000, 7000), (14000, 12000), (10500, 12000)],
+             kind="bedroom", code="X05"),
     ]
 
     doors = [
@@ -441,6 +492,12 @@ def demo_spec() -> FloorPlanSpec:
             FixturePlacement("table4", (9500, 3600), 0),
         ],
         dim_chains=True,   # 四邊三層尺寸鏈(細部/軸距/總長)
+        # 牆體剖面線預設關閉:1:100 施工/銷售平面圖(如真實建案圖)牆多為空心
+        # 雙線、不填剖面線,保持清爽。填充僅用於結構圖/大比例詳圖。功能仍在,
+        # 需要時把 wall_hatch 設 True。
+        wall_hatch=False,
+        floor_label="2F",  # 樓層標示大字
+        north_arrow=True,  # 北向箭頭
         sheet=True,   # A3 橫式圖框
         # 競賽圖框:欄位標題保留、值一律留空(比照檢定發下的空白圖框,應檢人自填)。
         # 只保留頂端類別橫幅(考項名稱)。

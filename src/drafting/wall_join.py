@@ -83,6 +83,33 @@ def _iter_polygons(geom: BaseGeometry):
         yield from geom.geoms
 
 
+def draw_wall_hatch(
+    msp,
+    walls: list[Wall],
+    layer: str,
+    *,
+    subtract: list[Ring] | None = None,
+    pattern: str = "ANSI31",
+    scale: float = 30.0,
+) -> int:
+    """對一組牆的合併 footprint 加剖面線填充(HATCH),回傳建立的 HATCH 數。
+
+    每個合併多邊形建一個 HATCH:外環 + 各內孔都加進邊界路徑(內孔自動不填)。
+    pattern:RC 牆常用 ANSI31(斜線)、磚牆可用 ANSI37(交叉線)等,由呼叫端
+    依材質分組各呼叫一次。subtract 同 merged_wall_footprint(柱內不填)。
+    """
+    merged = merged_wall_footprint(walls, subtract=subtract)
+    n = 0
+    for poly in _iter_polygons(merged):
+        hatch = msp.add_hatch(dxfattribs={"layer": layer})
+        hatch.set_pattern_fill(pattern, scale=scale)
+        hatch.paths.add_polyline_path(list(poly.exterior.coords)[:-1], is_closed=True)
+        for ring in poly.interiors:
+            hatch.paths.add_polyline_path(list(ring.coords)[:-1], is_closed=True)
+        n += 1
+    return n
+
+
 def draw_walls_joined(
     msp,
     walls: list[Wall],

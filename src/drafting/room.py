@@ -57,6 +57,7 @@ class Room:
     name: str
     points: list[Point]
     kind: str = ""   # 用途類型(如 "living"/"bedroom"/"bathroom"),目前僅記錄
+    code: str = ""   # 房間類型代碼(如 "X05"),真實建案圖的帶框標籤用;空=不畫標籤
 
     def __post_init__(self) -> None:
         if len(self.points) < 3:
@@ -194,6 +195,40 @@ def draw_room_label(
         height=text_height,
         dxfattribs={"layer": layer, "style": style},
     ).set_placement((cx, cy - half_gap), align=TextEntityAlignment.TOP_CENTER)
+
+
+def draw_room_tag(
+    msp,
+    room: Room,
+    layer: str,
+    text_height: float = 250,
+    offset: Point = (0.0, 900.0),
+) -> None:
+    """房間類型帶框標籤(真實建案畫法):「代碼 名稱」放在方框裡,框與字同掛一層。
+
+    預設放在形心上方(offset=(0,900)),避開 draw_room_label 的名稱/面積兩行。
+    框寬用字數估算:全形字寬 ≈ 字高、半形 ≈ 0.55 字高,左右各留 0.5 字高邊距。
+    room.code 為空時不畫(直接 return)。
+    """
+    if not room.code:
+        return
+    text = f"{room.code} {room.name}"
+    cx, cy = room.centroid
+    px, py = cx + offset[0], cy + offset[1]
+
+    est_w = sum(text_height if ord(ch) > 127 else text_height * 0.55 for ch in text)
+    half_w = est_w / 2 + text_height * 0.5
+    half_h = text_height * 0.9
+
+    msp.add_lwpolyline(
+        [(px - half_w, py - half_h), (px + half_w, py - half_h),
+         (px + half_w, py + half_h), (px - half_w, py + half_h)],
+        close=True, dxfattribs={"layer": layer},
+    )
+    msp.add_text(
+        text, height=text_height,
+        dxfattribs={"layer": layer, "style": "STRUCT"},
+    ).set_placement((px, py), align=TextEntityAlignment.MIDDLE_CENTER)
 
 
 # =============================================================================
