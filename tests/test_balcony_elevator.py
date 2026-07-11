@@ -145,14 +145,3 @@ def test_floor_plan_draws_elevator_and_balcony(doc_and_layers) -> None:
     assert len(rail_polys) >= 2          # 樓梯折斷線 + 陽台欄杆
 
 
-def test_fixtures_still_not_implemented(doc_and_layers) -> None:
-    from src.drafting.apartment_plan import FloorPlanSpec, draw_floor_plan
-
-    doc, layers = doc_and_layers
-    spec = FloorPlanSpec(
-        site_boundary=[(0, 0), (10000, 0), (10000, 10000), (0, 10000)],
-        setback=1000, x_spacings=[4000], y_spacings=[4000],
-        grid_origin=(1000, 1000), fixtures=["placeholder"],
-    )
-    with pytest.raises(NotImplementedError):
-        draw_floor_plan(doc.modelspace(), spec, layers)

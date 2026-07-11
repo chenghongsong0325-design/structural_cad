@@ -107,8 +107,9 @@ def test_draw_floor_plan_layers(doc_and_layers) -> None:
     assert by_layer.get("WALL", 0) >= 1
     # 門 7(含樓梯間門)+ 窗 7 = 14 個 INSERT 在 DW。
     assert by_layer.get("DW") == 14
-    # OTHER:A3 圖框 2 + 競賽標題欄 INSERT 1 + 電梯轎廂符號(矩形+對角×2)3 = 6。
-    assert by_layer.get("OTHER") == 6
+    # OTHER:A3 圖框 2 + 標題欄 1 + 電梯符號 3 + 設備家具圖塊 11 +
+    #        流理台(2 段多義線 + 1 水槽圓)3 = 20。
+    assert by_layer.get("OTHER") == 20
     # 尺度在 DIM:四邊三層尺寸鏈(細部 20 + 軸距 10 + 總長 4)= 34 個。
     assert by_layer.get("DIM") == 34
     # 文字(軸網編號 7 + 房間名稱/面積 7×2 = 21)在 TEXT 之上(軸網圈在 AXIS)。
@@ -124,17 +125,6 @@ def test_draw_floor_plan_door_window_are_inserts(doc_and_layers) -> None:
     names = {i.dxf.name for i in inserts}
     assert "DOOR" in names
     assert any(n.startswith("WINDOW_") for n in names)
-
-
-# ---------------------------------------------------------------------------
-# 3) 尚未實作的欄位要明確擋下
-# ---------------------------------------------------------------------------
-@pytest.mark.parametrize("field_name", ["fixtures"])
-def test_not_implemented_fields_raise(doc_and_layers, field_name) -> None:
-    doc, layers = doc_and_layers
-    spec = _minimal_spec(**{field_name: ["placeholder"]})
-    with pytest.raises(NotImplementedError):
-        draw_floor_plan(doc.modelspace(), spec, layers)
 
 
 # ---------------------------------------------------------------------------

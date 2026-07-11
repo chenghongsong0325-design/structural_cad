@@ -50,6 +50,12 @@ from src.drafting.balcony_elevator import (
     elevator_walls,
 )
 from src.drafting.dim_chains import draw_dim_chains
+from src.drafting.fixtures import (
+    Counter,
+    FixturePlacement,
+    draw_counter,
+    place_fixture,
+)
 from src.drafting.door_window import Door, Window
 from src.drafting.gridlines import (
     GridSystem,
@@ -138,12 +144,11 @@ class FloorPlanSpec:
     #    False = 只有上/右兩邊的單層軸距(gridlines.draw_grid_dimensions)。
     dim_chains: bool = False
 
-    # ── 樓梯(B1)/ 電梯與陽台(B3)────────────────────────────────────────
+    # ── 樓梯(B1)/ 電梯與陽台(B3)/ 設備家具(B4)──────────────────────────
     stairs: list = field(default_factory=list)      # Stair / UStair
     elevators: list = field(default_factory=list)   # Elevator(牆自動併聯集)
     balconies: list = field(default_factory=list)   # Balcony(牆自動併聯集)
-    # ── 尚未實作(ROADMAP 階段 B 逐項補;填了會報 NotImplementedError)──
-    fixtures: list = field(default_factory=list)    # 尚未實作:衛浴廚具(B4)
+    fixtures: list = field(default_factory=list)    # FixturePlacement / Counter
 
 
 # ---------------------------------------------------------------------------
@@ -223,10 +228,6 @@ def _title_insert(spec: FloorPlanSpec) -> Point:
 def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
     """依 FloorPlanSpec 畫出一整張平面圖(順序見模組說明)。"""
 
-    # (0) 尚未實作的元素:明確擋下,避免使用者以為有畫。
-    if spec.fixtures:
-        raise NotImplementedError("衛浴廚具(fixtures)尚未實作(見 ROADMAP.md 階段 B4)")
-
     # (0.5) 圖紙外框(A3 橫式 1:100),最外層先畫。
     if spec.sheet:
         origin = spec.sheet_origin or _auto_sheet_origin(spec)
@@ -293,6 +294,13 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
         draw_elevator_symbol(msp, elev, layers)
     for bal in spec.balconies:
         draw_balcony_railing(msp, bal, layers)
+
+    # (7.7) 衛浴廚具設備與家具(圖塊 / 參數式流理台,OTHER 層)。
+    for fx in spec.fixtures:
+        if isinstance(fx, Counter):
+            draw_counter(msp, fx, layers)
+        else:
+            place_fixture(msp, fx, layers)
 
     # (8) 標題欄(競賽格式或一般格式)。
     if spec.title_block is not None:
@@ -411,6 +419,27 @@ def demo_spec() -> FloorPlanSpec:
         # 北邊貼建築外牆中心線,牆自動併入聯集);欄杆線掛 HANDRAIL。
         balconies=[Balcony(origin=(8300, 800), width=2400, depth=1200,
                            attach="north")],
+        # 設備家具(插入點=貼牆邊中點在「牆內面」上;旋轉:南牆0/北牆180/東牆90/西牆270)
+        fixtures=[
+            # 浴廁:馬桶+洗手台靠東牆、浴缸沿南牆(避開門的迴轉)
+            FixturePlacement("toilet", (13925, 3700), 90),
+            FixturePlacement("basin", (13925, 2800), 90),
+            FixturePlacement("bathtub", (12800, 2075), 0),
+            # 廚房:L 型流理台沿東牆+北牆(水槽在北段)
+            Counter(start=(13925, 4560), end=(13925, 6940)),
+            Counter(start=(13325, 6940), end=(11060, 6940), sink=True),
+            # 主臥:雙人床床頭靠北牆、衣櫃靠東隔牆
+            FixturePlacement("bed_double", (4200, 11925), 180),
+            FixturePlacement("wardrobe", (6940, 8300), 90),
+            # 臥室A/B:單人床床頭靠北牆;臥室B 加衣櫃靠西隔牆
+            FixturePlacement("bed_single", (8750, 11925), 180),
+            FixturePlacement("bed_single", (12250, 11925), 180),
+            FixturePlacement("wardrobe", (10560, 9800), 270),
+            # 客廳:沙發背靠西牆、方桌居中;餐廳:餐桌椅
+            FixturePlacement("sofa3", (2075, 4800), 270),
+            FixturePlacement("table4", (4200, 4800), 0),
+            FixturePlacement("table4", (9500, 3600), 0),
+        ],
         dim_chains=True,   # 四邊三層尺寸鏈(細部/軸距/總長)
         sheet=True,   # A3 橫式圖框
         # 競賽圖框:欄位標題保留、值一律留空(比照檢定發下的空白圖框,應檢人自填)。
