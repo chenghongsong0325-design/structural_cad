@@ -28,7 +28,15 @@
       "Bash(.venv/Scripts/python.exe src/design/layout_generator.py)",
       "Bash(.venv/Scripts/python.exe -m pytest tests/test_layout_generator.py -q)",
       "Bash(.venv/Scripts/python.exe -m pytest -q)",
-      "Bash(python -m pytest tests/test_layout_generator.py -q)"
+      "Bash(python -m pytest tests/test_layout_generator.py -q)",
+      "Bash(python -m pytest \"tests/test_layout_generator.py::test_small_site_merges_dining\" -q)",
+      "Bash(python -X utf8 -c ' *)",
+      "Bash(python -X utf8 -m pytest tests/test_layout_generator.py -q)",
+      "Bash(python -X utf8 -m pytest -q)",
+      "Bash(python -X utf8 src/design/layout_generator.py)",
+      "Bash(ls \"/c/Program Files/Autodesk/AutoCAD 2027/acad.exe\" 2>&1)",
+      "Read(//c/Program Files/Autodesk/AutoCAD 2027/**)",
+      "Bash(\"/c/Program Files/Autodesk/AutoCAD 2027/acad.exe\" /b output/gen_house_3br.dxf)"
     ]
   }
 }

@@ -162,6 +162,93 @@ def test_validate_flags_missing_escape_stairs() -> None:
     assert any("逃生" in p for p in problems)
 
 
+# ---------------------------------------------------------------------------
+# 2c) C1.5b:格局動線 — 走道
+# ---------------------------------------------------------------------------
+def test_house_has_hallway_between_bands() -> None:
+    """≥2 房的單戶有走道,每間臥室與走道共享 ≥ 門寬的邊。"""
+    from shapely.geometry import Polygon
+
+    spec = generate_floor_plan(HouseBrief(site_width=16000, site_depth=14000, bedrooms=3))
+    hall = next(r for r in spec.rooms if r.kind == "corridor")
+    assert hall.name == "走道"
+    hp = Polygon(hall.points)
+    beds = [r for r in spec.rooms if r.kind == "bedroom"]
+    assert len(beds) == 3
+    for b in beds:
+        assert Polygon(b.points).intersection(hp).length >= 900
+
+
+def test_bedroom_doors_open_to_hallway() -> None:
+    """每間臥室都有一扇門同時落在 臥室邊界 與 走道邊界 上。"""
+    from shapely.geometry import Point, Polygon
+
+    spec = generate_floor_plan(HouseBrief(site_width=18000, site_depth=13000, bedrooms=3))
+    hp = Polygon(next(r for r in spec.rooms if r.kind == "corridor").points)
+    bed_polys = [Polygon(r.points) for r in spec.rooms if r.kind == "bedroom"]
+    served = set()
+    for w in spec.walls:
+        for op in w.openings:
+            if op.kind != "door":
+                continue
+            pt = Point(w.point_at(op.position))
+            if hp.boundary.distance(pt) < 1.0:
+                for i, bp in enumerate(bed_polys):
+                    if bp.boundary.distance(pt) < 1.0:
+                        served.add(i)
+    assert served == {0, 1, 2}
+
+
+def test_hallway_open_passage_to_living() -> None:
+    """走道南牆要留通道口(≥1.4m 缺口)連通客廳,不是整條封死。"""
+    spec = generate_floor_plan(HouseBrief(site_width=16000, site_depth=14000, bedrooms=3))
+    hall = next(r for r in spec.rooms if r.kind == "corridor")
+    y_lo = min(p[1] for p in hall.points)
+    x_lo = min(p[0] for p in hall.points)
+    x_hi = max(p[0] for p in hall.points)
+    covered = sum(
+        abs(w.end[0] - w.start[0]) for w in spec.walls
+        if w.start[1] == w.end[1] == y_lo)
+    assert covered > 0                              # 牆存在(不是整條開放)
+    assert (x_hi - x_lo) - covered >= 1400          # 通道口
+
+
+def test_one_bedroom_house_has_no_hallway() -> None:
+    """1 房戶不加走道(只服務一扇門太浪費),臥室門維持直開。"""
+    spec = generate_floor_plan(HouseBrief(site_width=12000, site_depth=11000, bedrooms=1))
+    assert not any(r.kind == "corridor" for r in spec.rooms)
+
+
+def test_two_bedroom_hallway_only_when_needed() -> None:
+    """2 房動線融入客餐廳、預設不設走道;小基地上東臥門被服務核+柱位
+    擠到開不進客餐廳時,才退回設走道。"""
+    big = generate_floor_plan(HouseBrief(site_width=14000, site_depth=12000, bedrooms=2))
+    assert not any(r.kind == "corridor" for r in big.rooms)
+    small = generate_floor_plan(HouseBrief(site_width=12000, site_depth=11000, bedrooms=2))
+    assert any(r.kind == "corridor" for r in small.rooms)
+
+
+def test_validate_flags_bedroom_door_into_kitchen() -> None:
+    """把 2 房東臥的門移到廚房正上方 → 檢核要抓到「門開進廚房」。"""
+    spec = generate_floor_plan(HouseBrief(site_width=14000, site_depth=12000, bedrooms=2))
+    kitchen = next(r for r in spec.rooms if r.kind == "kitchen")
+    kx = min(p[0] for p in kitchen.points)          # 服務核西緣
+    band_wall = spec.walls[4]                        # 帶分界牆
+    band_wall.openings[-1].position = kx - band_wall.start[0] + 800
+    problems = validate_spec(spec)
+    assert any("開進廚房" in p for p in problems)
+
+
+def test_validate_flags_bedroom_door_not_to_hallway() -> None:
+    """把走道往西縮一半 → 檢核要抓到東側臥室「門未通走道」。"""
+    spec = generate_floor_plan(HouseBrief(site_width=16000, site_depth=14000, bedrooms=3))
+    hall = next(r for r in spec.rooms if r.kind == "corridor")
+    x_mid = (min(p[0] for p in hall.points) + max(p[0] for p in hall.points)) / 2
+    hall.points = [(min(p[0], x_mid), p[1]) for p in hall.points]
+    problems = validate_spec(spec)
+    assert any("未通走道" in p for p in problems)
+
+
 def test_house_rooms_have_codes() -> None:
     spec = generate_floor_plan(HouseBrief(site_width=16000, site_depth=14000, bedrooms=3))
     assert all(r.code for r in spec.rooms)

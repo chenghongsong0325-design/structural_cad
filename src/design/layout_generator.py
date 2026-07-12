@@ -6,9 +6,12 @@
 
 支援兩種建築類型:
 
-  1. HouseBrief(單戶住宅):兩帶式格局——北帶臥室區(主臥加大)、南帶
-     公共區(客廳西、餐廳中、東側服務核=浴廁+廚房);餐廳太窄自動併入
-     客廳。家具設備依房型自動擺放。
+  1. HouseBrief(單戶住宅):兩帶式格局——北帶臥室區(主臥加大,≥3 房
+     自動加主臥套衛)、南帶公共區(客廳西、餐廳中、東側服務核=浴廁+廚房)。
+     走道規則(C1.5b):房間多才需要走道——≥3 房在兩帶之間留走道(臥室門
+     開向走道、走道經正對大門軸線的通道口連通客廳);2 房動線融入客餐廳、
+     預設不設(門直開客餐廳,被柱位擠壓時退回設走道);1 房不設。
+     餐廳太窄自動併入客廳。家具設備依房型自動擺放。
   2. CorridorBrief(集合住宅):用 B6 的標準單元(place_unit)沿雙邊走廊
      重複 N 戶鏡射對排。
 
@@ -84,6 +87,8 @@ ROOM_CODES = {"living": "X03", "dining": "X04", "bedroom": "X05",
               "stair": "X01", "elevator": "X02", "storage": "X09"}
 ENSUITE_W, ENSUITE_D = 1800, 2000     # 主臥套房衛浴尺寸(≥3房自動加)
 CORE_W = 3100                          # 集合住宅端部逃生核(樓梯+電梯)的開間寬
+HALL_DEPTH = 1200                      # 單戶走道進深(臥室帶與公共帶之間,C1.5b)
+PASSAGE_WIDTH = 1500                   # 走道↔客廳的開放通道寬(正對大門軸線)
 COLUMN_CLEARANCE = 150       # 洞口與柱面的最小淨距
 
 
@@ -174,6 +179,7 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
     ds = D - dn
     yd = by0 + ds                                # 帶分界牆 y
 
+
     ratios = [MASTER_RATIO] + [1.0] * (brief.bedrooms - 1)
     bed_w = [W * r / sum(ratios) for r in ratios]
     if min(bed_w) < MIN_BEDROOM_WIDTH:
@@ -202,6 +208,42 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
     blocked_n = _blocked([bx1 - gx for gx in grid_x], col)
     blocked_e = _blocked([gy - by0 for gy in grid_y], col)
     blocked_w = _blocked([by1 - gy for gy in grid_y], col)
+    blocked_band = _blocked([gx - bx0 for gx in grid_x], col)   # 帶分界牆(4)
+
+    # C1.5b:走道 =「連接多個獨立房間的共用動線」,房間多才需要——
+    # ≥3 房必設(3+ 扇臥室門不宜全開進客餐廳);2 房動線融入客餐廳、
+    # 預設不設,但東臥門若被服務核+柱位擠到只能開進廚房,退回設走道;
+    # 1 房必不設。(集合住宅的走廊是另一套,見 _generate_corridor。)
+    has_hall = brief.bedrooms >= 3
+    pos_direct: Optional[float] = None           # 2房直開客餐廳時的東臥門位
+    if brief.bedrooms == 2:
+        pos_direct = _find_clear_position(
+            (bed_x[-2] + sx) / 2 - bx0, DOOR_WIDTH,
+            bed_x[-2] - bx0 + 150, sx - bx0 - 150, blocked_band)
+        if pos_direct is None:
+            has_hall = True
+    yc = yd - (HALL_DEPTH if has_hall else 0)    # 走道下緣(=公共帶上緣)
+
+    # C1.5b:走道東端 x_he——東側臥室在服務核上方,門要落在走道正面。
+    # 先找東臥「最靠西」的可用門位(躲柱),走道東端跟著門走:必要時越過
+    # 服務核西牆、吃進廚房上方一角(廚房變 L 形,門改由走道端進出)。
+    x_he = sx
+    pos_e: Optional[float] = None
+    if has_hall:
+        lo_e = bed_x[-2] - bx0 + 150                 # 讓開臥室隔牆
+        pos_e = _find_clear_position(lo_e + DOOR_WIDTH / 2, DOOR_WIDTH,
+                                     lo_e, W, blocked_band)
+        if pos_e is None:
+            raise ValueError("東側臥室找不到可開門的位置(柱擋住),請調整基地")
+        x_he = max(sx, bx0 + pos_e + DOOR_WIDTH / 2 + 150)
+        if x_he > sx:
+            for gx in grid_x:                        # 端牆讓開柱
+                if abs(x_he - gx) < 600:
+                    x_he = gx + 600
+            if bx1 - x_he < 1500:
+                raise ValueError(
+                    f"走道端部吃進廚房太深(剩 {(bx1-x_he)/1000:.1f}m <1.5m),請加大基地")
+    has_notch = has_hall and x_he > sx               # 走道是否吃進廚房角
 
     # ── 牆 ───────────────────────────────────────────────────────────
     walls = [
@@ -210,7 +252,8 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
         Wall((bx1, by1), (bx0, by1), EXT),    # 2 北
         Wall((bx0, by1), (bx0, by0), EXT),    # 3 西
         Wall((bx0, yd), (bx1, yd), INT),      # 4 帶分界牆
-        Wall((sx, by0), (sx, yd), INT),       # 5 服務核西牆
+        # 5 服務核西牆(走道吃進廚房角時,只到走道下緣,以免切斷走道)。
+        Wall((sx, by0), (sx, yc if has_notch else yd), INT),
         Wall((sx, yb), (bx1, yb), INT),       # 6 浴廁/廚房分界
     ]
     for i in range(1, brief.bedrooms):        # 7.. 臥室隔牆
@@ -252,14 +295,24 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
                 f"套房衛浴({ENSUITE_W/1000:.1f}×{ENSUITE_D/1000:.1f}m),請加大基地")
         ex1, ey1 = bx0 + ENSUITE_W, yd + ENSUITE_D
 
-    # 臥室:門在帶分界牆、窗在北牆(主臥的門讓開套衛牆段)。
+    # 臥室:門在帶分界牆(有走道時門要落在走道正面 x ≤ x_he;主臥的門
+    # 讓開套衛牆段;東臥用預先算好的門位)、窗在北牆。
     for i in range(brief.bedrooms):
         x_l, x_r = bed_x[i], bed_x[i + 1]
         cx = (x_l + x_r) / 2
-        door_lo = ex1 - bx0 if (i == 0 and has_ensuite) else x_l - bx0
-        door_desired = (ex1 + x_r) / 2 - bx0 if (i == 0 and has_ensuite) else cx - bx0
+        if has_hall and i == brief.bedrooms - 1:
+            door_lo, door_hi, door_desired = pos_e - 450, pos_e + 450, pos_e
+        elif not has_hall and pos_direct is not None and i == brief.bedrooms - 1:
+            # 2 房無走道:東臥門直開客餐廳(位置已預先算好,避開廚房正面)。
+            door_lo, door_hi = pos_direct - 450, pos_direct + 450
+            door_desired = pos_direct
+        elif i == 0 and has_ensuite:
+            door_lo, door_hi = ex1 - bx0, x_r - bx0
+            door_desired = (ex1 + x_r) / 2 - bx0
+        else:
+            door_lo, door_hi, door_desired = x_l - bx0, x_r - bx0, cx - bx0
         op = add_opening(4, door_desired, DOOR_WIDTH, "door",
-                         door_lo, x_r - bx0, _blocked([gx - bx0 for gx in grid_x], col))
+                         door_lo, door_hi, blocked_band)
         doors.append(DoorPlacement(4, op, Door(hinge="left", swing="out")))
         op = add_opening(2, bx1 - cx, WINDOW_WIDTHS["bedroom"], "window",
                          bx1 - x_r, bx1 - x_l, blocked_n)
@@ -277,14 +330,26 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
                          by1 - ey1, by1 - yd, blocked_w)
         windows.append(WindowPlacement(3, op))
 
+    # 走道南牆(兩段,中間留通道口正對大門軸線 → 進門直達走道;C1.5b)。
+    if has_hall:
+        for seg_a, seg_b in ((bx0, living_cx - PASSAGE_WIDTH / 2),
+                             (living_cx + PASSAGE_WIDTH / 2, x_he)):
+            if seg_b - seg_a > 1:
+                walls.append(Wall((seg_a, yc), (seg_b, yc), INT))
+    # 走道端牆(吃進廚房角時):廚房門開在這裡(走道 → 廚房)。
+    if has_notch:
+        walls.append(Wall((x_he, yc), (x_he, yd), INT,
+                          openings=[Opening(HALL_DEPTH / 2, DOOR_WIDTH, "door")]))
+        doors.append(DoorPlacement(len(walls) - 1, 0, Door(hinge="left", swing="in")))
+
     # 主臥西窗(有套衛時讓開套衛牆段)、客廳西窗。
     master_hi = (by1 - ey1) if has_ensuite else (by1 - yd)
     op = add_opening(3, master_hi / 2, WINDOW_WIDTHS["bedroom"], "window",
                      0, master_hi, blocked_w)
     windows.append(WindowPlacement(3, op))
-    living_cy = (by0 + yd) / 2
+    living_cy = (by0 + yc) / 2
     op = add_opening(3, by1 - living_cy, WINDOW_WIDTHS["living"], "window",
-                     by1 - yd, by1 - by0, blocked_w)
+                     by1 - yc, by1 - by0, blocked_w)
     windows.append(WindowPlacement(3, op))
 
     # 餐廳南窗(加分項)。
@@ -301,9 +366,14 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
     op = add_opening(1, bath_cy - by0, WINDOW_WIDTHS["bathroom"], "window",
                      0, yb - by0, blocked_e)
     windows.append(WindowPlacement(1, op))
+    # 廚房門:走道吃進廚房角時已開在走道端牆;否則開在服務核西牆,
+    # 並讓開走道南牆搭在西牆上的 T 形交接點(牆頭不能戳進門洞)。
     kitchen_cy = (yb + yd) / 2
-    op = add_opening(5, kitchen_cy - by0, DOOR_WIDTH, "door", yb - by0, yd - by0, [])
-    doors.append(DoorPlacement(5, op, Door(hinge="left", swing="in")))
+    if not has_notch:
+        junction = [(yc - by0 - 150, yc - by0 + 150)] if has_hall else []
+        op = add_opening(5, kitchen_cy - by0, DOOR_WIDTH, "door",
+                         yb - by0, yd - by0, junction)
+        doors.append(DoorPlacement(5, op, Door(hinge="left", swing="in")))
     op = add_opening(1, kitchen_cy - by0, WINDOW_WIDTHS["kitchen"], "window",
                      yb - by0, yd - by0, blocked_e)
     windows.append(WindowPlacement(1, op))
@@ -311,17 +381,27 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
     # ── 房間 ─────────────────────────────────────────────────────────
     rooms: list[Room] = []
     if merged_dining:
-        rooms.append(Room("客餐廳", [(bx0, by0), (sx, by0), (sx, yd), (bx0, yd)],
+        rooms.append(Room("客餐廳", [(bx0, by0), (sx, by0), (sx, yc), (bx0, yc)],
                           kind="living", code=ROOM_CODES["living"]))
     else:
-        rooms.append(Room("客廳", [(bx0, by0), (living_e, by0), (living_e, yd), (bx0, yd)],
+        rooms.append(Room("客廳", [(bx0, by0), (living_e, by0), (living_e, yc), (bx0, yc)],
                           kind="living", code=ROOM_CODES["living"]))
-        rooms.append(Room("餐廳", [(living_e, by0), (sx, by0), (sx, yd), (living_e, yd)],
+        rooms.append(Room("餐廳", [(living_e, by0), (sx, by0), (sx, yc), (living_e, yc)],
                           kind="dining", code=ROOM_CODES["dining"]))
+    if has_hall:
+        rooms.append(Room("走道", [(bx0, yc), (x_he, yc), (x_he, yd), (bx0, yd)],
+                          kind="corridor", code=ROOM_CODES["corridor"]))
     rooms.append(Room("浴廁", [(sx, by0), (bx1, by0), (bx1, yb), (sx, yb)],
                       kind="bathroom", code=ROOM_CODES["bathroom"]))
-    rooms.append(Room("廚房", [(sx, yb), (bx1, yb), (bx1, yd), (sx, yd)],
-                      kind="kitchen", code=ROOM_CODES["kitchen"]))
+    if has_notch:
+        # 廚房 L 形(西北角讓給走道端)。
+        rooms.append(Room("廚房",
+                          [(sx, yb), (bx1, yb), (bx1, yd), (x_he, yd),
+                           (x_he, yc), (sx, yc)],
+                          kind="kitchen", code=ROOM_CODES["kitchen"]))
+    else:
+        rooms.append(Room("廚房", [(sx, yb), (bx1, yb), (bx1, yd), (sx, yd)],
+                          kind="kitchen", code=ROOM_CODES["kitchen"]))
     bed_names = ["主臥室", "臥室A", "臥室B", "臥室C"]
     for i in range(brief.bedrooms):
         if i == 0 and has_ensuite:
@@ -362,9 +442,14 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
     if has_ensuite:
         fixtures.append(FixturePlacement("toilet", (bx0 + 75, yd + 550), 270))
         fixtures.append(FixturePlacement("basin", (bx0 + 75, yd + 1450), 270))
-    # 廚房:L 型流理台(東牆段 + 北段,水槽在北段;北段東端讓開轉角、西端讓開門迴轉)。
-    fixtures.append(Counter(start=(bx1 - 75, yb + 60), end=(bx1 - 75, yd - 60)))
-    fixtures.append(Counter(start=(bx1 - 675, yd - 60), end=(sx + 1000, yd - 60), sink=True))
+    # 廚房:L 型流理台(東牆段 + 北段,水槽在北段;北段東端讓開轉角、
+    # 西端讓開廚房門迴轉——門在走道端牆或服務核西牆,皆以 x_he 為準)。
+    north_end = x_he + 1000
+    if (bx1 - 675) - north_end >= 600:
+        fixtures.append(Counter(start=(bx1 - 75, yb + 60), end=(bx1 - 75, yd - 60)))
+        fixtures.append(Counter(start=(bx1 - 675, yd - 60), end=(north_end, yd - 60), sink=True))
+    else:                                   # 北段太短 → 一字型,水槽改東段
+        fixtures.append(Counter(start=(bx1 - 75, yb + 60), end=(bx1 - 75, yd - 60), sink=True))
 
     spec = FloorPlanSpec(
         site_boundary=[(0, 0), (brief.site_width, 0),
@@ -519,7 +604,9 @@ def validate_spec(spec: FloorPlanSpec) -> list[str]:
     """檢核設計是否合理,回傳問題清單(空 = 通過)。
 
     檢查:房間互不重疊、面積合計=建築面積、每個 臥室/浴廁/廚房 有門、
-    臥室/客廳 有窗、所有洞口不壓柱(含淨距)。
+    臥室/客廳 有窗、所有洞口不壓柱(含淨距)。另含法規/動線規則:
+    浴室無窗須標機械排風(C1.5a)、多戶建築 ≥2 樓梯間(C1.5a)、
+    有走道時臥室門須通走道、臥室門不得開進廚房(C1.5b)。
     """
     problems: list[str] = []
 
@@ -560,11 +647,42 @@ def validate_spec(spec: FloorPlanSpec) -> list[str]:
             if openings_on(poly, "window") < 1 and "排風" not in room.note:
                 problems.append(f"{room.name} 無窗且未標示機械排風")
 
-    # C1.5a:有走廊(集合住宅)就必須有 ≥2 座樓梯間(兩個逃生方向)。
-    if any(r.kind == "corridor" for r in spec.rooms):
+    # C1.5a:多戶建築(≥2 個居住單元)必須有 ≥2 座樓梯間(兩個逃生方向)。
+    # 用 kind="living" 的數量判斷戶數:單戶只有一個客廳,不觸發。
+    n_units = sum(1 for r in spec.rooms if r.kind == "living")
+    if n_units >= 2:
         n_stairs = sum(1 for r in spec.rooms if r.kind == "stair")
         if n_stairs < 2:
-            problems.append(f"走廊建築只有 {n_stairs} 座樓梯間(逃生需 ≥2)")
+            problems.append(f"多戶建築只有 {n_stairs} 座樓梯間(逃生需 ≥2)")
+
+    # C1.5b:建築內有走道/走廊時,每間臥室至少要有一扇門開向它
+    # (臥室門不得只直開客餐廳)。
+    corridor_polys = [p for r, p in zip(spec.rooms, polys) if r.kind == "corridor"]
+    if corridor_polys:
+        for room, poly in zip(spec.rooms, polys):
+            if room.kind != "bedroom":
+                continue
+            reaches = any(
+                poly.boundary.distance(SPoint(w.point_at(op.position))) < 1.0
+                and any(cp.boundary.distance(SPoint(w.point_at(op.position))) < 1.0
+                        for cp in corridor_polys)
+                for w in spec.walls for op in w.openings if op.kind == "door")
+            if not reaches:
+                problems.append(f"{room.name} 的門未通走道")
+
+    # C1.5b:臥室門不得開進廚房(動線常識;套衛的門開進浴室是刻意的,不管)。
+    kitchen_polys = [p for r, p in zip(spec.rooms, polys) if r.kind == "kitchen"]
+    for room, poly in zip(spec.rooms, polys):
+        if room.kind != "bedroom":
+            continue
+        for w in spec.walls:
+            for op in w.openings:
+                if op.kind != "door":
+                    continue
+                pt = SPoint(w.point_at(op.position))
+                if poly.boundary.distance(pt) < 1.0 and any(
+                        kp.boundary.distance(pt) < 1.0 for kp in kitchen_polys):
+                    problems.append(f"{room.name} 的門開進廚房")
 
     # 洞口不壓柱。
     columns = resolve_columns(spec, build_grid(spec))
@@ -624,14 +742,18 @@ if __name__ == "__main__":
 # PENDING(待確認假設彙整)
 # =============================================================================
 # 1. 設計規則常數(臥室最小寬 2.8m、主臥 ×1.35、服務核 2.6~3.4m、目標跨距
-#    4.5m、走廊 1.8m 等)皆為經驗值。
-# 2. 單戶固定「兩帶式、朝南入口」;浴室 1 間;無垂直動線核(單層示範)。
-#    變化維度(朝向/雙衛/樓梯電梯核/走道式)之後 C1.5/B2' 加深。
+#    4.5m、走廊 1.8m、走道 1.2m、通道口 1.5m 等)皆為經驗值。
+# 2. 單戶固定「兩帶式、朝南入口」;≥3 房自動加主臥套衛(C1.5a)。走道規則
+#    (C1.5b):≥3 房必設、2 房預設不設(擠壓時退回)、1 房不設——依使用者
+#    2026-07-12 定調「走道=連接多獨立房間的共用動線,房間多才需要;小宅
+#    動線融入客廳」。變化維度(朝向/玄關/陽台/樓梯電梯核)之後 C1.5b/c 加深。
+#    走道通道口固定正對大門「理想位置」;大門若因躲柱被平移,兩者會小錯位。
 # 3. 家具擺放規則:床頭靠北外牆、衣櫃貼東側牆近北角、沙發背靠西牆、
 #    L 型流理台沿東+北……皆為簡化規則;未做「家具不擋門窗」的完整碰撞檢查
 #    (門的迴轉半徑有手動讓開,見程式註解)。
-# 4. 集合住宅:單元固定用 one_room_unit(可自帶 UnitSpec);樓梯/電梯核
-#    未放(實際建案在兩端/中段);走廊兩端目前以端牆封閉。
+# 4. 集合住宅:單元固定用 one_room_unit(可自帶 UnitSpec);兩端逃生核已加
+#    (C1.5a),核開間寬 CORE_W=3.1m、梯段/平台尺寸為經驗值;每戶陽台未加
+#    (C1.5b 後續)。
 # 5. validate_spec 檢核的是幾何/開口正確性,尚未含法規檢討(採光面積比、
 #    走廊寬法規、逃生距離)。
 # =============================================================================
