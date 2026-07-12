@@ -80,7 +80,10 @@ ENTRY_DOOR_WIDTH = 1000
 WINDOW_WIDTHS = {"bedroom": 1500, "living": 1800, "dining": 1200,
                  "kitchen": 1200, "bathroom": 800}
 ROOM_CODES = {"living": "X03", "dining": "X04", "bedroom": "X05",
-              "kitchen": "X07", "bathroom": "X08", "corridor": "X00"}
+              "kitchen": "X07", "bathroom": "X08", "corridor": "X00",
+              "stair": "X01", "elevator": "X02", "storage": "X09"}
+ENSUITE_W, ENSUITE_D = 1800, 2000     # 主臥套房衛浴尺寸(≥3房自動加)
+CORE_W = 3100                          # 集合住宅端部逃生核(樓梯+電梯)的開間寬
 COLUMN_CLEARANCE = 150       # 洞口與柱面的最小淨距
 
 
@@ -238,20 +241,46 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
     op = add_opening(0, living_cx - bx0, ENTRY_DOOR_WIDTH, "door", 0, living_e - bx0, blocked_s)
     doors.append(DoorPlacement(0, op, Door(hinge="left", swing="out")))
 
-    # 臥室:門在帶分界牆、窗在北牆。
+    # 主臥套房衛浴(C1.5a:≥3 房自動加,位於主臥西南角)——先算範圍,
+    # 臥室門/西窗要讓開它。
+    has_ensuite = brief.bedrooms >= 3
+    ex1 = ey1 = 0.0
+    if has_ensuite:
+        if dn < ENSUITE_D + 2200 or bed_w[0] < ENSUITE_W + 2700:
+            raise ValueError(
+                f"主臥({bed_w[0]/1000:.1f}m 寬 × {dn/1000:.1f}m 深)放不下"
+                f"套房衛浴({ENSUITE_W/1000:.1f}×{ENSUITE_D/1000:.1f}m),請加大基地")
+        ex1, ey1 = bx0 + ENSUITE_W, yd + ENSUITE_D
+
+    # 臥室:門在帶分界牆、窗在北牆(主臥的門讓開套衛牆段)。
     for i in range(brief.bedrooms):
         x_l, x_r = bed_x[i], bed_x[i + 1]
         cx = (x_l + x_r) / 2
-        op = add_opening(4, cx - bx0, DOOR_WIDTH, "door",
-                         x_l - bx0, x_r - bx0, _blocked([gx - bx0 for gx in grid_x], col))
+        door_lo = ex1 - bx0 if (i == 0 and has_ensuite) else x_l - bx0
+        door_desired = (ex1 + x_r) / 2 - bx0 if (i == 0 and has_ensuite) else cx - bx0
+        op = add_opening(4, door_desired, DOOR_WIDTH, "door",
+                         door_lo, x_r - bx0, _blocked([gx - bx0 for gx in grid_x], col))
         doors.append(DoorPlacement(4, op, Door(hinge="left", swing="out")))
         op = add_opening(2, bx1 - cx, WINDOW_WIDTHS["bedroom"], "window",
                          bx1 - x_r, bx1 - x_l, blocked_n)
         windows.append(WindowPlacement(2, op))
 
-    # 主臥西窗、客廳西窗。
-    op = add_opening(3, by1 - (yd + by1) / 2, WINDOW_WIDTHS["bedroom"], "window",
-                     0, by1 - yd, blocked_w)
+    # ── 套衛的牆/門/窗(範圍已在上面算好)──────────────────────────────
+    if has_ensuite:
+        # 套衛東牆(門開向浴內 = +n 西側)與北牆。
+        walls.append(Wall((ex1, yd), (ex1, ey1), INT,
+                          openings=[Opening(ENSUITE_D / 2, 750, "door")]))
+        doors.append(DoorPlacement(len(walls) - 1, 0, Door(hinge="left", swing="out")))
+        walls.append(Wall((bx0, ey1), (ex1, ey1), INT))
+        # 套衛西窗(對外採光/通風;在主臥西窗下方的牆段)。
+        op = add_opening(3, by1 - (yd + ENSUITE_D / 2), 800, "window",
+                         by1 - ey1, by1 - yd, blocked_w)
+        windows.append(WindowPlacement(3, op))
+
+    # 主臥西窗(有套衛時讓開套衛牆段)、客廳西窗。
+    master_hi = (by1 - ey1) if has_ensuite else (by1 - yd)
+    op = add_opening(3, master_hi / 2, WINDOW_WIDTHS["bedroom"], "window",
+                     0, master_hi, blocked_w)
     windows.append(WindowPlacement(3, op))
     living_cy = (by0 + yd) / 2
     op = add_opening(3, by1 - living_cy, WINDOW_WIDTHS["living"], "window",
@@ -295,10 +324,20 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
                       kind="kitchen", code=ROOM_CODES["kitchen"]))
     bed_names = ["主臥室", "臥室A", "臥室B", "臥室C"]
     for i in range(brief.bedrooms):
-        rooms.append(Room(bed_names[i],
-                          [(bed_x[i], yd), (bed_x[i + 1], yd),
-                           (bed_x[i + 1], by1), (bed_x[i], by1)],
-                          kind="bedroom", code=ROOM_CODES["bedroom"]))
+        if i == 0 and has_ensuite:
+            # 主臥 L 形(西南角讓給套衛)+ 主臥浴。
+            rooms.append(Room("主臥室",
+                              [(ex1, yd), (bed_x[1], yd), (bed_x[1], by1),
+                               (bx0, by1), (bx0, ey1), (ex1, ey1)],
+                              kind="bedroom", code=ROOM_CODES["bedroom"]))
+            rooms.append(Room("主臥浴",
+                              [(bx0, yd), (ex1, yd), (ex1, ey1), (bx0, ey1)],
+                              kind="bathroom", code=ROOM_CODES["bathroom"]))
+        else:
+            rooms.append(Room(bed_names[i],
+                              [(bed_x[i], yd), (bed_x[i + 1], yd),
+                               (bed_x[i + 1], by1), (bed_x[i], by1)],
+                              kind="bedroom", code=ROOM_CODES["bedroom"]))
 
     # ── 家具設備(依房型規則自動擺放)──────────────────────────────────
     fixtures: list = []
@@ -319,6 +358,10 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
     # 浴廁:馬桶+洗手台靠東牆(避開西側門的迴轉)。
     fixtures.append(FixturePlacement("toilet", (bx1 - 75, by0 + bath_d - 500), 90))
     fixtures.append(FixturePlacement("basin", (bx1 - 75, by0 + 600), 90))
+    # 主臥浴(套衛):馬桶+洗手台貼西牆(門在東側,迴轉已讓開)。
+    if has_ensuite:
+        fixtures.append(FixturePlacement("toilet", (bx0 + 75, yd + 550), 270))
+        fixtures.append(FixturePlacement("basin", (bx0 + 75, yd + 1450), 270))
     # 廚房:L 型流理台(東牆段 + 北段,水槽在北段;北段東端讓開轉角、西端讓開門迴轉)。
     fixtures.append(Counter(start=(bx1 - 75, yb + 60), end=(bx1 - 75, yd - 60)))
     fixtures.append(Counter(start=(bx1 - 675, yd - 60), end=(sx + 1000, yd - 60), sink=True))
@@ -343,36 +386,112 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
 # 產生器:集合住宅(單元重複,B6)
 # ---------------------------------------------------------------------------
 def _generate_corridor(brief: CorridorBrief) -> FloorPlanSpec:
+    """集合住宅:兩端逃生核 + 單元×N 鏡射對排 + 雙邊走廊。
+
+    C1.5a:走廊兩端各設一個「核」開間(寬 CORE_W)——北側樓梯間(折返梯,
+    門通走廊 → 兩個逃生方向)、南側西端為 電梯廳+電梯、東端為儲藏室。
+    走廊縱貫全樓(含核開間,= 梯廳兼走廊)。
+    """
+    from src.drafting.balcony_elevator import Elevator
+    from src.drafting.stair import UStair
+
     if not 2 <= brief.units_per_row <= 10:
         raise ValueError(f"每排 2~10 戶,收到 {brief.units_per_row}")
 
     unit = brief.unit or one_room_unit()
     n = brief.units_per_row
     x0 = y0 = brief.setback
-    y_corr = y0 + unit.depth
-    y_top = y_corr + brief.corridor_width
-    bx1 = x0 + n * unit.width
+    y_corr = y0 + unit.depth                    # 走廊下緣
+    y_top = y_corr + brief.corridor_width       # 走廊上緣
+    xw = x0 + CORE_W                            # 西核/單元分界
+    bx1 = xw + n * unit.width + CORE_W          # 建築東緣
+    xe = bx1 - CORE_W                           # 單元/東核分界
     by1 = y_top + unit.depth
+    y_hall = y_corr - 2200                      # 電梯廳/儲藏分界(西核)
+
+    walls = [
+        Wall((x0, y0), (x0, by1), EXT),                   # 0 西端牆
+        Wall((bx1, y0), (bx1, by1), EXT),                 # 1 東端牆
+        # 核/單元分戶牆(走廊段留空 → 走廊縱貫)。
+        Wall((xw, y0), (xw, y_corr), EXT),                # 2
+        Wall((xw, y_top), (xw, by1), EXT),                # 3
+        Wall((xe, y0), (xe, y_corr), EXT),                # 4
+        Wall((xe, y_top), (xe, by1), EXT),                # 5
+        # 核開間的南北外牆段(樓梯間開對外窗:採光/排煙)。
+        Wall((x0, by1), (xw, by1), EXT,
+             openings=[Opening(CORE_W / 2, 1200, "window")]),   # 6 北W
+        Wall((xe, by1), (bx1, by1), EXT,
+             openings=[Opening(CORE_W / 2, 1200, "window")]),   # 7 北E
+        Wall((x0, y0), (xw, y0), EXT),                    # 8 南W
+        Wall((xe, y0), (bx1, y0), EXT),                   # 9 南E
+        # 樓梯間南牆(門通走廊,開向梯間)。
+        Wall((x0, y_top), (xw, y_top), EXT,
+             openings=[Opening(CORE_W / 2, 900, "door")]),      # 10 W
+        Wall((xe, y_top), (bx1, y_top), EXT,
+             openings=[Opening(CORE_W / 2, 900, "door")]),      # 11 E
+        # 西核:電梯廳/儲藏分界(門進儲藏);東核:儲藏北牆(門通走廊)。
+        Wall((x0, y_hall), (xw, y_hall), INT,
+             openings=[Opening(850, 800, "door")]),             # 12
+        Wall((xe, y_corr), (bx1, y_corr), INT,
+             openings=[Opening(CORE_W / 2, 800, "door")]),      # 13
+    ]
+    doors = [
+        DoorPlacement(10, 0, Door(hinge="left", swing="out")),  # 西梯間(+n=北=梯間)
+        DoorPlacement(11, 0, Door(hinge="left", swing="out")),  # 東梯間
+        DoorPlacement(12, 0, Door(hinge="left", swing="in")),   # 西儲藏(南側)
+        DoorPlacement(13, 0, Door(hinge="left", swing="in")),   # 東儲藏(南側)
+    ]
+    windows = [WindowPlacement(6, 0), WindowPlacement(7, 0)]    # 梯間對外窗
+
+    rooms = [
+        Room("走廊", [(x0, y_corr), (bx1, y_corr), (bx1, y_top), (x0, y_top)],
+             kind="corridor", code=ROOM_CODES["corridor"]),
+        Room("樓梯間", [(x0, y_top), (xw, y_top), (xw, by1), (x0, by1)],
+             kind="stair", code=ROOM_CODES["stair"]),
+        Room("樓梯間", [(xe, y_top), (bx1, y_top), (bx1, by1), (xe, by1)],
+             kind="stair", code=ROOM_CODES["stair"]),
+        Room("電梯廳", [(x0, y_hall), (xw - 1400, y_hall), (xw - 1400, y_corr), (x0, y_corr)],
+             kind="hall", code=ROOM_CODES["elevator"]),
+        Room("電梯", [(xw - 1400, y_hall), (xw, y_hall), (xw, y_corr), (xw - 1400, y_corr)],
+             kind="elevator", code=ROOM_CODES["elevator"]),
+        Room("儲藏室", [(x0, y0), (xw, y0), (xw, y_hall), (x0, y_hall)],
+             kind="storage", code=ROOM_CODES["storage"]),
+        Room("儲藏室", [(xe, y0), (bx1, y0), (bx1, y_corr), (xe, y_corr)],
+             kind="storage", code=ROOM_CODES["storage"]),
+    ]
+
+    # 折返梯 × 2(每端一座,靠梯間北牆,入口在南、留出門的迴轉):
+    # 11 級 × 260 = 2860 run + 平台 1200 = 4060 深。
+    stair_len = 4060
+    stairs = [
+        UStair(origin=(x0 + (CORE_W - 2500) / 2, by1 - 75 - stair_len),
+               width=2500, length=stair_len, direction="north",
+               steps_per_flight=11, tread=260, label="上"),
+        UStair(origin=(xe + (CORE_W - 2500) / 2, by1 - 75 - stair_len),
+               width=2500, length=stair_len, direction="north",
+               steps_per_flight=11, tread=260, label="上"),
+    ]
+    # 電梯(西核,貼分戶牆;門開西面通電梯廳,電梯廳與走廊開放連通)。
+    elevators = [Elevator(origin=(xw - 1400, y_hall), width=1400, depth=2200,
+                          door_side="west")]
 
     spec = FloorPlanSpec(
         site_boundary=[(0, 0), (bx1 + brief.setback, 0),
                        (bx1 + brief.setback, by1 + brief.setback),
                        (0, by1 + brief.setback)],
         setback=brief.setback,
-        x_spacings=[unit.width] * n,
+        x_spacings=[CORE_W] + [unit.width] * n + [CORE_W],
         y_spacings=[unit.depth, brief.corridor_width, unit.depth],
         grid_origin=(x0, y0),
         column_size=brief.column_size,
-        walls=[Wall((x0, y0), (x0, by1), EXT),      # 西端牆
-               Wall((bx1, y0), (bx1, by1), EXT)],   # 東端牆
-        rooms=[Room("走廊", [(x0, y_corr), (bx1, y_corr), (bx1, y_top), (x0, y_top)],
-                    kind="corridor", code=ROOM_CODES["corridor"])],
+        walls=walls, rooms=rooms, doors=doors, windows=windows,
+        stairs=stairs, elevators=elevators,
         dim_chains=True, sheet=True,
         floor_label=brief.floor_label, north_arrow=True,
         title_block=CompetitionTitleData(),
     )
     for i in range(n):
-        ux = x0 + i * unit.width
+        ux = xw + i * unit.width
         place_unit(spec, unit, origin=(ux, y_top))                 # 上排
         place_unit(spec, unit, origin=(ux, y0), mirror_y=True)     # 下排(對排)
     return spec
@@ -430,12 +549,22 @@ def validate_spec(spec: FloorPlanSpec) -> list[str]:
         return count
 
     for room, poly in zip(spec.rooms, polys):
-        if room.kind in ("bedroom", "bathroom", "kitchen"):
+        if room.kind in ("bedroom", "bathroom", "kitchen", "stair", "storage"):
             if openings_on(poly, "door") < 1:
                 problems.append(f"{room.name} 沒有門")
         if room.kind in ("bedroom", "living"):
             if openings_on(poly, "window") < 1:
                 problems.append(f"{room.name} 沒有窗")
+        # C1.5a:浴室要有對外窗,否則必須標示機械排風。
+        if room.kind == "bathroom":
+            if openings_on(poly, "window") < 1 and "排風" not in room.note:
+                problems.append(f"{room.name} 無窗且未標示機械排風")
+
+    # C1.5a:有走廊(集合住宅)就必須有 ≥2 座樓梯間(兩個逃生方向)。
+    if any(r.kind == "corridor" for r in spec.rooms):
+        n_stairs = sum(1 for r in spec.rooms if r.kind == "stair")
+        if n_stairs < 2:
+            problems.append(f"走廊建築只有 {n_stairs} 座樓梯間(逃生需 ≥2)")
 
     # 洞口不壓柱。
     columns = resolve_columns(spec, build_grid(spec))

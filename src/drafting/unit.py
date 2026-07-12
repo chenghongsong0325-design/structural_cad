@@ -144,7 +144,7 @@ def place_unit(
     for r in unit.rooms:
         target.rooms.append(Room(
             name=r.name, points=[tp(p) for p in r.points],
-            kind=r.kind, code=r.code,
+            kind=r.kind, code=r.code, note=r.note,
         ))
 
     # 設備家具(奇數次鏡射:流理台交換起訖點以保住檯面側邊)。
@@ -189,8 +189,9 @@ def one_room_unit() -> UnitSpec:
         Wall((0, 2000), (1800, 2000), INT),
     ]
     rooms = [
+        # 浴廁在單元內側(貼走廊)無對外窗 → 依法需機械排風,標示於圖(C1.5a)。
         Room("浴廁", [(0, 0), (1800, 0), (1800, 2000), (0, 2000)],
-             kind="bathroom", code="X08"),
+             kind="bathroom", code="X08", note="機械排風"),
         Room("1房型", [(1800, 0), (4000, 0), (4000, 6000), (0, 6000),
                        (0, 2000), (1800, 2000)],
              kind="living", code="X06"),

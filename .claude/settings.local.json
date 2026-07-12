@@ -24,7 +24,11 @@
       "PowerShell(Invoke-Item \"output\\\\hello_cad_preview.png\")",
       "Bash(.venv/Scripts/python.exe -m pytest tests/test_members.py tests/test_titleblock.py -v)",
       "Bash(.venv/Scripts/python.exe src/drafting/floor_plan.py)",
-      "Bash(.venv/Scripts/python.exe -m pytest tests/test_wall.py -v)"
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_wall.py -v)",
+      "Bash(.venv/Scripts/python.exe src/design/layout_generator.py)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_layout_generator.py -q)",
+      "Bash(.venv/Scripts/python.exe -m pytest -q)",
+      "Bash(python -m pytest tests/test_layout_generator.py -q)"
     ]
   }
 }

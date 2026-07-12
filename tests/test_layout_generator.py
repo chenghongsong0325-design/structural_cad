@@ -85,18 +85,81 @@ def test_small_site_merges_dining() -> None:
 
 
 def test_house_fixtures_follow_rooms() -> None:
-    """家具數量跟房型走:每臥室 床+衣櫃、浴廁 馬桶+洗手台、廚房 L 型流理台。"""
+    """家具數量跟房型走:每臥室 床+衣櫃、兩套衛浴各 馬桶+洗手台、L 型流理台。"""
     spec = generate_floor_plan(HouseBrief(site_width=18000, site_depth=14000, bedrooms=3))
     fx = spec.fixtures
     names = [f.name for f in fx if isinstance(f, FixturePlacement)]
     assert names.count("bed_double") == 1
     assert names.count("bed_single") == 2
     assert names.count("wardrobe") == 3
-    assert names.count("toilet") == 1 and names.count("basin") == 1
+    # ≥3 房有兩套衛浴(公用 + 主臥套房)。
+    assert names.count("toilet") == 2 and names.count("basin") == 2
     assert names.count("sofa3") == 1
     counters = [f for f in fx if isinstance(f, Counter)]
     assert len(counters) == 2                      # L 型 = 兩段
     assert sum(1 for c in counters if c.sink) == 1
+
+
+# ---------------------------------------------------------------------------
+# 2b) C1.5a:法規/安全
+# ---------------------------------------------------------------------------
+def test_three_bedrooms_get_second_bathroom() -> None:
+    """≥3 房自動加主臥套房衛浴;<3 房維持一套。"""
+    spec3 = generate_floor_plan(HouseBrief(site_width=16000, site_depth=14000, bedrooms=3))
+    baths3 = [r for r in spec3.rooms if r.kind == "bathroom"]
+    assert len(baths3) == 2
+    assert "主臥浴" in {r.name for r in baths3}
+
+    spec2 = generate_floor_plan(HouseBrief(site_width=14000, site_depth=12000, bedrooms=2))
+    assert len([r for r in spec2.rooms if r.kind == "bathroom"]) == 1
+
+
+def test_master_is_L_shape_with_ensuite() -> None:
+    spec = generate_floor_plan(HouseBrief(site_width=16000, site_depth=14000, bedrooms=3))
+    master = next(r for r in spec.rooms if r.name == "主臥室")
+    ensuite = next(r for r in spec.rooms if r.name == "主臥浴")
+    assert len(master.points) == 6                 # L 形
+    assert ensuite.area_m2 == pytest.approx(1.8 * 2.0)
+
+
+def test_corridor_has_two_stairs_and_elevator() -> None:
+    """集合住宅:兩端樓梯間(兩個逃生方向)+ 電梯,走廊縱貫全樓。"""
+    spec = generate_floor_plan(CorridorBrief(units_per_row=4))
+    stairs = [r for r in spec.rooms if r.kind == "stair"]
+    assert len(stairs) == 2
+    assert len(spec.stairs) == 2                   # 折返梯實體 ×2
+    assert len(spec.elevators) == 1
+    # 樓梯間分在建築兩端。
+    xs = sorted(min(p[0] for p in r.points) for r in stairs)
+    assert xs[0] < 6000 and xs[1] > 10000
+
+
+def test_unit_bathroom_marked_mech_vent() -> None:
+    """單元浴廁無對外窗 → 標示機械排風(通過檢核的依據)。"""
+    spec = generate_floor_plan(CorridorBrief(units_per_row=2))
+    unit_baths = [r for r in spec.rooms if r.name == "浴廁"]
+    assert len(unit_baths) == 4
+    assert all("排風" in r.note for r in unit_baths)
+
+
+def test_validate_flags_unvented_bathroom() -> None:
+    """把排風標示拿掉 → 檢核要抓到「無窗且未標排風」。"""
+    spec = generate_floor_plan(CorridorBrief(units_per_row=2))
+    for r in spec.rooms:
+        if r.name == "浴廁":
+            r.note = ""
+    problems = validate_spec(spec)
+    assert any("排風" in p for p in problems)
+
+
+def test_validate_flags_missing_escape_stairs() -> None:
+    """把樓梯間改名成儲藏 → 檢核要抓到「逃生需 ≥2 樓梯」。"""
+    spec = generate_floor_plan(CorridorBrief(units_per_row=2))
+    for r in spec.rooms:
+        if r.kind == "stair":
+            r.kind = "storage"
+    problems = validate_spec(spec)
+    assert any("逃生" in p for p in problems)
 
 
 def test_house_rooms_have_codes() -> None:
@@ -112,12 +175,13 @@ def test_corridor_unit_count_scales() -> None:
     for n in (2, 4, 6):
         spec = generate_floor_plan(CorridorBrief(units_per_row=n))
         assert len([r for r in spec.rooms if r.name == "1房型"]) == 2 * n
-        assert len(spec.doors) == 2 * (2 * n)      # 每戶 入口+浴廁門
+        # 每戶 入口+浴廁門 ×2n,加上核區 4 扇(兩梯間+兩儲藏)。
+        assert len(spec.doors) == 4 * n + 4
 
 
 def test_corridor_area_closure() -> None:
     spec = generate_floor_plan(CorridorBrief(units_per_row=4))
-    building = 16.0 * 13.8
+    building = (2 * 3.1 + 4 * 4.0) * 13.8          # 含兩端核開間
     assert sum(r.area_m2 for r in spec.rooms) == pytest.approx(building)
 
 
