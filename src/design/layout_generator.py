@@ -11,7 +11,8 @@
      走道規則(C1.5b):房間多才需要走道——≥3 房在兩帶之間留走道(臥室門
      開向走道、走道經正對大門軸線的通道口連通客廳);2 房動線融入客餐廳、
      預設不設(門直開客餐廳,被柱位擠壓時退回設走道);1 房不設。
-     餐廳太窄自動併入客廳。家具設備依房型自動擺放。
+     玄關(C1.5b):大門內側 2.2×1.5m 落塵區(短隔屏牆+鞋櫃),客廳挖角
+     成 L 形。餐廳太窄自動併入客廳。家具設備依房型自動擺放。
   2. CorridorBrief(集合住宅):用 B6 的標準單元(place_unit)沿雙邊走廊
      重複 N 戶鏡射對排。
 
@@ -90,13 +91,15 @@ WINDOW_WIDTHS = {"bedroom": 1500, "living": 1800, "dining": 1200,
                  "kitchen": 1200, "bathroom": 800}
 ROOM_CODES = {"living": "X03", "dining": "X04", "bedroom": "X05",
               "kitchen": "X07", "bathroom": "X08", "corridor": "X00",
-              "stair": "X01", "elevator": "X02", "storage": "X09"}
+              "stair": "X01", "elevator": "X02", "storage": "X09",
+              "foyer": "X10"}
 ENSUITE_W, ENSUITE_D = 1800, 2000     # 主臥套房衛浴尺寸(≥3房自動加)
 CORE_W = 3100                          # 集合住宅端部逃生核(樓梯+電梯)的開間寬
 HALL_DEPTH = 1200                      # 單戶走道進深(臥室帶與公共帶之間,C1.5b)
 PASSAGE_WIDTH = 1500                   # 走道↔客廳的開放通道寬(正對大門軸線)
 WALL_SNAP_TOL = 600                    # 隔間牆距軸線小於此值就吸附坐樑(C1.5c)
 DAYLIGHT_DEPTH_MAX = 6000              # 居室採光深度上限(距窗最遠 6m,C1.5c)
+FOYER_W, FOYER_D = 2200, 1500          # 玄關落塵區(大門內側,C1.5b)
 COLUMN_CLEARANCE = 300       # 洞口與柱面的最小淨距(柱要避開開口部,不貼門窗)
 
 
@@ -354,6 +357,15 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
     op = add_opening(0, living_cx - bx0, ENTRY_DOOR_WIDTH, "door", 0, living_e - bx0, blocked_s)
     doors.append(DoorPlacement(0, op, Door(hinge="left", swing="out")))
 
+    # 玄關(C1.5b:大門內側 2.2×1.5m 落塵區)——跟著大門實際位置走
+    # (大門躲柱偏移玄關就跟著偏);東側立短隔屏牆與客廳區隔,西側貼到
+    # 外牆就靠牆。客廳淺時玄關深度自動縮(留 ≥0.7m 通行)。
+    entry_x = bx0 + walls[0].openings[0].position
+    fy1 = by0 + min(FOYER_D, yc - by0 - 700)
+    fx0 = max(bx0, entry_x - FOYER_W / 2)
+    fx1 = min(living_e, entry_x + FOYER_W / 2)
+    walls.append(Wall((fx1, by0), (fx1, fy1), INT))    # 玄關短隔屏牆
+
     # 主臥套房衛浴(C1.5a:≥3 房自動加,位於主臥西南角)——先算範圍,
     # 臥室門/西窗要讓開它。
     has_ensuite = brief.bedrooms >= 3
@@ -422,13 +434,12 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
                      by1 - yc, by1 - by0, blocked_w)
     windows.append(WindowPlacement(3, op))
 
-    # C1.5c:客廳太寬(只靠西窗會超過採光深度上限)→ 南牆補窗(大門東側)。
-    entry_x = bx0 + walls[0].openings[0].position
+    # C1.5c:客廳太寬(只靠西窗會超過採光深度上限)→ 南牆補窗
+    # (玄關隔屏牆以東的客廳段)。
     if living_e - bx0 > DAYLIGHT_DEPTH_MAX:
         op = add_opening(0, (living_cx + living_e) / 2 - bx0,
                          WINDOW_WIDTHS["living"], "window",
-                         entry_x + ENTRY_DOOR_WIDTH / 2 + 300 - bx0,
-                         living_e - bx0, blocked_s)
+                         fx1 + 150 - bx0, living_e - bx0, blocked_s)
         windows.append(WindowPlacement(0, op))
 
     # 餐廳南窗(加分項)。
@@ -459,12 +470,18 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
 
     # ── 房間 ─────────────────────────────────────────────────────────
     rooms: list[Room] = []
-    if merged_dining:
-        rooms.append(Room("客餐廳", [(bx0, by0), (sx, by0), (sx, yc), (bx0, yc)],
-                          kind="living", code=ROOM_CODES["living"]))
+    # 客廳(或客餐廳)挖掉西南側的玄關角 → L 形;玄關自成一室(開放,無門)。
+    lv_e = sx if merged_dining else living_e
+    if fx0 <= bx0:            # 玄關貼西外牆
+        lv_pts = [(fx1, by0), (lv_e, by0), (lv_e, yc), (bx0, yc), (bx0, fy1), (fx1, fy1)]
     else:
-        rooms.append(Room("客廳", [(bx0, by0), (living_e, by0), (living_e, yc), (bx0, yc)],
-                          kind="living", code=ROOM_CODES["living"]))
+        lv_pts = [(bx0, by0), (fx0, by0), (fx0, fy1), (fx1, fy1), (fx1, by0),
+                  (lv_e, by0), (lv_e, yc), (bx0, yc)]
+    rooms.append(Room("客餐廳" if merged_dining else "客廳", lv_pts,
+                      kind="living", code=ROOM_CODES["living"]))
+    rooms.append(Room("玄關", [(fx0, by0), (fx1, by0), (fx1, fy1), (fx0, fy1)],
+                      kind="foyer", code=ROOM_CODES["foyer"]))
+    if not merged_dining:
         rooms.append(Room("餐廳", [(living_e, by0), (sx, by0), (sx, yc), (living_e, yc)],
                           kind="dining", code=ROOM_CODES["dining"]))
     if has_hall:
@@ -508,12 +525,17 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
         fixtures.append(FixturePlacement(bed, (cx, by1 - 75), 180))
         inner = 75 if i == brief.bedrooms - 1 else 60   # 排尾靠外牆(150)
         fixtures.append(FixturePlacement("wardrobe", (x_r - inner, by1 - 75 - 750), 90))
-    # 客廳:沙發背靠西牆;方桌居中偏東,桌組(含椅)半徑 780——淺客廳時
-    # 會伸進大門迴轉方塊,東移讓開;連東移都放不下就不擺(C1.5c)。
+    # 玄關:鞋櫃貼短隔屏牆內側(讓開大門迴轉方塊)。
+    fixtures.append(FixturePlacement(
+        "shoe_cabinet", (fx1 - 60, by0 + (fy1 - by0) / 2), 90))
+    # 客廳:沙發背靠西牆;方桌居中偏東,桌組(含椅)半徑 780——會伸進
+    # 大門迴轉方塊或玄關就東移讓開;連東移都放不下就不擺(C1.5b/c)。
     fixtures.append(FixturePlacement("sofa3", (bx0 + 75, living_cy), 270))
     tx = (bx0 + living_e) / 2 + 500
     if living_cy - 780 < by0 + ENTRY_DOOR_WIDTH:
         tx = max(tx, entry_x + ENTRY_DOOR_WIDTH / 2 + 780 + 150)
+    if living_cy - 780 < fy1:
+        tx = max(tx, fx1 + 780 + 150)
     if tx + 780 <= living_e - 60:
         fixtures.append(FixturePlacement("table4", (tx, living_cy), 0))
     # 餐廳(獨立時):餐桌。
@@ -783,6 +805,11 @@ def validate_spec(spec: FloorPlanSpec) -> list[str]:
     if max(spec.y_spacings) > BAY_SPAN_LIMITS[1]:
         problems.append(f"Y 向跨距 {max(spec.y_spacings)/1000:.1f}m 超過 9m")
 
+    # C1.5b:玄關(落塵區)必須貼著一扇門——大門要開進玄關。
+    for room, poly in zip(spec.rooms, polys):
+        if room.kind == "foyer" and openings_on(poly, "door") < 1:
+            problems.append(f"{room.name} 沒貼任何門(玄關應在大門內側)")
+
     # C1.5c:採光深度——臥室/客廳沿「窗的法線方向」的房間深度,至少要有
     # 一扇窗 ≤ 上限(離窗太遠的角落照不到光)。無窗的房間上面已抓、不重複報。
     for room, poly in zip(spec.rooms, polys):
@@ -898,7 +925,8 @@ if __name__ == "__main__":
 # 2. 單戶固定「兩帶式、朝南入口」;≥3 房自動加主臥套衛(C1.5a)。走道規則
 #    (C1.5b):≥3 房必設、2 房預設不設(擠壓時退回)、1 房不設——依使用者
 #    2026-07-12 定調「走道=連接多獨立房間的共用動線,房間多才需要;小宅
-#    動線融入客廳」。變化維度(朝向/玄關/陽台/樓梯電梯核)之後 C1.5b/c 加深。
+#    動線融入客廳」。玄關已加(C1.5b:2.2×1.5m、隔屏牆+鞋櫃,跟著大門
+#    實際位置走)。變化維度(朝向/陽台/樓梯電梯核)之後 C1.5b/c 加深。
 #    走道通道口固定正對大門「理想位置」;大門若因躲柱被平移,兩者會小錯位。
 # 3. 家具擺放規則:床頭靠北外牆、衣櫃貼東側牆近北角、沙發背靠西牆、
 #    L 型流理台沿東+北……皆為簡化規則。碰撞檢核已加(C1.5c):家具互不

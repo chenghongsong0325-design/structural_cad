@@ -112,7 +112,7 @@ def test_from_walls_disconnected_raises() -> None:
 def test_room_label_lines() -> None:
     name, area = room_label_lines(Room("客廳", RECT))
     assert name == "客廳"
-    assert area == "48.0㎡ (14.52坪)"
+    assert area == "48.0㎡"
 
 
 @pytest.fixture()
@@ -139,7 +139,7 @@ def test_draw_room_label_two_texts_on_layer(doc_and_layers) -> None:
     texts = list(msp.query("TEXT"))
     assert len(texts) == 2
     contents = {t.dxf.text for t in texts}
-    assert contents == {"客廳", "48.0㎡ (14.52坪)"}
+    assert contents == {"客廳", "48.0㎡"}
     for t in texts:
         assert t.dxf.layer == layers["A-TEXT"]
         # 兩行文字都對齊在形心的鉛直線上(x = 3000)。

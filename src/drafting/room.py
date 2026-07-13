@@ -44,7 +44,7 @@ Point = tuple[float, float]
 M2_PER_PING = 3.30578
 
 # 標註格式——⚠️ 暫定,待確認(公司圖面上面積寫法/小數位數可能不同)。
-AREA_FORMAT = "{m2:.1f}㎡ ({ping:.2f}坪)"
+AREA_FORMAT = "{m2:.1f}㎡"
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +93,7 @@ class Room:
 
     @property
     def centroid(self) -> Point:
-        """多邊形面積形心(標註文字的放置點)。"""
+        """多邊形面積形心(凸房間的標註放置點)。"""
         a = self._signed_area_mm2
         if a == 0:
             raise ValueError("Room 面積為 0,無法計算形心")
@@ -106,6 +106,103 @@ class Room:
             cx += (x1 + x2) * cross
             cy += (y1 + y2) * cross
         return (cx / (6 * a), cy / (6 * a))
+
+    @property
+    def label_point(self) -> Point:
+        """標註文字的放置點。
+
+        凸房間(矩形等)用形心。凹房間(如挖掉玄關角的 L 形客廳、含套房
+        衛浴的 L 形主臥)形心會被缺角拉進凹處,壓到鄰室標籤;這時改用
+        「離所有牆邊最遠的內部點」(visual center),讓字落在最大的那塊。
+        """
+        if self._is_convex():
+            return self.centroid
+        return self._visual_center()
+
+    def _is_convex(self) -> bool:
+        """所有轉角同向 → 凸多邊形(繞行方向不拘)。"""
+        pts = self.points
+        n = len(pts)
+        sign = 0
+        for i in range(n):
+            x0, y0 = pts[i]
+            x1, y1 = pts[(i + 1) % n]
+            x2, y2 = pts[(i + 2) % n]
+            cross = (x1 - x0) * (y2 - y1) - (y1 - y0) * (x2 - x1)
+            if cross != 0:
+                s = 1 if cross > 0 else -1
+                if sign == 0:
+                    sign = s
+                elif s != sign:
+                    return False
+        return True
+
+    def _point_inside(self, p: Point) -> bool:
+        """射線法判斷點是否在多邊形內(邊界算內)。"""
+        x, y = p
+        pts = self.points
+        n = len(pts)
+        inside = False
+        j = n - 1
+        for i in range(n):
+            xi, yi = pts[i]
+            xj, yj = pts[j]
+            if (yi > y) != (yj > y):
+                xin = (xj - xi) * (y - yi) / (yj - yi) + xi
+                if x < xin:
+                    inside = not inside
+            j = i
+        return inside
+
+    def _clearance(self, p: Point) -> float:
+        """點到最近牆邊(線段)的距離——內部點取最大即 visual center。"""
+        x, y = p
+        pts = self.points
+        n = len(pts)
+        best = math.inf
+        for i in range(n):
+            x1, y1 = pts[i]
+            x2, y2 = pts[(i + 1) % n]
+            dx, dy = x2 - x1, y2 - y1
+            seg2 = dx * dx + dy * dy
+            t = 0.0 if seg2 == 0 else ((x - x1) * dx + (y - y1) * dy) / seg2
+            t = max(0.0, min(1.0, t))
+            px, py = x1 + t * dx, y1 + t * dy
+            best = min(best, math.hypot(x - px, y - py))
+        return best
+
+    def _visual_center(self) -> Point:
+        """離所有邊最遠的內部點(pole of inaccessibility):粗網格找、再局部細找。"""
+        xs = [p[0] for p in self.points]
+        ys = [p[1] for p in self.points]
+        minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
+        best = self.centroid
+        best_d = self._clearance(best) if self._point_inside(best) else -math.inf
+        steps = 32
+        cell_x = (maxx - minx) / steps
+        cell_y = (maxy - miny) / steps
+        for gx in range(steps + 1):
+            for gy in range(steps + 1):
+                p = (minx + cell_x * gx, miny + cell_y * gy)
+                if not self._point_inside(p):
+                    continue
+                d = self._clearance(p)
+                if d > best_d:
+                    best_d, best = d, p
+        # 在勝出格子附近再細找一輪
+        rx, ry = cell_x, cell_y
+        for _ in range(4):
+            rx, ry = rx / 2, ry / 2
+            cx, cy = best
+            for gx in range(-2, 3):
+                for gy in range(-2, 3):
+                    p = (cx + rx * gx, cy + ry * gy)
+                    if not self._point_inside(p):
+                        continue
+                    d = self._clearance(p)
+                    if d > best_d:
+                        best_d, best = d, p
+        return best
 
     # -- 由牆建立 -------------------------------------------------------------
     @classmethod
@@ -163,7 +260,7 @@ def room_label_lines(room: Room, area_format: str = AREA_FORMAT) -> tuple[str, s
     """產生房間標註的兩行文字:(名稱, 面積)。
 
     >>> room_label_lines(Room("客廳", [(0,0), (6000,0), (6000,8000), (0,8000)]))
-    ('客廳', '48.0㎡ (14.52坪)')
+    ('客廳', '48.0㎡')
     """
     area_line = area_format.format(m2=room.area_m2, ping=room.area_ping)
     return (room.name, area_line)
@@ -177,13 +274,14 @@ def draw_room_label(
     style: str = "STRUCT",
     area_format: str = AREA_FORMAT,
 ) -> None:
-    """在房間形心標註「名稱 + 面積」兩行文字(名稱在上、面積在下)。
+    """在房間放置點標註「名稱 + 面積」兩行文字(名稱在上、面積在下)。
 
-    行距 = 1.6 × 文字高度(暫定,待確認)。兩行都水平置中對齊在形心的鉛直線上。
+    放置點見 Room.label_point(凸房間=形心;L 形等凹房間=離牆最遠的內部點)。
+    行距 = 1.6 × 文字高度(暫定,待確認)。兩行都水平置中對齊在放置點的鉛直線上。
     """
     name_line, area_line = room_label_lines(room, area_format)
-    cx, cy = room.centroid
-    half_gap = text_height * 0.8   # 形心上下各半行距
+    cx, cy = room.label_point
+    half_gap = text_height * 0.8   # 放置點上下各半行距
 
     msp.add_text(
         name_line,
@@ -216,14 +314,14 @@ def draw_room_tag(
 ) -> None:
     """房間類型帶框標籤(真實建案畫法):「代碼 名稱」放在方框裡,框與字同掛一層。
 
-    預設放在形心上方(offset=(0,900)),避開 draw_room_label 的名稱/面積兩行。
+    預設放在放置點上方(offset=(0,900)),避開 draw_room_label 的名稱/面積兩行。
     框寬用字數估算:全形字寬 ≈ 字高、半形 ≈ 0.55 字高,左右各留 0.5 字高邊距。
     room.code 為空時不畫(直接 return)。
     """
     if not room.code:
         return
     text = f"{room.code} {room.name}"
-    cx, cy = room.centroid
+    cx, cy = room.label_point
     px, py = cx + offset[0], cy + offset[1]
 
     est_w = sum(text_height if ord(ch) > 127 else text_height * 0.55 for ch in text)
@@ -249,8 +347,8 @@ def draw_room_tag(
 #    「含牆面積」,依用途(建照/銷售/裝修)而不同。待確認。
 # 2. 坪換算:1 坪 = 3.30578 m²(= 400/121),取 6 位有效數字。若公司慣用
 #    3.3058 或 3.306,面積大時會差零點幾坪。待確認。
-# 3. 標註格式:AREA_FORMAT = "{m2:.1f}㎡ ({ping:.2f}坪)"(m² 一位小數、坪兩位),
-#    名稱/面積兩行、行距 1.6×字高、放形心。公司圖面的寫法待確認。
+# 3. 標註格式:AREA_FORMAT = "{m2:.1f}㎡"(m² 一位小數,不加坪數),名稱/面積
+#    兩行、行距 1.6×字高、放 label_point。公司圖面的寫法待確認。
 # 4. ㎡ 符號(U+33A1)需字型支援;標楷體(kaiu.ttf)有此字,若日後換 .shx 字型
 #    可能缺字,屆時改用 "m2"。待確認。
 # 5. 文字圖層:A-TEXT 為暫定代碼(同 A-WALL,AIA 慣例),色號 7。待確認。

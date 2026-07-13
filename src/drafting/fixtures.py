@@ -112,6 +112,14 @@ def _build_wardrobe(blk) -> None:
     blk.add_line((-750, 0), (750, 600), dxfattribs={"layer": "0"})     # 斜線記號
 
 
+def _build_shoe_cabinet(blk) -> None:
+    """鞋櫃 1200×350(背貼牆/隔屏):外框 + 兩條層板線(玄關用)。"""
+    blk.add_lwpolyline([(-600, 0), (600, 0), (600, 350), (-600, 350)],
+                       close=True, dxfattribs={"layer": "0"})
+    for y in (117, 233):
+        blk.add_line((-600, y), (600, y), dxfattribs={"layer": "0"})
+
+
 FIXTURE_BUILDERS = {
     "toilet": _build_toilet,
     "basin": _build_basin,
@@ -121,6 +129,7 @@ FIXTURE_BUILDERS = {
     "table4": _build_table4,
     "sofa3": _build_sofa3,
     "wardrobe": _build_wardrobe,
+    "shoe_cabinet": _build_shoe_cabinet,
 }
 
 # 各圖塊的佔地外框(寬w × 深d,局部座標;與 builder 幾何一致)。
@@ -134,6 +143,7 @@ FIXTURE_SIZES = {
     "table4": (1560, 1560),      # 桌 800 + 兩側椅子(590+190)×2
     "sofa3": (2000, 850),
     "wardrobe": (1500, 600),
+    "shoe_cabinet": (1200, 350),
 }
 
 

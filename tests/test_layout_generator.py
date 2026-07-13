@@ -249,6 +249,33 @@ def test_validate_flags_bedroom_door_not_to_hallway() -> None:
     assert any("未通走道" in p for p in problems)
 
 
+def test_house_has_foyer_at_entry() -> None:
+    """每個單戶都有玄關落塵區:大門開進玄關、玄關開放連通客廳。"""
+    from shapely.geometry import Point, Polygon
+
+    for brief in HOUSE_BRIEFS:
+        spec = generate_floor_plan(brief)
+        foyer = next(r for r in spec.rooms if r.kind == "foyer")
+        fp = Polygon(foyer.points)
+        # 大門(南牆第一個門洞)落在玄關邊界上。
+        south = spec.walls[0]
+        entry = next(op for op in south.openings if op.kind == "door")
+        assert fp.boundary.distance(Point(south.point_at(entry.position))) < 1.0, \
+            _brief_id(brief)
+        # 玄關與客廳共享一段開放邊(≥0.7m 通行)。
+        living = next(r for r in spec.rooms if r.kind == "living")
+        assert Polygon(living.points).intersection(fp).length >= 700, _brief_id(brief)
+
+
+def test_validate_flags_foyer_without_door() -> None:
+    """把玄關搬離大門 → 檢核要抓到「玄關沒貼門」。"""
+    spec = generate_floor_plan(HouseBrief(site_width=16000, site_depth=14000, bedrooms=3))
+    foyer = next(r for r in spec.rooms if r.kind == "foyer")
+    foyer.points = [(x, y + 800) for x, y in foyer.points]   # 往北平移離開南牆
+    problems = validate_spec(spec)
+    assert any("玄關" in p for p in problems)
+
+
 # ---------------------------------------------------------------------------
 # 2d) C1.5c:機能/舒適 — 採光、家具碰撞、隔間坐樑
 # ---------------------------------------------------------------------------
