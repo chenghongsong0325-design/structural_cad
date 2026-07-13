@@ -117,6 +117,27 @@ def test_place_unit_counter_swaps_on_mirror() -> None:
     assert (c.start, c.end) == ((60, 2500), (60, 500))
 
 
+def test_place_unit_balcony_translate() -> None:
+    """陽台平移(不鏡射):原點加位移,attach 面不變。"""
+    spec = _empty_spec()
+    place_unit(spec, one_room_unit(), origin=(2000, 9800))
+    assert len(spec.balconies) == 1
+    bal = spec.balconies[0]
+    assert bal.origin == (2800, 15800)      # (2000+800, 9800+6000)
+    assert (bal.width, bal.depth) == (2400, 1200)
+    assert bal.attach == "south"            # 貼北牆(南邊不畫牆),外推向北
+
+
+def test_place_unit_balcony_mirror_y_flips_attach() -> None:
+    """下排單元鏡射:陽台翻到南側(attach south→north),仍貼建築外牆。"""
+    spec = _empty_spec()
+    place_unit(spec, one_room_unit(), origin=(2000, 2000), mirror_y=True)
+    bal = spec.balconies[0]
+    assert bal.origin == (2800, 800)        # 外推向南,底 y=800
+    assert bal.attach == "north"            # 貼南牆,北邊(y=2000)接建築
+    assert (bal.width, bal.depth) == (2400, 1200)
+
+
 def test_same_unit_reusable() -> None:
     """同一 UnitSpec 展開兩次,兩份牆是獨立物件(改一份不影響另一份)。"""
     spec = _empty_spec()
@@ -139,6 +160,7 @@ def test_demo_corridor_counts() -> None:
     assert len(spec.doors) == 16
     assert len(spec.windows) == 8
     assert len(spec.fixtures) == 32
+    assert len(spec.balconies) == 8         # 每戶一座對外陽台
 
 
 def test_demo_corridor_area_closure() -> None:

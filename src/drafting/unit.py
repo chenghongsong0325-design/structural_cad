@@ -44,6 +44,7 @@ from src.drafting.apartment_plan import (
     FloorPlanSpec,
     WindowPlacement,
 )
+from src.drafting.balcony_elevator import Balcony
 from src.drafting.door_window import Door, Window
 from src.drafting.fixtures import Counter, FixturePlacement
 from src.drafting.room import Room
@@ -72,6 +73,7 @@ class UnitSpec:
     doors: list[DoorPlacement] = field(default_factory=list)
     windows: list[WindowPlacement] = field(default_factory=list)
     fixtures: list = field(default_factory=list)   # FixturePlacement / Counter
+    balconies: list[Balcony] = field(default_factory=list)  # 對外側陽台(C1.5b)
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +102,29 @@ def _t_swing(mirrored: bool, swing: str) -> str:
     if not mirrored:
         return swing
     return "in" if swing == "out" else "out"
+
+
+_FLIP_X = {"east": "west", "west": "east"}      # mirror_x 翻左右
+_FLIP_Y = {"north": "south", "south": "north"}  # mirror_y 翻上下
+
+
+def _t_balcony(unit: UnitSpec, origin: Point, mx: bool, my: bool,
+               bal: Balcony) -> Balcony:
+    """陽台平移 + 鏡射:矩形是軸對齊,取變換後兩對角點的最小角當新原點;
+    貼建築的邊(attach)隨鏡射翻面(mx 翻東西、my 翻南北)。"""
+    c1 = _t_point(unit, origin, mx, my, bal.origin)
+    c2 = _t_point(unit, origin, mx, my,
+                  (bal.origin[0] + bal.width, bal.origin[1] + bal.depth))
+    attach = bal.attach
+    if mx:
+        attach = _FLIP_X.get(attach, attach)
+    if my:
+        attach = _FLIP_Y.get(attach, attach)
+    return Balcony(
+        origin=(min(c1[0], c2[0]), min(c1[1], c2[1])),
+        width=bal.width, depth=bal.depth, attach=attach,
+        wall_thickness=bal.wall_thickness,
+    )
 
 
 def place_unit(
@@ -160,6 +185,11 @@ def place_unit(
                 rotation=_t_rotation(mirror_x, mirror_y, fx.rotation),
             ))
 
+    # 陽台(對外側;牆會在生產線併入聯集,貼建築那邊隨鏡射翻面)。
+    for bal in unit.balconies:
+        target.balconies.append(
+            _t_balcony(unit, origin, mirror_x, mirror_y, bal))
+
 
 # ---------------------------------------------------------------------------
 # 示範:1 房型單元 + 雙邊走廊(4+4 戶鏡射對排)
@@ -207,8 +237,11 @@ def one_room_unit() -> UnitSpec:
         FixturePlacement("bed_double", (2900, 5925), 180),  # 床頭貼北牆
         FixturePlacement("wardrobe", (60, 3000), 270),   # 貼西牆
     ]
+    # 對外(北)側工作陽台:放冷氣/曬衣,貼北牆(南邊不畫牆),外推 1.2m。
+    balconies = [Balcony(origin=(800, 6000), width=2400, depth=1200, attach="south")]
     return UnitSpec(name="1房型", width=4000, depth=6000, walls=walls,
-                    rooms=rooms, doors=doors, windows=windows, fixtures=fixtures)
+                    rooms=rooms, doors=doors, windows=windows, fixtures=fixtures,
+                    balconies=balconies)
 
 
 def demo_corridor_spec() -> FloorPlanSpec:
@@ -287,6 +320,8 @@ if __name__ == "__main__":
 # 3. 示範的 1 房型格局(4×6m、浴廁 1.8×2.0)為自行設計;走廊寬 1800(法規
 #    雙邊排室走廊常需 ≥1.6m)。待確認。
 # 4. 垂直動線(樓梯/電梯核)未放進走廊示範——實際建案在兩端/中段,C1 組合時加。
-# 5. 上下排單元開窗都在「對外側」;若要陽台(如參考圖),把 Balcony 加進
-#    UnitSpec 的擴充是下一步(目前 Balcony 定義在世界座標,尚未支援單元內)。
+# 5. 上下排單元的對外側各帶一座工作陽台(UnitSpec.balconies,局部座標;
+#    place_unit 平移/鏡射時翻 attach 面)。目前陽台只在窗外(放冷氣/曬衣),
+#    未另開對外拉門進出——1房型室內須保留那扇對外窗(採光檢核),故不改門。
+#    陽台尺寸 2.4×1.2m 為暫定,實際依戶型/法規陽台深度另調。待確認。
 # =============================================================================

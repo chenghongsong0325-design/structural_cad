@@ -134,6 +134,20 @@ def test_corridor_has_two_stairs_and_elevator() -> None:
     assert xs[0] < 6000 and xs[1] > 10000
 
 
+def test_corridor_each_unit_has_outward_balcony() -> None:
+    """每戶對外側各一座陽台:2n 座,且都落在建築南北外牆之外(採光/工作側)。"""
+    spec = generate_floor_plan(CorridorBrief(units_per_row=4))
+    assert len(spec.balconies) == 2 * 4
+    y0 = spec.grid_origin[1]
+    by1 = y0 + sum(spec.y_spacings)          # 建築北緣
+    for b in spec.balconies:
+        top = b.origin[1] + b.depth
+        # 陽台不落在建築內部:整體在南牆(y0)以南,或北牆(by1)以北。
+        assert top <= y0 + 1 or b.origin[1] >= by1 - 1
+        # 且不超出地界線(仍在退縮帶內)。
+        assert b.origin[1] >= 0 and top <= by1 + spec.setback
+
+
 def test_unit_bathroom_marked_mech_vent() -> None:
     """單元浴廁無對外窗 → 標示機械排風(通過檢核的依據)。"""
     spec = generate_floor_plan(CorridorBrief(units_per_row=2))
