@@ -10,5 +10,8 @@ shapely>=2.0
 # 選用:把 DXF 渲染成 PNG 預覽(沒有 AutoCAD 時檢查用)
 matplotlib>=3.7
 
+# C2:自然語言介面(中文需求 → 設計需求),呼叫 Gemini API 解析
+google-genai>=1.0
+
 # 開發:單元測試
 pytest>=7.0
