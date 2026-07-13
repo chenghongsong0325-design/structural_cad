@@ -465,7 +465,7 @@ def test_mirrored_spec_draws_end_to_end() -> None:
 def test_corridor_unit_count_scales() -> None:
     for n in (2, 4, 6):
         spec = generate_floor_plan(CorridorBrief(units_per_row=n))
-        assert len([r for r in spec.rooms if r.name == "1房型"]) == 2 * n
+        assert len([r for r in spec.rooms if r.name == "起居室"]) == 2 * n
         # 每戶 入口+浴廁門 ×2n,加上核區 4 扇(兩梯間+兩儲藏)。
         assert len(spec.doors) == 4 * n + 4
 

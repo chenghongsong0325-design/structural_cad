@@ -66,13 +66,13 @@ def test_place_unit_counts_and_offsets() -> None:
     assert len(spec.walls) == 1 + 5
     assert len(spec.doors) == 2
     assert len(spec.windows) == 1
-    assert len(spec.rooms) == 2
-    assert len(spec.fixtures) == 4
+    assert len(spec.rooms) == 3                    # 浴廁 + 玄關 + 起居室
+    assert len(spec.fixtures) == 6                 # 衛浴2 + 鞋櫃 + 床 + 衣櫃 + 流理台
     # 索引偏移:入口門原指單元牆 0 → 現在指 spec.walls[1]。
     assert spec.doors[0].wall_index == 1
     wall = spec.walls[spec.doors[0].wall_index]
     assert wall.start == (2000, 9800)             # 南牆平移正確
-    assert wall.openings[0].position == 2000      # 洞口距離不變
+    assert wall.openings[0].position == 2900      # 洞口距離不變(入口門偏東讓開浴廁)
 
 
 def test_place_unit_mirror_y_geometry_and_swing() -> None:
@@ -154,12 +154,13 @@ def test_same_unit_reusable() -> None:
 # ---------------------------------------------------------------------------
 def test_demo_corridor_counts() -> None:
     spec = demo_corridor_spec()
-    assert len([r for r in spec.rooms if r.name == "1房型"]) == 8
+    assert len([r for r in spec.rooms if r.name == "起居室"]) == 8
+    assert len([r for r in spec.rooms if r.name == "玄關"]) == 8      # 每戶玄關
     assert len([r for r in spec.rooms if r.name == "走廊"]) == 1
     assert len(spec.walls) == 2 + 8 * 5
     assert len(spec.doors) == 16
     assert len(spec.windows) == 8
-    assert len(spec.fixtures) == 32
+    assert len(spec.fixtures) == 48         # 8 戶 × 6 件
     assert len(spec.balconies) == 8         # 每戶一座對外陽台
 
 

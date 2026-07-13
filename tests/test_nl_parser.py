@@ -133,7 +133,7 @@ def test_parsed_corridor_generates_valid_plan() -> None:
     client = _FakeClient(_payload(brief_type="corridor", units_per_row=4))
     brief = parse_brief("集合住宅每排4戶", client=client)
     spec = generate_floor_plan(brief)
-    assert len([r for r in spec.rooms if r.name == "1房型"]) == 8
+    assert len([r for r in spec.rooms if r.name == "起居室"]) == 8
 
 
 def test_llm_nonsense_caught_by_generator() -> None:
