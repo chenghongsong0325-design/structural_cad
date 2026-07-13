@@ -40,7 +40,7 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional, Union
 
@@ -63,7 +63,8 @@ from src.drafting.door_window import Door, Window
 from src.drafting.fixtures import Counter, FixturePlacement
 from src.drafting.room import Room
 from src.drafting.titleblock import CompetitionTitleData
-from src.drafting.unit import UnitSpec, one_room_unit, place_unit
+# _t_rotation/_t_swing:B6 已驗證的鏡射語意(家具轉角/門向翻轉),單一來源。
+from src.drafting.unit import UnitSpec, _t_rotation, _t_swing, one_room_unit, place_unit
 from src.drafting.wall import (
     EXTERIOR_WALL_THICKNESS as EXT,
     INTERIOR_WALL_THICKNESS as INT,
@@ -108,7 +109,15 @@ COLUMN_CLEARANCE = 300       # 洞口與柱面的最小淨距(柱要避開開口
 # ---------------------------------------------------------------------------
 @dataclass
 class HouseBrief:
-    """單戶住宅需求:基地寬深 + 臥室數(1~4)。"""
+    """單戶住宅需求:基地寬深 + 臥室數(1~4)+ 方位約束(選填)。
+
+    方位約束(C2:「主臥要在西南角,廚房靠北」):
+      * master_corner:主臥落在哪個角落——"NW"(預設格局)/"NE"/"SW"/"SE"。
+      * kitchen_side:廚房靠哪一側——"N"/"S"/"E"/"W"(預設格局在東南)。
+    實作方式是把整張圖左右/上下鏡射(門向/家具/流理台跟著翻),所以兩個
+    約束可能衝突(例:主臥 NW 佔北帶 → 廚房必在南,再要求廚房靠北就
+    不成立),衝突會明確報錯。
+    """
 
     site_width: float
     site_depth: float
@@ -116,6 +125,8 @@ class HouseBrief:
     setback: float = 2000
     column_size: float = 500
     floor_label: str = "1F"
+    master_corner: Optional[str] = None   # "NW"/"NE"/"SW"/"SE"
+    kitchen_side: Optional[str] = None    # "N"/"S"/"E"/"W"
 
 
 @dataclass
@@ -688,10 +699,105 @@ def _generate_corridor(brief: CorridorBrief) -> FloorPlanSpec:
     return spec
 
 
+# ---------------------------------------------------------------------------
+# 方位約束(C2):整張圖鏡射
+# ---------------------------------------------------------------------------
+# 預設格局(不鏡射)的方位:主臥在西北角(臥室帶西端)、廚房在東南
+# (公共帶服務核)。約束靠「左右翻 / 上下翻整張圖」達成:
+#   主臥要在東 → 左右翻;主臥要在南 / 廚房要在北 → 上下翻。
+_CORNERS = ("NW", "NE", "SW", "SE")
+_SIDES = ("N", "S", "E", "W")
+
+
+def _resolve_mirrors(brief: HouseBrief) -> tuple[bool, bool]:
+    """方位約束 → (左右翻?, 上下翻?);互相矛盾就明確報錯。"""
+    need: dict[str, tuple[bool, str]] = {}   # axis -> (要不要翻, 誰要求的)
+
+    def ask(axis: str, value: bool, source: str) -> None:
+        if axis in need and need[axis][0] != value:
+            raise ValueError(
+                f"方位約束衝突:「{source}」與「{need[axis][1]}」無法同時成立"
+                f"(臥室帶與公共帶南北各佔一半,主臥和廚房必在異側)")
+        need[axis] = (value, source)
+
+    if brief.master_corner is not None:
+        c = brief.master_corner.upper()
+        if c not in _CORNERS:
+            raise ValueError(f"master_corner 需為 {_CORNERS},收到 {brief.master_corner!r}")
+        ask("x", "E" in c, f"主臥在{c}")
+        ask("y", "S" in c, f"主臥在{c}")
+    if brief.kitchen_side is not None:
+        s = brief.kitchen_side.upper()
+        if s not in _SIDES:
+            raise ValueError(f"kitchen_side 需為 {_SIDES},收到 {brief.kitchen_side!r}")
+        if s in ("E", "W"):
+            ask("x", s == "W", f"廚房靠{s}")
+        else:
+            ask("y", s == "N", f"廚房靠{s}")
+
+    return (need.get("x", (False, ""))[0], need.get("y", (False, ""))[0])
+
+
+def _mirror_spec(spec: FloorPlanSpec, mx: bool, my: bool) -> FloorPlanSpec:
+    """把整張單戶 spec 左右(mx)/上下(my)鏡射——牆/房間/門窗/家具全翻。
+
+    鏡射軸 = 基地中心(單戶的建築置中於基地,翻完 grid_origin 不變)。
+    鏡射語意與 B6 place_unit 同一套:洞口位置(距牆起點的距離)是等距
+    變換、不變;奇數次鏡射翻門的開向(out↔in);家具旋轉照 _t_rotation;
+    流理台交換起訖點保住檯面側。翻完仍會跑 validate_spec 整套檢核。
+    """
+    xs = [p[0] for p in spec.site_boundary]
+    ys = [p[1] for p in spec.site_boundary]
+    sx2, sy2 = min(xs) + max(xs), min(ys) + max(ys)   # x' = sx2 - x
+
+    def tp(p: Point) -> Point:
+        x, y = p
+        return (sx2 - x if mx else x, sy2 - y if my else y)
+
+    mirrored = mx != my            # 奇數次鏡射(左右手翻轉)
+
+    walls = [Wall(start=tp(w.start), end=tp(w.end), thickness=w.thickness,
+                  openings=[Opening(op.position, op.width, op.kind)
+                            for op in w.openings])
+             for w in spec.walls]
+    doors = [DoorPlacement(dp.wall_index, dp.opening_index,
+                           Door(hinge=dp.door.hinge,
+                                swing=_t_swing(mirrored, dp.door.swing),
+                                width=dp.door.width))
+             for dp in spec.doors]
+    windows = [WindowPlacement(wp.wall_index, wp.opening_index,
+                               Window(lines=wp.window.lines, width=wp.window.width))
+               for wp in spec.windows]
+    rooms = [Room(name=r.name, points=[tp(p) for p in r.points],
+                  kind=r.kind, code=r.code, note=r.note)
+             for r in spec.rooms]
+    fixtures: list = []
+    for fx in spec.fixtures:
+        if isinstance(fx, Counter):
+            a, b = tp(fx.start), tp(fx.end)
+            if mirrored:
+                a, b = b, a
+            fixtures.append(Counter(start=a, end=b, depth=fx.depth, sink=fx.sink))
+        else:
+            fixtures.append(FixturePlacement(
+                name=fx.name, insert=tp(fx.insert),
+                rotation=_t_rotation(mx, my, fx.rotation)))
+
+    return replace(
+        spec, walls=walls, doors=doors, windows=windows, rooms=rooms,
+        fixtures=fixtures,
+        x_spacings=list(reversed(spec.x_spacings)) if mx else spec.x_spacings,
+        y_spacings=list(reversed(spec.y_spacings)) if my else spec.y_spacings,
+    )
+
+
 def generate_floor_plan(brief: Brief) -> FloorPlanSpec:
     """需求 → FloorPlanSpec(已通過 validate_spec,可直接餵 draw_floor_plan)。"""
     if isinstance(brief, HouseBrief):
         spec = _generate_house(brief)
+        mx, my = _resolve_mirrors(brief)          # 方位約束(C2)
+        if mx or my:
+            spec = _mirror_spec(spec, mx, my)
     elif isinstance(brief, CorridorBrief):
         spec = _generate_corridor(brief)
     else:

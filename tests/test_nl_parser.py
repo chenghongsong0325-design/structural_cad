@@ -48,7 +48,7 @@ def _payload(**over) -> dict:
     """齊全欄位的解析結果(schema 的 required 全帶),再覆寫。"""
     base = {"brief_type": "house", "site_width_m": 16, "site_depth_m": 14,
             "bedrooms": 3, "units_per_row": None, "corridor_width_m": None,
-            "floor_label": None}
+            "floor_label": None, "master_corner": None, "kitchen_side": None}
     base.update(over)
     return base
 
@@ -142,3 +142,29 @@ def test_llm_nonsense_caught_by_generator() -> None:
     brief = parse_brief("基地3×3米", client=client)
     with pytest.raises(ValueError):
         generate_floor_plan(brief)
+
+
+# ---------------------------------------------------------------------------
+# 4) 方位約束(C2:「主臥要在西南角,廚房靠北」)
+# ---------------------------------------------------------------------------
+def test_position_constraints_passed_through() -> None:
+    client = _FakeClient(_payload(master_corner="SW", kitchen_side="N"))
+    brief = parse_brief("主臥要在西南角,廚房靠北", client=client)
+    assert brief.master_corner == "SW"
+    assert brief.kitchen_side == "N"
+
+
+def test_parsed_constraints_generate_valid_plan() -> None:
+    """ROADMAP 原句組合:主臥西南角+廚房靠北 → 主臥真的在西南。"""
+    from shapely.geometry import Polygon
+
+    client = _FakeClient(_payload(master_corner="SW", kitchen_side="N"))
+    brief = parse_brief("基地16×14米,三房,主臥西南角,廚房靠北", client=client)
+    spec = generate_floor_plan(brief)
+    bx0, by0 = spec.grid_origin
+    mx = bx0 + sum(spec.x_spacings) / 2
+    my = by0 + sum(spec.y_spacings) / 2
+    m = Polygon(next(r for r in spec.rooms if r.name == "主臥室").points).centroid
+    k = Polygon(next(r for r in spec.rooms if r.kind == "kitchen").points).centroid
+    assert m.x < mx and m.y < my          # 主臥在西南
+    assert k.y > my                       # 廚房在北

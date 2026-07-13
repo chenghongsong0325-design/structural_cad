@@ -88,9 +88,22 @@ BRIEF_SCHEMA = {
             "type": "string", "nullable": True,
             "description": "樓層標示(如 1F、3F)。沒講就 null",
         },
+        "master_corner": {
+            "type": "string", "nullable": True,
+            "enum": ["NW", "NE", "SW", "SE"],
+            "description": "主臥指定角落(單戶限定):西南角=SW、東北角=NE、"
+                           "西北角=NW、東南角=SE。沒講就 null",
+        },
+        "kitchen_side": {
+            "type": "string", "nullable": True,
+            "enum": ["N", "S", "E", "W"],
+            "description": "廚房靠哪一側(單戶限定):靠北=N、靠南=S、"
+                           "靠東=E、靠西=W。沒講就 null",
+        },
     },
     "required": ["brief_type", "site_width_m", "site_depth_m", "bedrooms",
-                 "units_per_row", "corridor_width_m", "floor_label"],
+                 "units_per_row", "corridor_width_m", "floor_label",
+                 "master_corner", "kitchen_side"],
 }
 
 SYSTEM_PROMPT = """\
@@ -104,6 +117,8 @@ SYSTEM_PROMPT = """\
 - 「三房兩廳」「3房2廳1衛」的房數=臥室數(廳/衛浴由產生器自動配置,忽略)。
 - corridor 的 units_per_row 是「每排」戶數;若描述給總戶數(雙排對排),
   除以 2。
+- 方位(單戶限定):「主臥要在西南角」→ master_corner="SW";
+  「廚房靠北」→ kitchen_side="N"。方位用羅盤縮寫(N北/S南/E東/W西)。
 - 沒提到的欄位一律 null,不要瞎猜數值。
 """
 
@@ -128,6 +143,10 @@ def _brief_from_data(data: dict) -> Brief:
             kwargs["bedrooms"] = int(data["bedrooms"])
         if data.get("floor_label"):
             kwargs["floor_label"] = data["floor_label"]
+        if data.get("master_corner"):           # 方位約束(C2)
+            kwargs["master_corner"] = data["master_corner"]
+        if data.get("kitchen_side"):
+            kwargs["kitchen_side"] = data["kitchen_side"]
         return HouseBrief(**kwargs)
 
     if btype == "corridor":
@@ -215,9 +234,10 @@ if __name__ == "__main__":
 # =============================================================================
 # 1. 模型:gemini-2.5-flash(使用者提供 Gemini API key,2026-07-13 實測可用;
 #    GEMINI_MODEL 環境變數可覆寫)。解析輸入極短,單次費用可忽略。
-# 2. 需求欄位僅覆蓋現有 Brief 支援的旋鈕(基地寬深/房數/每排戶數/走廊寬/
-#    樓層)。「主臥在西南角」「廚房靠北」這類方位約束,產生器本身還不支援,
-#    解析了也沒用——等日後擴充產生器再加欄位。
+# 2. 需求欄位覆蓋現有 Brief 的旋鈕:基地寬深/房數/每排戶數/走廊寬/樓層,
+#    以及方位約束(主臥角落 master_corner、廚房方位 kitchen_side——單戶
+#    限定,靠整張圖鏡射達成,衝突會報錯)。更細的約束(「客廳要大一點」
+#    「浴室兩間」)等產生器支援再加。
 # 3. 坪數→寬深的換算假設「接近方形」;實際基地形狀應該問使用者。待確認。
 # 4. 解析錯誤的重試:目前一次定輸贏(schema 保證格式,但語意誤判不重試)。
 #    待確認是否需要「解析結果先給使用者確認再出圖」的互動步驟。

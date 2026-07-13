@@ -388,6 +388,78 @@ def test_house_rooms_have_codes() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 2e) C2:方位約束(主臥角落/廚房方位,整張圖鏡射)
+# ---------------------------------------------------------------------------
+def _quadrant(spec, room) -> str:
+    """房間形心落在建築的哪個象限,回傳如 "SW"。"""
+    from shapely.geometry import Polygon
+
+    bx0, by0 = spec.grid_origin
+    mx = bx0 + sum(spec.x_spacings) / 2
+    my = by0 + sum(spec.y_spacings) / 2
+    c = Polygon(room.points).centroid
+    return ("N" if c.y > my else "S") + ("E" if c.x > mx else "W")
+
+
+@pytest.mark.parametrize("corner", ["NW", "NE", "SW", "SE"])
+def test_master_corner_all_four(corner) -> None:
+    """四個角落都要:主臥真的落在指定象限,且整張圖通過全部檢核。"""
+    spec = generate_floor_plan(HouseBrief(
+        site_width=16000, site_depth=14000, bedrooms=3, master_corner=corner))
+    master = next(r for r in spec.rooms if r.name == "主臥室")
+    assert _quadrant(spec, master) == corner
+    assert validate_spec(spec) == []
+
+
+def test_kitchen_side_north_and_west() -> None:
+    spec = generate_floor_plan(HouseBrief(
+        site_width=16000, site_depth=14000, bedrooms=3, kitchen_side="N"))
+    kitchen = next(r for r in spec.rooms if r.kind == "kitchen")
+    assert "N" in _quadrant(spec, kitchen)
+
+    spec = generate_floor_plan(HouseBrief(
+        site_width=16000, site_depth=14000, bedrooms=3, kitchen_side="W"))
+    kitchen = next(r for r in spec.rooms if r.kind == "kitchen")
+    assert "W" in _quadrant(spec, kitchen)
+
+
+def test_roadmap_sentence_combo() -> None:
+    """「主臥要在西南角,廚房靠北」——兩個約束同時滿足(同一次上下翻)。"""
+    spec = generate_floor_plan(HouseBrief(
+        site_width=16000, site_depth=14000, bedrooms=3,
+        master_corner="SW", kitchen_side="N"))
+    master = next(r for r in spec.rooms if r.name == "主臥室")
+    kitchen = next(r for r in spec.rooms if r.kind == "kitchen")
+    assert _quadrant(spec, master) == "SW"
+    assert "N" in _quadrant(spec, kitchen)
+
+
+def test_conflicting_constraints_raise() -> None:
+    """主臥 NW(臥室帶佔北)+ 廚房靠北 → 不可能,要報「衝突」。"""
+    with pytest.raises(ValueError, match="衝突"):
+        generate_floor_plan(HouseBrief(
+            site_width=16000, site_depth=14000,
+            master_corner="NW", kitchen_side="N"))
+
+
+def test_invalid_corner_value_raises() -> None:
+    with pytest.raises(ValueError, match="master_corner"):
+        generate_floor_plan(HouseBrief(
+            site_width=16000, site_depth=14000, master_corner="中間"))
+
+
+def test_mirrored_spec_draws_end_to_end() -> None:
+    """鏡射後的圖照樣能端到端畫出來(門弧/家具圖塊/尺寸鏈)。"""
+    spec = generate_floor_plan(HouseBrief(
+        site_width=16000, site_depth=14000, bedrooms=3,
+        master_corner="SE"))
+    doc = new_document()
+    layers = apply_standard(doc, load_standard())
+    draw_floor_plan(doc.modelspace(), spec, layers)
+    assert len(list(doc.modelspace())) > 100
+
+
+# ---------------------------------------------------------------------------
 # 3) 集合住宅
 # ---------------------------------------------------------------------------
 def test_corridor_unit_count_scales() -> None:
