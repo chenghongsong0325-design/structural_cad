@@ -249,6 +249,97 @@ def test_validate_flags_bedroom_door_not_to_hallway() -> None:
     assert any("未通走道" in p for p in problems)
 
 
+# ---------------------------------------------------------------------------
+# 2d) C1.5c:機能/舒適 — 採光、家具碰撞、隔間坐樑
+# ---------------------------------------------------------------------------
+def test_grid_aligns_with_partition_wall() -> None:
+    """中間軸線距主要隔牆 ≤0.9m 時挪到牆位——柱站在隔牆交點、被牆包住。
+
+    14×12 兩房:W=10m 等分 2 跨(中線 x=7000),主臥/臥A 隔牆在 x=7745,
+    差 745 → 軸線挪到 7745;跨距 5745/4255(max/min=1.35,仍規則)。
+    """
+    spec = generate_floor_plan(HouseBrief(site_width=14000, site_depth=12000, bedrooms=2))
+    beds = {r.name: r for r in spec.rooms if r.kind == "bedroom"}
+    wall_x = min(p[0] for p in beds["臥室A"].points)
+    grid_line = spec.grid_origin[0] + spec.x_spacings[0]
+    assert grid_line == pytest.approx(wall_x)              # 軸線 = 隔牆
+    assert max(spec.x_spacings) / min(spec.x_spacings) <= 1.6
+
+
+def test_no_orphan_column_at_bedroom_door() -> None:
+    """16×14 三房:中間軸線挪到主臥隔牆(4.8m+7.2m)——修使用者截圖抓到的
+    「孤柱凸在走道牆上、貼著臥室門」問題;柱藏進隔牆交點。"""
+    spec = generate_floor_plan(HouseBrief(site_width=16000, site_depth=14000, bedrooms=3))
+    master = next(r for r in spec.rooms if r.name == "主臥室")
+    wall_x = max(p[0] for p in master.points)          # 主臥/臥A 隔牆
+    assert spec.grid_origin[0] + spec.x_spacings[0] == pytest.approx(wall_x)
+
+
+def test_grid_stays_regular_when_snap_would_skew() -> None:
+    """挪軸線會讓跨距失衡(max/min >1.6)就不挪——柱網規則性優先。
+
+    22×15 四房:第二中線 x=14000 最近的隔牆在 15862,挪過去跨距比會到 2.0
+    → 維持原位(留一根孤柱列,但柱網規則)。"""
+    spec = generate_floor_plan(HouseBrief(site_width=22000, site_depth=15000, bedrooms=4))
+    xs = spec.x_spacings
+    assert max(xs) / min(xs) <= 1.6
+    # 第二條中間軸線仍在等分位置(rel 12000 = 5586+6414)。
+    assert xs[0] + xs[1] == pytest.approx(12000.0)
+
+
+def test_bay_spans_economic() -> None:
+    """所有單戶案例:X 向跨距 3~9m、max/min ≤1.6(柱網規則、跨度經濟)。"""
+    for brief in HOUSE_BRIEFS:
+        spec = generate_floor_plan(brief)
+        xs = spec.x_spacings
+        assert 3000 <= min(xs) and max(xs) <= 9000, _brief_id(brief)
+        assert max(xs) / min(xs) <= 1.6, _brief_id(brief)
+
+
+def test_deep_living_gets_south_window() -> None:
+    """客廳寬 >6m(只靠西窗採光深度超標)→ 南牆自動補窗。"""
+    spec = generate_floor_plan(HouseBrief(site_width=22000, site_depth=15000, bedrooms=4))
+    living = next(r for r in spec.rooms if r.kind == "living")
+    lx0 = min(p[0] for p in living.points)
+    lx1 = max(p[0] for p in living.points)
+    assert lx1 - lx0 > 6000                        # 前提:客廳真的很寬
+    south = spec.walls[0]
+    wins_in_living = [
+        op for op in south.openings
+        if op.kind == "window" and lx0 <= south.start[0] + op.position <= lx1]
+    assert len(wins_in_living) >= 1
+
+
+def test_validate_flags_daylight_too_deep() -> None:
+    """拿掉寬客廳的南窗 → 檢核要抓到「採光深度超過上限」。"""
+    spec = generate_floor_plan(HouseBrief(site_width=22000, site_depth=15000, bedrooms=4))
+    spec.windows = [wp for wp in spec.windows if wp.wall_index != 0]
+    spec.walls[0].openings = [op for op in spec.walls[0].openings
+                              if op.kind != "window"]
+    problems = validate_spec(spec)
+    assert any("採光深度" in p for p in problems)
+
+
+def test_validate_flags_furniture_blocking_door() -> None:
+    """在臥室門的迴轉方塊裡塞一個衣櫃 → 檢核要抓到「擋住門」。"""
+    spec = generate_floor_plan(HouseBrief(site_width=16000, site_depth=14000, bedrooms=3))
+    dp = next(d for d in spec.doors if d.wall_index == 4)
+    w = spec.walls[4]
+    x, y = w.point_at(w.openings[dp.opening_index].position)
+    spec.fixtures.append(FixturePlacement("wardrobe", (x, y + 75), 0))
+    problems = validate_spec(spec)
+    assert any("擋住門" in p for p in problems)
+
+
+def test_validate_flags_overlapping_furniture() -> None:
+    """把一件家具原地複製一份 → 檢核要抓到「家具重疊」。"""
+    spec = generate_floor_plan(HouseBrief(site_width=16000, site_depth=14000, bedrooms=3))
+    fx = next(f for f in spec.fixtures if isinstance(f, FixturePlacement))
+    spec.fixtures.append(FixturePlacement(fx.name, fx.insert, fx.rotation))
+    problems = validate_spec(spec)
+    assert any("家具重疊" in p for p in problems)
+
+
 def test_house_rooms_have_codes() -> None:
     spec = generate_floor_plan(HouseBrief(site_width=16000, site_depth=14000, bedrooms=3))
     assert all(r.code for r in spec.rooms)

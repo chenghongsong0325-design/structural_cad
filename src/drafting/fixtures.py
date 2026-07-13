@@ -123,6 +123,19 @@ FIXTURE_BUILDERS = {
     "wardrobe": _build_wardrobe,
 }
 
+# 各圖塊的佔地外框(寬w × 深d,局部座標;與 builder 幾何一致)。
+# table4 原點在中心(±780),其餘原點在貼牆邊中點、朝 +Y 伸出 d。
+FIXTURE_SIZES = {
+    "toilet": (380, 700),
+    "basin": (500, 450),
+    "bathtub": (1600, 750),
+    "bed_single": (1000, 2000),
+    "bed_double": (1600, 2000),
+    "table4": (1560, 1560),      # 桌 800 + 兩側椅子(590+190)×2
+    "sofa3": (2000, 850),
+    "wardrobe": (1500, 600),
+}
+
 
 def _block_name(name: str) -> str:
     return f"FX_{name.upper()}"
@@ -150,6 +163,29 @@ class FixturePlacement:
     name: str
     insert: Point
     rotation: float = 0.0
+
+
+def fixture_footprint(placement: FixturePlacement) -> list[Point]:
+    """設備的佔地矩形(世界座標四角點,含旋轉)——碰撞檢核用(C1.5c)。"""
+    w, d = FIXTURE_SIZES[placement.name]
+    if placement.name == "table4":                # 原點=桌心
+        local = [(-w / 2, -d / 2), (w / 2, -d / 2), (w / 2, d / 2), (-w / 2, d / 2)]
+    else:                                          # 原點=貼牆邊中點,朝 +Y
+        local = [(-w / 2, 0), (w / 2, 0), (w / 2, d), (-w / 2, d)]
+    a = math.radians(placement.rotation)
+    ca, sa = math.cos(a), math.sin(a)
+    ix, iy = placement.insert
+    return [(ix + x * ca - y * sa, iy + x * sa + y * ca) for x, y in local]
+
+
+def counter_footprint(counter: Counter) -> list[Point]:
+    """流理台的佔地矩形(與 draw_counter 畫的檯面一致)——碰撞檢核用。"""
+    (x1, y1), (x2, y2) = counter.start, counter.end
+    length = counter.length
+    ux, uy = (x2 - x1) / length, (y2 - y1) / length
+    nx, ny = -uy, ux                               # 左手側
+    d = counter.depth
+    return [(x1, y1), (x2, y2), (x2 + nx * d, y2 + ny * d), (x1 + nx * d, y1 + ny * d)]
 
 
 def place_fixture(msp, placement: FixturePlacement, layers: dict[str, str]):
