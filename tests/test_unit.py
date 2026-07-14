@@ -18,6 +18,7 @@ from src.drafting.unit import (
     _t_point,
     _t_rotation,
     demo_corridor_spec,
+    one_bed_unit,
     one_room_unit,
     place_unit,
 )
@@ -147,6 +148,28 @@ def test_same_unit_reusable() -> None:
     spec.walls[0].openings.append(Opening(3000, 500, "window"))
     assert len(spec.walls[5].openings) == 1         # 第二份不受影響
     assert len(unit.walls[0].openings) == 1         # 原型也不受影響
+
+
+# ---------------------------------------------------------------------------
+# 2d) 房型:套房 / 一房一廳
+# ---------------------------------------------------------------------------
+def test_studio_unit_structure() -> None:
+    u = one_room_unit()
+    assert (u.width, u.depth) == (4000, 6000)
+    assert {r.kind for r in u.rooms} == {"bathroom", "foyer", "living"}
+    assert sum(r.area_m2 for r in u.rooms) == pytest.approx(24.0)   # 鋪滿不重疊
+    from src.drafting.fixtures import Counter
+    assert any(isinstance(f, Counter) for f in u.fixtures)          # 有開放式廚房
+
+
+def test_one_bed_unit_structure() -> None:
+    u = one_bed_unit()
+    assert (u.width, u.depth) == (6000, 6000)
+    assert {r.kind for r in u.rooms} == {"bathroom", "foyer", "bedroom", "living"}
+    assert sum(r.area_m2 for r in u.rooms) == pytest.approx(36.0)   # 鋪滿不重疊
+    assert len(u.windows) == 2                       # 客廳窗 + 臥室窗(並列各自採光)
+    bath = next(r for r in u.rooms if r.kind == "bathroom")
+    assert "排風" in bath.note                        # 內側浴廁需機械排風
 
 
 # ---------------------------------------------------------------------------

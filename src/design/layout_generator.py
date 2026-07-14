@@ -14,7 +14,8 @@
      玄關(C1.5b):大門內側 2.2×1.5m 落塵區(短隔屏牆+鞋櫃),客廳挖角
      成 L 形。餐廳太窄自動併入客廳。家具設備依房型自動擺放。
   2. CorridorBrief(集合住宅):用 B6 的標準單元(place_unit)沿雙邊走廊
-     重複 N 戶鏡射對排。
+     重複 N 戶鏡射對排;units 給清單則同排混不同房型(套房/一房一廳,
+     寬窄戶並存,柱藏分戶牆、上下對齊——真實建案差距 A2)。
 
 共同規則:
   * 軸網跨距自動決定(目標 4.5m、合理範圍內),柱在交點、隔間帶分界牆
@@ -131,10 +132,19 @@ class HouseBrief:
 
 @dataclass
 class CorridorBrief:
-    """集合住宅需求:標準單元 × 每排戶數,雙邊走廊鏡射對排。"""
+    """集合住宅需求:標準單元 × 每排戶數,雙邊走廊鏡射對排。
+
+    房型組合(真實建案差距 A2):
+      * units=None:每排放 units_per_row 戶相同單元(unit,預設套房)。
+      * units=[套房, 一房, 套房, …]:每排依清單放不同房型(寬窄戶並存)。
+        各房型「寬度可不同、深度須相同」(同一排是一條等深的帶);柱都落在
+        分戶牆上,故寬窄並存不生孤柱(檢核放寬,見 validate_spec)。
+      上下兩排用同一份清單(鏡射),分戶牆 x 對齊 → 柱上下對齊。
+    """
 
     units_per_row: int = 4
-    unit: Optional[UnitSpec] = None      # None → 1房型(one_room_unit)
+    unit: Optional[UnitSpec] = None          # None → 套房(one_room_unit)
+    units: Optional[list[UnitSpec]] = None   # 給清單 → 每排混不同房型(蓋過上兩者)
     corridor_width: float = 1800
     setback: float = 2000
     column_size: float = 500
@@ -597,18 +607,27 @@ def _generate_corridor(brief: CorridorBrief) -> FloorPlanSpec:
     from src.drafting.balcony_elevator import Elevator
     from src.drafting.stair import UStair
 
-    if not 2 <= brief.units_per_row <= 10:
-        raise ValueError(f"每排 2~10 戶,收到 {brief.units_per_row}")
+    # 每排的房型清單:給了 units 就照混,否則同一種單元重複 units_per_row 戶。
+    if brief.units is not None:
+        unit_list = list(brief.units)
+    else:
+        unit_list = [brief.unit or one_room_unit()] * brief.units_per_row
+    n = len(unit_list)
+    if not 2 <= n <= 10:
+        raise ValueError(f"每排 2~10 戶,收到 {n}")
+    depth = unit_list[0].depth
+    if any(u.depth != depth for u in unit_list):
+        raise ValueError("同一排各房型深度須相同(等深帶);寬度才可不同")
 
-    unit = brief.unit or one_room_unit()
-    n = brief.units_per_row
     x0 = y0 = brief.setback
-    y_corr = y0 + unit.depth                    # 走廊下緣
+    widths = [u.width for u in unit_list]
+    unit_x = [x0 + CORE_W + sum(widths[:i]) for i in range(n)]   # 各戶左緣(累加)
+    y_corr = y0 + depth                         # 走廊下緣
     y_top = y_corr + brief.corridor_width       # 走廊上緣
     xw = x0 + CORE_W                            # 西核/單元分界
-    bx1 = xw + n * unit.width + CORE_W          # 建築東緣
+    bx1 = xw + sum(widths) + CORE_W             # 建築東緣
     xe = bx1 - CORE_W                           # 單元/東核分界
-    by1 = y_top + unit.depth
+    by1 = y_top + depth
     y_hall = y_corr - 2200                      # 電梯廳/儲藏分界(西核)
 
     walls = [
@@ -682,8 +701,8 @@ def _generate_corridor(brief: CorridorBrief) -> FloorPlanSpec:
                        (bx1 + brief.setback, by1 + brief.setback),
                        (0, by1 + brief.setback)],
         setback=brief.setback,
-        x_spacings=[CORE_W] + [unit.width] * n + [CORE_W],
-        y_spacings=[unit.depth, brief.corridor_width, unit.depth],
+        x_spacings=[CORE_W] + widths + [CORE_W],
+        y_spacings=[depth, brief.corridor_width, depth],
         grid_origin=(x0, y0),
         column_size=brief.column_size,
         walls=walls, rooms=rooms, doors=doors, windows=windows,
@@ -692,10 +711,9 @@ def _generate_corridor(brief: CorridorBrief) -> FloorPlanSpec:
         floor_label=brief.floor_label, north_arrow=True,
         title_block=CompetitionTitleData(),
     )
-    for i in range(n):
-        ux = xw + i * unit.width
-        place_unit(spec, unit, origin=(ux, y_top))                 # 上排
-        place_unit(spec, unit, origin=(ux, y0), mirror_y=True)     # 下排(對排)
+    for u, ux in zip(unit_list, unit_x):
+        place_unit(spec, u, origin=(ux, y_top))                    # 上排
+        place_unit(spec, u, origin=(ux, y0), mirror_y=True)        # 下排(對排)
     return spec
 
 
@@ -868,10 +886,11 @@ def validate_spec(spec: FloorPlanSpec) -> list[str]:
         if n_stairs < 2:
             problems.append(f"多戶建築只有 {n_stairs} 座樓梯間(逃生需 ≥2)")
 
-    # C1.5b:建築內有走道/走廊時,每間臥室至少要有一扇門開向它
-    # (臥室門不得只直開客餐廳)。
+    # C1.5b:單戶住宅有走道時,每間臥室至少要有一扇門開向走道(臥室門不得只
+    # 直開客餐廳)。⚠️ 僅單戶適用——集合住宅的走廊是公設,單元內的臥室門開向
+    # 自家客廳才對(否則臥室直通公共走廊),故多戶建築跳過。
     corridor_polys = [p for r, p in zip(spec.rooms, polys) if r.kind == "corridor"]
-    if corridor_polys:
+    if corridor_polys and n_units < 2:
         for room, poly in zip(spec.rooms, polys):
             if room.kind != "bedroom":
                 continue
@@ -899,12 +918,15 @@ def validate_spec(spec: FloorPlanSpec) -> list[str]:
 
     # 柱網規則性(結構經濟;使用者定調:柱網儘量規則、近似等距、跨度合理)。
     # X 向查範圍+均勻度;Y 向只查上限(走廊 1.8m 這種窄跨是刻意的)。
+    # ⚠️ 集合住宅例外:柱跨依戶寬,寬窄戶(套房/1房/2房)並存是常態,柱都落在
+    #    分戶牆上(不生孤柱),故只守 3~9m 經濟範圍、不強求等距(以戶數判別)。
     xs = spec.x_spacings
+    is_corridor = sum(1 for r in spec.rooms if r.kind == "living") >= 2
     if min(xs) < BAY_SPAN_LIMITS[0] or max(xs) > BAY_SPAN_LIMITS[1]:
         problems.append(
             f"X 向跨距 {min(xs)/1000:.1f}~{max(xs)/1000:.1f}m "
             f"超出 {BAY_SPAN_LIMITS[0]/1000:.0f}~{BAY_SPAN_LIMITS[1]/1000:.0f}m")
-    elif max(xs) / min(xs) > BAY_RATIO_MAX:
+    elif not is_corridor and max(xs) / min(xs) > BAY_RATIO_MAX:
         problems.append(
             f"X 向柱網不規則(跨距 max/min = {max(xs)/min(xs):.2f} "
             f"> {BAY_RATIO_MAX})")

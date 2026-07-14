@@ -477,6 +477,51 @@ def test_corridor_area_closure() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 3b) C2/A2:同排混合房型(套房 + 一房一廳,寬窄戶並存,柱藏分戶牆)
+# ---------------------------------------------------------------------------
+def test_corridor_mixed_unit_types() -> None:
+    from src.drafting.unit import one_bed_unit, one_room_unit
+
+    spec = generate_floor_plan(CorridorBrief(
+        units=[one_room_unit(), one_bed_unit(), one_room_unit()]))
+    assert validate_spec(spec) == []
+    # 兩排各 [套房, 一房, 套房] → 套房 4 戶(起居室×4)、一房 2 戶(客廳/臥室×2)。
+    assert len([r for r in spec.rooms if r.name == "起居室"]) == 4
+    assert len([r for r in spec.rooms if r.name == "客廳"]) == 2
+    assert len([r for r in spec.rooms if r.name == "臥室"]) == 2
+    # 柱跨寬窄並存;一房是單一 6m 柱跨(中間不切柱 → 無孤柱)。
+    spans = sorted({round(x) for x in spec.x_spacings})
+    assert spans == [3100, 4000, 6000]
+    assert 6000 in [round(x) for x in spec.x_spacings]
+
+
+def test_mixed_wide_unit_has_no_interior_column() -> None:
+    """一房一廳(6m)整跨無內部軸線 → 柱只落在其東西分戶牆,不生孤柱。"""
+    from src.design.layout_generator import build_grid, resolve_columns
+    from src.drafting.unit import one_bed_unit, one_room_unit
+
+    spec = generate_floor_plan(CorridorBrief(
+        units=[one_room_unit(), one_bed_unit(), one_room_unit()]))
+    grid = build_grid(spec)
+    xs = sorted(a.position for a in grid.x_axes)
+    # 一房一廳跨:第 2 條軸線(核+套房後)到第 3 條,寬 6m,中間無軸線。
+    gaps = [xs[i + 1] - xs[i] for i in range(len(xs) - 1)]
+    assert 6000 in [round(g) for g in gaps]           # 存在 6m 整跨
+    # 該 6m 跨區間內不得有其他軸線(否則柱會切進房內)。
+    lo = xs[[round(g) for g in gaps].index(6000)]
+    assert not any(lo + 1 < x < lo + 5999 for x in xs)
+
+
+def test_corridor_mixed_depth_mismatch_raises() -> None:
+    """同一排各房型深度須相同(等深帶),不同就報錯。"""
+    from src.drafting.unit import UnitSpec, one_room_unit
+
+    shallow = UnitSpec(name="淺戶", width=4000, depth=5000)   # 深度與套房 6000 不同
+    with pytest.raises(ValueError, match="深度"):
+        generate_floor_plan(CorridorBrief(units=[one_room_unit(), shallow]))
+
+
+# ---------------------------------------------------------------------------
 # 4) 不合理需求要報清楚的錯
 # ---------------------------------------------------------------------------
 def test_too_small_site_raises() -> None:

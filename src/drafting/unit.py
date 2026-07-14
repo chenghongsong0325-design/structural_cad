@@ -256,6 +256,73 @@ def one_room_unit() -> UnitSpec:
                     balconies=balconies)
 
 
+def one_bed_unit() -> UnitSpec:
+    """一房一廳單元 6m×6m(局部座標;走廊南 y=0,對外採光北 y=6000)。
+
+    比套房寬的房型(真實建案差距 A2:寬窄戶並存)。單面採光(北),故客廳
+    與臥室並列貼北牆各自開窗:
+      * 西半:客廳(含開放廚房、玄關落塵),窗+工作陽台在北。
+      * 東半:臥室(獨立隔間、門開向客廳),窗在北。
+      * 西南角浴廁(貼走廊無窗 → 機械排風)。
+    寬 6m 為單一柱跨(3~9m 經濟範圍),柱落在東西分戶牆上、不生孤柱。
+    """
+    from src.drafting.wall import (
+        EXTERIOR_WALL_THICKNESS as EXT,
+        INTERIOR_WALL_THICKNESS as INT,
+    )
+
+    walls = [
+        # 0 南牆(走廊側 RC150):入口門(玄關段,偏東讓開浴廁/鞋櫃)
+        Wall((0, 0), (6000, 0), EXT, openings=[Opening(2900, 900, "door")]),
+        # 1 北牆(對外 RC150):客廳窗(西)+ 臥室窗(東)
+        Wall((0, 6000), (6000, 6000), EXT,
+             openings=[Opening(1700, 1500, "window"), Opening(4700, 1500, "window")]),
+        # 2 西分戶牆(磚120)
+        Wall((0, 0), (0, 6000), INT),
+        # 3 浴廁北牆(磚120):浴廁門(開向客廳)
+        Wall((0, 2200), (1800, 2200), INT, openings=[Opening(900, 750, "door")]),
+        # 4 浴廁東牆(磚120,無洞:面玄關/客廳)
+        Wall((1800, 0), (1800, 2200), INT),
+        # 5 臥室西牆(磚120):臥室門(南端,開向客廳)
+        Wall((3400, 2200), (3400, 6000), INT, openings=[Opening(700, 800, "door")]),
+        # 6 臥室南牆(磚120,無洞:隔客廳餐廚區)
+        Wall((3400, 2200), (6000, 2200), INT),
+    ]
+    rooms = [
+        Room("浴廁", [(0, 0), (1800, 0), (1800, 2200), (0, 2200)],
+             kind="bathroom", code="X08", note="機械排風"),
+        Room("玄關", [(1800, 0), (3400, 0), (3400, 1200), (1800, 1200)],
+             kind="foyer", code="X10"),
+        Room("臥室", [(3400, 2200), (6000, 2200), (6000, 6000), (3400, 6000)],
+             kind="bedroom", code="X05"),
+        # 客廳(含開放廚房+餐廚):扣掉浴廁/玄關/臥室後的 L 形,西北採光。
+        Room("客廳", [(0, 2200), (0, 6000), (3400, 6000), (3400, 2200),
+                      (6000, 2200), (6000, 0), (3400, 0), (3400, 1200),
+                      (1800, 1200), (1800, 2200)],
+             kind="living", code="X03"),
+    ]
+    doors = [
+        DoorPlacement(0, 0, Door(hinge="left", swing="out")),   # 入口,開向室內
+        DoorPlacement(3, 0, Door(hinge="left", swing="out")),   # 浴廁門,小浴外開讓開潔具
+        DoorPlacement(5, 0, Door(hinge="left", swing="in")),    # 臥室門,開向臥內
+    ]
+    windows = [WindowPlacement(1, 0), WindowPlacement(1, 1)]     # 客廳窗、臥室窗
+    fixtures = [
+        FixturePlacement("toilet", (60, 1400), 270),     # 浴廁,貼西牆朝東
+        FixturePlacement("basin", (900, 2140), 180),     # 浴廁,貼北牆朝南
+        FixturePlacement("shoe_cabinet", (1860, 600), 270),  # 玄關,貼浴廁東牆朝東
+        FixturePlacement("sofa3", (75, 4200), 270),      # 客廳沙發,背貼西牆朝東
+        FixturePlacement("bed_double", (4400, 5925), 180),   # 臥室,床頭貼北牆
+        FixturePlacement("wardrobe", (5940, 4200), 90),  # 臥室,貼東(隔戶)牆朝西
+        # 開放式廚房:一字型流理台貼東牆(客廳餐廚區,玄關東側),含水槽。
+        Counter(start=(5940, 300), end=(5940, 1900), sink=True),
+    ]
+    balconies = [Balcony(origin=(700, 6000), width=2000, depth=1200, attach="south")]
+    return UnitSpec(name="一房一廳", width=6000, depth=6000, walls=walls,
+                    rooms=rooms, doors=doors, windows=windows, fixtures=fixtures,
+                    balconies=balconies)
+
+
 def demo_corridor_spec() -> FloorPlanSpec:
     """雙邊走廊示範:套房 ×(上排 4 戶 + 下排 4 戶鏡射對排)。
 
