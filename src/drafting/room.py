@@ -58,7 +58,7 @@ class Room:
     points: list[Point]
     kind: str = ""   # 用途類型(如 "living"/"bedroom"/"bathroom"),目前僅記錄
     code: str = ""   # 房間類型代碼(如 "X05"),真實建案圖的帶框標籤用;空=不畫標籤
-    note: str = ""   # 附註(如「機械排風」),畫在面積下方一行小字;空=不畫
+    note: str = ""   # 附註(如「機械排風」)。不畫在圖上,僅供 validate_spec 檢核用
 
     def __post_init__(self) -> None:
         if len(self.points) < 3:
@@ -294,15 +294,6 @@ def draw_room_label(
         height=text_height,
         dxfattribs={"layer": layer, "style": style},
     ).set_placement((cx, cy - half_gap), align=TextEntityAlignment.TOP_CENTER)
-
-    # 附註(如「機械排風」):面積下方一行小字。
-    if room.note:
-        msp.add_text(
-            room.note,
-            height=text_height * 0.8,
-            dxfattribs={"layer": layer, "style": style},
-        ).set_placement((cx, cy - half_gap - text_height * 1.5),
-                        align=TextEntityAlignment.TOP_CENTER)
 
 
 def draw_room_tag(
