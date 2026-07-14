@@ -252,22 +252,39 @@ DEMO_BUILDINGS: list[tuple[str, BuildingBrief]] = [
 
 def main() -> None:
     from src.drafting.apartment_plan import draw_floor_plan
+    from src.drafting.section import draw_elevation, draw_section
     from src.standards.loader import apply_standard, load_standard, new_document
 
     out_dir = _PROJECT_ROOT / "output" / "building"
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    def _new():
+        doc = new_document()
+        return doc, apply_standard(doc, load_standard())
+
     for name, brief in DEMO_BUILDINGS:
         building = generate_building(brief)
         for fl in building.floors:
-            std = load_standard()
-            doc = new_document()
-            layers = apply_standard(doc, std)
+            doc, layers = _new()
             draw_floor_plan(doc.modelspace(), fl.spec, layers)
             doc.saveas(out_dir / f"{name}_{fl.label}.dxf")
+
+        # D3:剖面圖(沿長向 X 剖,含地下層)+ 南向立面圖(僅地上層)。
+        doc, layers = _new()
+        draw_section(doc.modelspace(), building, layers, axis="x",
+                     title=f"{name} 剖面圖 A-A")
+        doc.saveas(out_dir / f"{name}_section.dxf")
+
+        doc, layers = _new()
+        draw_elevation(doc.modelspace(), building, layers, side="south",
+                       title=f"{name} 南向立面圖")
+        doc.saveas(out_dir / f"{name}_elevation.dxf")
+
         print(f"[OK] {name}: {building.floors[0].label}~{building.floors[-1].label} "
               f"共 {len(building.floors)} 層(標高 "
               f"{building.floors[0].elevation/1000:.1f}~"
-              f"{building.floors[-1].elevation/1000:.1f}m),柱網上下對齊")
+              f"{building.floors[-1].elevation/1000:.1f}m)"
+              f"+剖面+立面,柱網上下對齊")
 
 
 if __name__ == "__main__":
