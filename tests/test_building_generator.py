@@ -14,7 +14,15 @@ from src.design.building_generator import (
     check_column_alignment,
     generate_building,
 )
-from src.design.layout_generator import CorridorBrief, HouseBrief, generate_floor_plan
+from src.design.layout_generator import (
+    CorridorBrief,
+    HouseBrief,
+    generate_corridor_basement,
+    generate_floor_plan,
+)
+
+# 透天層別分化用的基地(3 房要塞進臥室帶,基地要夠寬)。
+HOUSE = dict(site_width=19000, site_depth=13000, bedrooms=3)
 
 
 # ── 基本產出 ──────────────────────────────────────────────────────────────
@@ -100,6 +108,138 @@ def test_zero_floors_rejected():
     with pytest.raises(ValueError):
         generate_building(BuildingBrief(
             typical=CorridorBrief(units_per_row=4), floors=0))
+
+
+# ── D2:地下室(basements)───────────────────────────────────────────────
+def test_basement_levels_labels_elevations():
+    b = generate_building(BuildingBrief(
+        typical=CorridorBrief(units_per_row=6), floors=2, basements=2))
+    assert [f.label for f in b.floors] == ["B2F", "B1F", "1F", "2F"]
+    assert [f.elevation for f in b.floors] == [-6400, -3200, 0, 3200]
+    assert b.levels == [-2, -1, 1, 2]
+    assert [f.spec.floor_label for f in b.floors] == ["B2F", "B1F", "1F", "2F"]
+
+
+def test_corridor_basement_rooms_and_no_windows():
+    spec = generate_corridor_basement(CorridorBrief(units_per_row=6))
+    names = [r.name for r in spec.rooms]
+    for expected in ("機車停車場", "車道坡道", "機房", "蓄水池"):
+        assert expected in names
+    assert sum(1 for r in spec.rooms if r.kind == "stair") == 2   # 逃生核直落
+    assert len(spec.stairs) == 2 and len(spec.elevators) == 1
+    # 地面下無對外窗。
+    assert not any(op.kind == "window" for w in spec.walls for op in w.openings)
+    # 車道口存在(無門扇的洞)。
+    assert any(op.kind == "door" and op.width == 2700
+               for w in spec.walls for op in w.openings)
+
+
+def test_corridor_basement_alignment():
+    """D2 重點:B1F 格局不同,柱位仍與標準層上下對齊(同骨架軸網)。"""
+    b = generate_building(BuildingBrief(
+        typical=CorridorBrief(units_per_row=6), floors=3, basements=1))
+    assert check_column_alignment(b) == []
+    assert b.floors[0].spec.x_spacings == b.floors[1].spec.x_spacings
+
+
+# ── D2:透天層別分化(differentiated)────────────────────────────────────
+def test_house_differentiated_floor_programs():
+    b = generate_building(BuildingBrief(
+        typical=HouseBrief(**HOUSE), floors=3, basements=1, differentiated=True))
+    by_label = {f.label: f.spec for f in b.floors}
+    n1 = [r.name for r in by_label["1F"].rooms]
+    for expected in ("客廳", "玄關", "廚房", "餐廳"):
+        assert expected in n1
+    assert not any(r.kind == "bedroom" for r in by_label["1F"].rooms)  # 臥室全上樓
+    beds = [r for r in by_label["2F"].rooms if r.kind == "bedroom"]
+    assert len(beds) == 3
+    assert not any(r.kind == "kitchen" for r in by_label["2F"].rooms)
+    nb = [r.name for r in by_label["B1F"].rooms]
+    assert "車庫" in nb and "機房" in nb
+    assert check_column_alignment(b) == []                # 四層柱全對齊
+
+
+def test_house_stairwell_stacked():
+    """樓梯間每層同位、同一座梯(上下貫通);頂層樓梯標「下」。"""
+    b = generate_building(BuildingBrief(
+        typical=HouseBrief(**HOUSE), floors=3, basements=1, differentiated=True))
+    zones = [next(r for r in f.spec.rooms if r.kind == "stair").points
+             for f in b.floors]
+    assert all(z == zones[0] for z in zones)
+    origins = [f.spec.stairs[0].origin for f in b.floors]
+    assert all(o == origins[0] for o in origins)
+    assert b.floors[-1].spec.stairs[0].label == "下"      # 3F 只能往下
+    assert b.floors[0].spec.stairs[0].label == "上"       # B1F 往上
+
+
+def test_house_wet_stack_aligned():
+    """濕區管道上下對齊:1F 衛浴、2F 衛浴、B1F 機房同一開間。"""
+    b = generate_building(BuildingBrief(
+        typical=HouseBrief(**HOUSE), floors=2, basements=1, differentiated=True))
+    by_label = {f.label: f.spec for f in b.floors}
+
+    def x_range(spec, name):
+        r = next(r for r in spec.rooms if r.name == name)
+        xs = [p[0] for p in r.points]
+        return (min(xs), max(xs))
+
+    assert (x_range(by_label["1F"], "衛浴")
+            == x_range(by_label["2F"], "衛浴")
+            == x_range(by_label["B1F"], "機房"))
+
+
+def test_house_columns_hidden_in_wall_junctions():
+    """使用者反饋 2026-07-14:柱要站在兩道豎牆的交會處,不能凸在房間牆
+    段中間 → 每條中間軸線都必須有一道豎牆坐在上面(三種樓層都查)。"""
+    from src.design.layout_generator import (
+        generate_house_basement, generate_house_public, generate_house_upper)
+    brief = HouseBrief(**HOUSE)
+    for spec in (generate_house_public(brief), generate_house_upper(brief),
+                 generate_house_basement(brief)):
+        ox = spec.grid_origin[0]
+        axes = [ox]
+        for s in spec.x_spacings:
+            axes.append(axes[-1] + s)
+        wall_xs = {w.start[0] for w in spec.walls if w.start[0] == w.end[0]}
+        for a in axes[1:-1]:                     # 中間軸線(兩端在外牆上)
+            assert any(abs(a - wx) < 1 for wx in wall_xs), \
+                f"{spec.floor_label} 軸線 x={a} 上沒有豎牆(柱會凸在房間裡)"
+
+
+def test_house_floors_furnished():
+    """使用者反饋 2026-07-14:房間不能空的——臥室要有床/衣櫃,公共層要有
+    沙發/餐桌/流理台/衛浴設備(碰撞與門迴轉由 validate_spec 把關)。"""
+    from src.design.layout_generator import (
+        Counter, FixturePlacement, generate_house_public, generate_house_upper)
+    brief = HouseBrief(**HOUSE)
+    up = generate_house_upper(brief)
+    names_up = [fx.name for fx in up.fixtures if isinstance(fx, FixturePlacement)]
+    assert names_up.count("bed_double") == 1          # 主臥雙人床
+    assert names_up.count("bed_single") == brief.bedrooms - 1
+    assert names_up.count("wardrobe") == brief.bedrooms
+    assert "toilet" in names_up and "basin" in names_up
+    pub = generate_house_public(brief)
+    names_pub = [fx.name for fx in pub.fixtures if isinstance(fx, FixturePlacement)]
+    assert "sofa3" in names_pub and "table4" in names_pub
+    assert any(isinstance(fx, Counter) for fx in pub.fixtures)   # 廚房流理台
+
+
+def test_differentiated_requires_house():
+    with pytest.raises(ValueError):
+        generate_building(BuildingBrief(
+            typical=CorridorBrief(units_per_row=4), floors=3, differentiated=True))
+
+
+def test_house_basement_requires_differentiated():
+    with pytest.raises(ValueError):
+        generate_building(BuildingBrief(
+            typical=HouseBrief(**HOUSE), floors=2, basements=1))
+
+
+def test_negative_basements_rejected():
+    with pytest.raises(ValueError):
+        generate_building(BuildingBrief(
+            typical=CorridorBrief(units_per_row=4), floors=2, basements=-1))
 
 
 # ── 檢核不依賴產生器(可直接餵手組 BuildingSpec)────────────────────────────
