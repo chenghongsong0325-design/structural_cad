@@ -83,7 +83,7 @@ def test_generate_single_floor_house() -> None:
 def test_generate_multifloor_house_with_basement() -> None:
     c = _client(_payload(site_width_m=19, site_depth_m=13,
                          floors_above=3, basements=1))
-    r = c.post("/api/generate", json={"text": "透天三層,地下一層"})
+    r = c.post("/api/generate", json={"text": "透天三層,地下一層", "seed": 5})
     assert r.status_code == 200
     data = r.json()
     assert ([s["label"] for s in data["sheets"]]
@@ -91,6 +91,21 @@ def test_generate_multifloor_house_with_basement() -> None:
     assert {s["kind"] for s in data["sheets"]} == {"floor", "section",
                                                    "elevation"}
     assert "地上 3 層 + 地下 1 層" in data["summary"]
+    assert data["seed"] == 5
+    assert "樓梯" in data["design_note"] and "廚房" in data["design_note"]
+
+
+def test_seed_reproducible_and_random(monkeypatch) -> None:
+    """同 seed → 同方案(同設計說明);不帶 seed → 伺服器隨機抽,會給回 seed。"""
+    payload = _payload(site_width_m=19, site_depth_m=13,
+                       floors_above=3, basements=1)
+    c = _client(payload)
+    a = c.post("/api/generate", json={"text": "透天三層", "seed": 3}).json()
+    b = c.post("/api/generate", json={"text": "透天三層", "seed": 3}).json()
+    assert a["design_note"] == b["design_note"]         # 同 seed 同方案
+
+    rnd = c.post("/api/generate", json={"text": "透天三層"}).json()
+    assert isinstance(rnd["seed"], int)                 # 隨機抽的 seed 有回傳
 
 
 # ---------------------------------------------------------------------------

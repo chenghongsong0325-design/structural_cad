@@ -40,6 +40,7 @@
 """
 from __future__ import annotations
 
+import random
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -133,6 +134,8 @@ class HouseBrief:
     floor_label: str = "1F"
     master_corner: Optional[str] = None   # "NW"/"NE"/"SW"/"SE"
     kitchen_side: Optional[str] = None    # "N"/"S"/"E"/"W"
+    seed: int = 0                         # 設計變體種子(E2:同 seed 同方案,
+                                          # 換 seed 換方案;見 _house_variant)
 
 
 @dataclass
@@ -196,7 +199,8 @@ def _blocked(col_positions: list[float], col: float) -> list[tuple[float, float]
     return [(p - r, p + r) for p in col_positions]
 
 
-def _plan_x_grid(bx0: float, W: float, majors: list[float]) -> list[float]:
+def _plan_x_grid(bx0: float, W: float, majors: list[float],
+                 prefer: int = 0) -> list[float]:
     """單戶 X 向軸網:等分起手、軸線吸附主要隔牆、跨數擇優(柱網原則)。
 
     對每個候選跨數(目標跨距的前後一跨、等分跨距在合理範圍):
@@ -204,7 +208,9 @@ def _plan_x_grid(bx0: float, W: float, majors: list[float]) -> list[float]:
         且挪過去之後跨距仍規則(range 內、max/min ≤ 上限)→ 軸線挪到牆位,
         柱正好站在隔牆交點、被牆包住。
       * 挪不過去的中間軸線是「孤柱列」(柱凸在房間邊的牆上,難看)。
-    選孤柱列最少的方案;平手取跨距最接近 TARGET_BAY 者。
+    選孤柱列最少的方案;平手時看 prefer(E2 設計變體抽選):
+      0=跨距最接近 TARGET_BAY(原行為)、-1=偏好大跨(少柱)、+1=偏好密柱。
+    無論 prefer 為何,都只在「孤柱最少」的合格方案裡挑,不會犧牲柱網品質。
     """
     n0 = round(W / TARGET_BAY)
     best: Optional[tuple] = None
@@ -228,7 +234,9 @@ def _plan_x_grid(bx0: float, W: float, majors: list[float]) -> list[float]:
                     continue
             if abs(m - grid[gi]) > 1:
                 orphans += 1
-        score = (orphans, abs(span - TARGET_BAY))
+        # 次要排序鍵依 prefer:0 取近目標跨距;-1 取少跨(nxc 小);+1 取多跨。
+        tiebreak = {0: abs(span - TARGET_BAY), -1: nxc, 1: -nxc}[prefer]
+        score = (orphans, tiebreak)
         if best is None or score < best[0]:
             best = (score, grid)
     if best is None:
@@ -828,6 +836,20 @@ def _validate_or_raise(spec: FloorPlanSpec, what: str) -> None:
         raise ValueError(f"{what} 未通過檢核:\n  - " + "\n  - ".join(problems))
 
 
+def _finish_house(spec: FloorPlanSpec, f: SimpleNamespace,
+                  what: str) -> FloorPlanSpec:
+    """透天各層收尾:依變體套整張圖鏡射(樓梯/服務帶方位),再跑檢核。
+
+    骨架與房間都在「標準朝向」(樓梯東、服務帶北)畫好,最後一次鏡射翻成
+    這個 seed 抽到的朝向。各層用同一 brief(同 mx/my)→ 翻法一致、柱位仍
+    上下對齊。檢核跑在鏡射後的最終結果上。
+    """
+    if f.v.mx or f.v.my:
+        spec = _mirror_spec(spec, f.v.mx, f.v.my)
+    _validate_or_raise(spec, what)
+    return spec
+
+
 def _slot(desired: float, widths: list[float], lo: float, hi: float,
           blocked: list[tuple[float, float]], what: str) -> tuple[float, float]:
     """在 [lo,hi] 找不壓柱的開口位置(絕對座標);widths 由寬到窄逐一嘗試
@@ -837,6 +859,77 @@ def _slot(desired: float, widths: list[float], lo: float, hi: float,
         if pos is not None:
             return pos, w
     raise ValueError(f"{what} 在 {lo/1000:.1f}~{hi/1000:.1f}m 內找不到不壓柱的位置")
+
+
+# ---------------------------------------------------------------------------
+# 設計變體(E2:同一句需求,換 seed 換方案)
+# ---------------------------------------------------------------------------
+# 「食譜」裡本來寫死的決定,改成「合格範圍內抽籤」。抽的來源是 brief.seed,
+# 所以:同 seed → 同一組抽選 → 同一個方案(可重現、可測試);換 seed → 換
+# 方案。抽選一律落在既有檢核守得住的範圍內,抽完照跑 validate,不會生出不能
+# 住的圖。多樓層各層用同一個 brief(同 seed)→ 抽選一致 → 柱位仍上下對齊。
+#
+# 兩個大方向靠現成的整張圖鏡射(_mirror_spec)達成,不必重寫房間座標:
+#   * mx(左右翻):樓梯/服務核 東端 ↔ 西端。
+#   * my(上下翻):服務帶(廚房/臥室)北 ↔ 南。
+# 這是「內部實作技巧」——配上開放廚房、主臥比例、開窗位置等其他抽選,兩個
+# 不同 seed 的方案不會是彼此的鏡像,而是整體都不同的設計。
+@dataclass
+class HouseVariant:
+    """一組抽定的設計選擇(從 seed 算出,純函式)。
+
+    這一版(E2 第一步)只放「不會破壞藏柱」的安全軸:樓梯東西、服務帶南北
+    (皆靠整張圖鏡射,翻完仍藏柱)、開放/獨立廚房(開放版留中島腳包柱)、
+    開窗位置(跨內抖動,仍躲柱)。主臥倍率/柱網跨數暫固定(它們會改臥室
+    隔牆位置,而軸網三層共用、須同時藏 1F 廚房牆與 2F 臥室牆——要安全地變
+    得先讓 1F 廚房位置跟軸網連動,留待下一步)。master_ratio/bay_pref 欄位
+    先擺著,之後接上連動再開放抽選。
+    """
+
+    mx: bool                # 左右翻:樓梯/服務核 東(F)/西(T)
+    my: bool                # 上下翻:服務帶 南(T)/北(F)
+    kitchen_open: bool      # 1F 廚房 開放式(併入餐廳)/獨立間
+    master_ratio: float = MASTER_RATIO   # (暫固定)主臥加大倍率
+    bay_pref: int = 0                    # (暫固定)柱網跨數偏好
+
+    @property
+    def note(self) -> str:
+        """給使用者看的一行設計說明。"""
+        return " · ".join([
+            f"樓梯{'西' if self.mx else '東'}側",
+            f"廚房臥室朝{'南' if self.my else '北'}",
+            "開放式廚房" if self.kitchen_open else "獨立廚房",
+        ])
+
+
+def _house_variant(brief: HouseBrief) -> HouseVariant:
+    """brief.seed → 一組設計選擇(deterministic;同 seed 同結果)。"""
+    rng = random.Random(brief.seed)
+    return HouseVariant(
+        mx=rng.random() < 0.5,
+        my=rng.random() < 0.5,
+        kitchen_open=rng.random() < 0.5,
+    )
+
+
+def house_design_note(brief: Brief) -> str:
+    """這個 brief 的設計說明(給網頁顯示);非透天回空字串。"""
+    return _house_variant(brief).note if isinstance(brief, HouseBrief) else ""
+
+
+def _win_rng(brief: HouseBrief, tag: str) -> random.Random:
+    """某層開窗位置抖動用的獨立亂數源(同 seed+層別 → 同結果)。"""
+    return random.Random(f"{brief.seed}-{tag}")
+
+
+def _jitter(rng: random.Random, center: float, lo: float, hi: float,
+            span: float = 0.35) -> float:
+    """把 center 在 [lo,hi] 內隨機挪動(±span 比例),供開窗位置抽選。
+    只給 _slot 當「期望位置」——實際仍會躲柱,躲不掉就退回最近合法位置。"""
+    if hi <= lo:
+        return center
+    reach = (hi - lo) * span / 2
+    return _clamp(center + rng.uniform(-reach, reach), lo, hi)
 
 
 def _house_frame(brief: HouseBrief) -> SimpleNamespace:
@@ -868,8 +961,9 @@ def _house_frame(brief: HouseBrief) -> SimpleNamespace:
     # 硬補的中間軸線沒有隔牆可吸附 → 柱光溜溜凸在牆段中間/房間裡。
     # 房間寬到合理上限就封頂,建築在可建範圍內置中,多的寬度留作側院;
     # 柱網因此縮回「每條軸線都有牆交點可藏」的範圍。
-    ratios = [MASTER_RATIO] + [1.0] * (brief.bedrooms - 1)
-    w_cap = max(MAX_BEDROOM_WIDTH * sum(ratios) / MASTER_RATIO
+    v = _house_variant(brief)                       # 這棟樓的設計抽選(同 seed 同結果)
+    ratios = [v.master_ratio] + [1.0] * (brief.bedrooms - 1)
+    w_cap = max(MAX_BEDROOM_WIDTH * sum(ratios) / v.master_ratio
                 + WET_W + STAIRWELL_W, 10000)
     if W > w_cap:
         side = (W - w_cap) / 2
@@ -892,7 +986,7 @@ def _house_frame(brief: HouseBrief) -> SimpleNamespace:
     for w in bed_w:
         bed_x.append(bed_x[-1] + w)            # bed_x[-1] == xb
 
-    grid_x = _plan_x_grid(bx0, W, bed_x[1:-1] + [xb])
+    grid_x = _plan_x_grid(bx0, W, bed_x[1:-1] + [xb], prefer=v.bay_pref)
 
     # 反向吸附:隔牆距軸線 < WALL_SNAP_TOL 就挪到軸線上(柱正好站在
     # 隔牆與帶分界牆/北外牆的交點);吸附後房寬仍須合格。
@@ -945,7 +1039,7 @@ def _house_frame(brief: HouseBrief) -> SimpleNamespace:
     return SimpleNamespace(bx0=bx0, by0=by0, bx1=bx1, by1=by1, W=W, D=D,
                            dn=dn, ds=ds, yd=yd, xs=xs, xb=xb, xk=xk,
                            bed_x=bed_x, grid_x=grid_x, blocked=blocked,
-                           spec_kw=spec_kw)
+                           v=v, spec_kw=spec_kw)
 
 
 def _house_stair(f: SimpleNamespace, label: str = "上"):
@@ -963,49 +1057,94 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
     真實透天的標準分層。客餐之間開 1.5m 開放通道(無門扇)。
     """
     f = _house_frame(brief)
-    xk = f.xk                                                # 廚房東牆(已吸附軸線)
+    xk = f.xk                                                # 廚房/餐廳分界(已吸附軸線)
     xf = f.bx1 - FOYER_W                                     # 玄關西緣(東南角)
     foy_n = f.by0 + FOYER_D
+    rng = _win_rng(brief, "1F")                              # 開窗位置抖動(E2)
+    open_kitchen = f.v.kitchen_open                          # 開放式廚房(併入餐廳)
 
-    # 開口位置(絕對 x;皆自動躲柱)。
+    # 開口位置(絕對 x;皆自動躲柱)。窗的期望位置隨 seed 在跨內抖動。
     entry, ew = _slot((xf + f.bx1) / 2, [ENTRY_DOOR_WIDTH], xf, f.bx1, f.blocked, "大門")
-    wl1, wl1w = _slot(f.bx0 + f.W * 0.20, [1800, 1500], f.bx0, xf, f.blocked, "客廳南窗1")
-    wl2, wl2w = _slot(f.bx0 + f.W * 0.55, [1800, 1500], f.bx0, xf, f.blocked, "客廳南窗2")
-    wk, wkw = _slot((f.bx0 + xk) / 2, [1200, 900], f.bx0, xk, f.blocked, "廚房北窗")
-    wd, wdw = _slot((xk + f.xb) / 2, [1500, 1200], xk, f.xb, f.blocked, "餐廳北窗")
+    wl1, wl1w = _slot(_jitter(rng, f.bx0 + f.W * 0.20, f.bx0, xf),
+                      [1800, 1500], f.bx0, xf, f.blocked, "客廳南窗1")
+    wl2, wl2w = _slot(_jitter(rng, f.bx0 + f.W * 0.55, f.bx0, xf),
+                      [1800, 1500], f.bx0, xf, f.blocked, "客廳南窗2")
+    wk, wkw = _slot(_jitter(rng, (f.bx0 + xk) / 2, f.bx0, xk),
+                    [1200, 900], f.bx0, xk, f.blocked, "廚房北窗")
+    wd, wdw = _slot(_jitter(rng, (xk + f.xb) / 2, xk, f.xb),
+                    [1500, 1200], xk, f.xb, f.blocked, "餐廳北窗")
     wb, wbw = _slot((f.xb + f.xs) / 2, [800, 600], f.xb, f.xs, f.blocked, "衛浴北窗")
-    dk, dkw = _slot((f.bx0 + xk) / 2, [DOOR_WIDTH], f.bx0, xk, f.blocked, "廚房門")
-    dp, dpw = _slot((xk + f.xb) / 2, [PASSAGE_WIDTH, 1200], xk, f.xb, f.blocked, "客餐通道")
     db, dbw = _slot((f.xb + f.xs) / 2, [750], f.xb, f.xs, f.blocked, "衛浴門")
     dst, dstw = _slot((f.xs + f.bx1) / 2, [DOOR_WIDTH], f.xs, f.bx1, f.blocked, "樓梯間門")
 
-    walls = [
-        Wall((f.bx0, f.by0), (f.bx1, f.by0), EXT,           # 0 南外牆
-             openings=[Opening(entry - f.bx0, ew, "door"),
-                       Opening(wl1 - f.bx0, wl1w, "window"),
-                       Opening(wl2 - f.bx0, wl2w, "window")]),
-        Wall((f.bx0, f.by1), (f.bx1, f.by1), EXT,           # 1 北外牆
-             openings=[Opening(wk - f.bx0, wkw, "window"),
-                       Opening(wd - f.bx0, wdw, "window"),
-                       Opening(wb - f.bx0, wbw, "window")]),
-        Wall((f.bx0, f.by0), (f.bx0, f.by1), EXT),          # 2 西外牆
-        Wall((f.bx1, f.by0), (f.bx1, f.by1), EXT),          # 3 東外牆
-        Wall((f.bx0, f.yd), (f.bx1, f.yd), INT,             # 4 帶分界牆
-             openings=[Opening(dk - f.bx0, dkw, "door"),
-                       Opening(dp - f.bx0, dpw, "door"),    # 客餐開放通道(無門扇)
-                       Opening(db - f.bx0, dbw, "door"),
-                       Opening(dst - f.bx0, dstw, "door")]),
-        Wall((xk, f.yd), (xk, f.by1), INT),                 # 5 廚|餐
-        Wall((f.xb, f.yd), (f.xb, f.by1), INT),             # 6 餐|衛(管道牆)
-        Wall((f.xs, f.yd), (f.xs, f.by1), INT),             # 7 衛|梯
-        Wall((xf, f.by0), (xf, foy_n), INT),                # 8 玄關隔屏
-    ]
-    doors = [
-        DoorPlacement(0, 0, Door(hinge="left", swing="out")),   # 大門 → 玄關
-        DoorPlacement(4, 0, Door(hinge="left", swing="out")),   # 廚房
-        DoorPlacement(4, 2, Door(hinge="left", swing="out")),   # 衛浴
-        DoorPlacement(4, 3, Door(hinge="left", swing="out")),   # 樓梯間
-    ]
+    south = Wall((f.bx0, f.by0), (f.bx1, f.by0), EXT,       # 0 南外牆
+                 openings=[Opening(entry - f.bx0, ew, "door"),
+                           Opening(wl1 - f.bx0, wl1w, "window"),
+                           Opening(wl2 - f.bx0, wl2w, "window")])
+    north = Wall((f.bx0, f.by1), (f.bx1, f.by1), EXT,       # 1 北外牆
+                 openings=[Opening(wk - f.bx0, wkw, "window"),
+                           Opening(wd - f.bx0, wdw, "window"),
+                           Opening(wb - f.bx0, wbw, "window")])
+
+    if open_kitchen:
+        # 開放式廚房:拆掉廚|餐隔牆,廚+餐合成一間「餐廚」,對客廳開寬通道。
+        dp, dpw = _slot((f.bx0 + f.xb) / 2, [2400, 1800], f.bx0, f.xb,
+                        f.blocked, "餐廚通道")
+        divider = Wall((f.bx0, f.yd), (f.bx1, f.yd), INT,   # 4 帶分界牆
+                       openings=[Opening(dp - f.bx0, dpw, "door"),
+                                 Opening(db - f.bx0, dbw, "door"),
+                                 Opening(dst - f.bx0, dstw, "door")])
+        # 中島腳:開放廚房拆了廚|餐牆,原本藏在該牆的柱會露進餐廚;留一段
+        # 短半牆(從分界牆往北 900,坐在同一條軸線 xk)把柱包住,兼作餐廚
+        # 之間的視覺分界(常見的開放廚房半牆/中島腳)。
+        walls = [south, north,
+                 Wall((f.bx0, f.by0), (f.bx0, f.by1), EXT),  # 2 西外牆
+                 Wall((f.bx1, f.by0), (f.bx1, f.by1), EXT),  # 3 東外牆
+                 divider,
+                 Wall((f.xb, f.yd), (f.xb, f.by1), INT),     # 5 餐廚|衛(管道牆)
+                 Wall((f.xs, f.yd), (f.xs, f.by1), INT),     # 6 衛|梯
+                 Wall((xf, f.by0), (xf, foy_n), INT),        # 7 玄關隔屏
+                 Wall((xk, f.yd), (xk, f.yd + 900), INT)]    # 8 中島腳(包柱)
+        doors = [
+            DoorPlacement(0, 0, Door(hinge="left", swing="out")),   # 大門
+            DoorPlacement(4, 1, Door(hinge="left", swing="out")),   # 衛浴
+            DoorPlacement(4, 2, Door(hinge="left", swing="out")),   # 樓梯間
+        ]
+        service_rooms = [
+            Room("餐廚", [(f.bx0, f.yd), (f.xb, f.yd), (f.xb, f.by1), (f.bx0, f.by1)],
+                 kind="dining", code=ROOM_CODES["dining"]),
+        ]
+    else:
+        # 獨立廚房:廚|餐有隔牆,廚房自帶門,餐廳對客廳開放通道(無門扇)。
+        dk, dkw = _slot((f.bx0 + xk) / 2, [DOOR_WIDTH], f.bx0, xk, f.blocked, "廚房門")
+        dp, dpw = _slot((xk + f.xb) / 2, [PASSAGE_WIDTH, 1200], xk, f.xb,
+                        f.blocked, "客餐通道")
+        divider = Wall((f.bx0, f.yd), (f.bx1, f.yd), INT,   # 4 帶分界牆
+                       openings=[Opening(dk - f.bx0, dkw, "door"),
+                                 Opening(dp - f.bx0, dpw, "door"),
+                                 Opening(db - f.bx0, dbw, "door"),
+                                 Opening(dst - f.bx0, dstw, "door")])
+        walls = [south, north,
+                 Wall((f.bx0, f.by0), (f.bx0, f.by1), EXT),  # 2 西外牆
+                 Wall((f.bx1, f.by0), (f.bx1, f.by1), EXT),  # 3 東外牆
+                 divider,
+                 Wall((xk, f.yd), (xk, f.by1), INT),         # 5 廚|餐
+                 Wall((f.xb, f.yd), (f.xb, f.by1), INT),     # 6 餐|衛(管道牆)
+                 Wall((f.xs, f.yd), (f.xs, f.by1), INT),     # 7 衛|梯
+                 Wall((xf, f.by0), (xf, foy_n), INT)]        # 8 玄關隔屏
+        doors = [
+            DoorPlacement(0, 0, Door(hinge="left", swing="out")),   # 大門
+            DoorPlacement(4, 0, Door(hinge="left", swing="out")),   # 廚房
+            DoorPlacement(4, 2, Door(hinge="left", swing="out")),   # 衛浴
+            DoorPlacement(4, 3, Door(hinge="left", swing="out")),   # 樓梯間
+        ]
+        service_rooms = [
+            Room("廚房", [(f.bx0, f.yd), (xk, f.yd), (xk, f.by1), (f.bx0, f.by1)],
+                 kind="kitchen", code=ROOM_CODES["kitchen"]),
+            Room("餐廳", [(xk, f.yd), (f.xb, f.yd), (f.xb, f.by1), (xk, f.by1)],
+                 kind="dining", code=ROOM_CODES["dining"]),
+        ]
+
     windows = [WindowPlacement(0, 1), WindowPlacement(0, 2),
                WindowPlacement(1, 0), WindowPlacement(1, 1), WindowPlacement(1, 2)]
 
@@ -1015,10 +1154,7 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
              kind="living", code=ROOM_CODES["living"]),
         Room("玄關", [(xf, f.by0), (f.bx1, f.by0), (f.bx1, foy_n), (xf, foy_n)],
              kind="foyer", code=ROOM_CODES["foyer"]),
-        Room("廚房", [(f.bx0, f.yd), (xk, f.yd), (xk, f.by1), (f.bx0, f.by1)],
-             kind="kitchen", code=ROOM_CODES["kitchen"]),
-        Room("餐廳", [(xk, f.yd), (f.xb, f.yd), (f.xb, f.by1), (xk, f.by1)],
-             kind="dining", code=ROOM_CODES["dining"]),
+        *service_rooms,
         Room("衛浴", [(f.xb, f.yd), (f.xs, f.yd), (f.xs, f.by1), (f.xb, f.by1)],
              kind="bathroom", code=ROOM_CODES["bathroom"]),
         Room("樓梯間", [(f.xs, f.yd), (f.bx1, f.yd), (f.bx1, f.by1), (f.xs, f.by1)],
@@ -1045,8 +1181,7 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
     spec = FloorPlanSpec(walls=walls, rooms=rooms, doors=doors, windows=windows,
                          fixtures=fixtures,
                          stairs=[_house_stair(f)], floor_label="1F", **f.spec_kw)
-    _validate_or_raise(spec, "透天 1F 公共層")
-    return spec
+    return _finish_house(spec, f, "透天 1F 公共層")
 
 
 def generate_house_upper(brief: HouseBrief) -> FloorPlanSpec:
@@ -1058,6 +1193,7 @@ def generate_house_upper(brief: HouseBrief) -> FloorPlanSpec:
     """
     f = _house_frame(brief)
     bed_x = f.bed_x        # 隔牆已在骨架吸附軸線(柱藏隔牆交點)
+    rng = _win_rng(brief, "2F")                             # 開窗位置抖動(E2)
 
     band_open: list[Opening] = []
     doors: list[DoorPlacement] = []
@@ -1069,7 +1205,9 @@ def generate_house_upper(brief: HouseBrief) -> FloorPlanSpec:
         doors.append(DoorPlacement(4, len(band_open),
                                    Door(hinge="left", swing="out")))
         band_open.append(Opening(dpos - f.bx0, dw, "door"))
-        wpos, ww = _slot((bed_x[i] + bed_x[i + 1]) / 2, [1500, 1200, 900],
+        wpos, ww = _slot(_jitter(rng, (bed_x[i] + bed_x[i + 1]) / 2,
+                                 bed_x[i], bed_x[i + 1]),
+                         [1500, 1200, 900],
                          bed_x[i], bed_x[i + 1], f.blocked, f"臥室{i+1}窗")
         windows.append(WindowPlacement(1, len(win_open)))
         win_open.append(Opening(wpos - f.bx0, ww, "window"))
@@ -1082,8 +1220,10 @@ def generate_house_upper(brief: HouseBrief) -> FloorPlanSpec:
     wb_, wbw = _slot((f.xb + f.xs) / 2, [800, 600], f.xb, f.xs, f.blocked, "衛浴北窗")
     windows.append(WindowPlacement(1, len(win_open)))
     win_open.append(Opening(wb_ - f.bx0, wbw, "window"))
-    wl1, wl1w = _slot(f.bx0 + f.W * 0.30, [1800, 1500], f.bx0, f.bx1, f.blocked, "起居南窗1")
-    wl2, wl2w = _slot(f.bx0 + f.W * 0.70, [1800, 1500], f.bx0, f.bx1, f.blocked, "起居南窗2")
+    wl1, wl1w = _slot(_jitter(rng, f.bx0 + f.W * 0.30, f.bx0, f.bx1),
+                      [1800, 1500], f.bx0, f.bx1, f.blocked, "起居南窗1")
+    wl2, wl2w = _slot(_jitter(rng, f.bx0 + f.W * 0.70, f.bx0, f.bx1),
+                      [1800, 1500], f.bx0, f.bx1, f.blocked, "起居南窗2")
 
     walls = [
         Wall((f.bx0, f.by0), (f.bx1, f.by0), EXT,           # 0 南外牆(起居窗)
@@ -1133,8 +1273,7 @@ def generate_house_upper(brief: HouseBrief) -> FloorPlanSpec:
     spec = FloorPlanSpec(walls=walls, rooms=rooms, doors=doors, windows=windows,
                          fixtures=fixtures,
                          stairs=[_house_stair(f)], floor_label="2F", **f.spec_kw)
-    _validate_or_raise(spec, "透天臥室層")
-    return spec
+    return _finish_house(spec, f, "透天臥室層")
 
 
 def generate_house_basement(brief: HouseBrief) -> FloorPlanSpec:
@@ -1196,8 +1335,7 @@ def generate_house_basement(brief: HouseBrief) -> FloorPlanSpec:
 
     spec = FloorPlanSpec(walls=walls, rooms=rooms, doors=doors, windows=[],
                          stairs=[_house_stair(f)], floor_label="B1F", **f.spec_kw)
-    _validate_or_raise(spec, "透天 B1F 車庫層")
-    return spec
+    return _finish_house(spec, f, "透天 B1F 車庫層")
 
 
 # ---------------------------------------------------------------------------
@@ -1284,12 +1422,43 @@ def _mirror_spec(spec: FloorPlanSpec, mx: bool, my: bool) -> FloorPlanSpec:
                 name=fx.name, insert=tp(fx.insert),
                 rotation=_t_rotation(mx, my, fx.rotation)))
 
+    # 柱心(多樓層透天有指定)也要跟著翻,否則鏡射後柱位對不上牆與各層。
+    col_centers = ([tp(c) for c in spec.column_centers]
+                   if spec.column_centers is not None else None)
+
+    # 樓梯:翻位置與行進方向(梯井左右手是畫圖寫死的,示意平面不強求)。
+    stairs = [_mirror_stair(st, sx2, sy2, mx, my) for st in spec.stairs]
+
     return replace(
         spec, walls=walls, doors=doors, windows=windows, rooms=rooms,
-        fixtures=fixtures,
+        fixtures=fixtures, column_centers=col_centers, stairs=stairs,
         x_spacings=list(reversed(spec.x_spacings)) if mx else spec.x_spacings,
         y_spacings=list(reversed(spec.y_spacings)) if my else spec.y_spacings,
     )
+
+
+def _mirror_stair(st, sx2: float, sy2: float, mx: bool, my: bool):
+    """樓梯(Stair/UStair)左右/上下鏡射:重算最小角 origin 與行進方向。
+
+    origin 一律是樓梯間矩形最小 x/y 角。先由 origin+width+length+direction 還原
+    矩形 x/y 範圍,鏡射後取新的最小角當 origin;方向 mx 翻東西、my 翻南北。
+    梯段左右手(起步/折返、梯井側)是繪圖層寫死,不隨鏡射改(示意圖可接受)。
+    """
+    ox, oy = st.origin
+    if st.direction in ("north", "south"):
+        xext, yext = (ox, ox + st.width), (oy, oy + st.length)
+    else:
+        xext, yext = (ox, ox + st.length), (oy, oy + st.width)
+    if mx:
+        xext = (sx2 - xext[1], sx2 - xext[0])
+    if my:
+        yext = (sy2 - yext[1], sy2 - yext[0])
+    d = st.direction
+    if mx and d in ("east", "west"):
+        d = "west" if d == "east" else "east"
+    if my and d in ("north", "south"):
+        d = "south" if d == "north" else "north"
+    return replace(st, origin=(xext[0], yext[0]), direction=d)
 
 
 def generate_floor_plan(brief: Brief) -> FloorPlanSpec:

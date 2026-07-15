@@ -6,6 +6,7 @@ const $ = (id) => document.getElementById(id);
 let sheets = [];        // 這次生成的所有圖紙 [{label, kind, svg, dxf}]
 let current = -1;       // 目前顯示第幾張
 let view = { x: 0, y: 0, k: 1 };   // 平移/縮放狀態(切頁籤時重設)
+let lastText = "";      // 上次送出的需求(「重新設計」沿用同一句)
 
 // ── 開機自檢:要不要通行碼、伺服器有沒有設 API key ─────────────────
 fetch("/api/config").then((r) => r.json()).then((cfg) => {
@@ -24,18 +25,25 @@ $("examples").addEventListener("click", (e) => {
 });
 
 // ── 生成 ───────────────────────────────────────────────────────────
-$("generate").addEventListener("click", generate);
+$("generate").addEventListener("click", () => generate(null));
 $("text").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) generate();
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) generate(null);
 });
+// 重新設計:同一句需求、伺服器隨機換一個 seed → 換一個方案
+$("redesign").addEventListener("click", () => generate(lastText));
 
-async function generate() {
-  const text = $("text").value.trim();
+// seed=null → 首次生成用輸入框的字、由伺服器隨機抽方案;
+// 重新設計時把上次的字傳進來(reuseText)。
+async function generate(reuseText) {
+  const text = (reuseText !== null ? reuseText : $("text").value).trim();
   if (!text) { showError("請先輸入需求描述"); return; }
 
-  $("generate").disabled = true;
+  const btn = reuseText !== null ? $("redesign") : $("generate");
+  btn.disabled = true;
   $("status").textContent = "解析需求、設計格局、出圖中…(約 10~30 秒)";
   hideError();
+
+  const keepLabel = current >= 0 ? sheets[current].label : "1F";
 
   try {
     const resp = await fetch("/api/generate", {
@@ -46,17 +54,20 @@ async function generate() {
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || `伺服器錯誤 (${resp.status})`);
 
+    lastText = text;
     sheets = data.sheets;
     $("summary").textContent = data.summary;
+    $("design-note").textContent = data.design_note
+      ? "本案設計:" + data.design_note : "";
     $("zip").href = data.zip;
     buildTabs();
-    showSheet(sheets.findIndex((s) => s.label === "1F") >= 0
-              ? sheets.findIndex((s) => s.label === "1F") : 0);
+    const keep = sheets.findIndex((s) => s.label === keepLabel);   // 沿用當前樓層
+    showSheet(keep >= 0 ? keep : 0);
     $("result").classList.remove("hidden");
   } catch (err) {
     showError(err.message);
   } finally {
-    $("generate").disabled = false;
+    btn.disabled = false;
     $("status").textContent = "";
   }
 }

@@ -22,7 +22,9 @@ from src.design.layout_generator import (
 )
 
 # 透天層別分化用的基地(3 房要塞進臥室帶,基地要夠寬)。
-HOUSE = dict(site_width=19000, site_depth=13000, bedrooms=3)
+# seed=5 = 標準設計(樓梯東、獨立廚房、北帶),讓「假設固定格局」的測試穩定;
+# 設計變體(E2:鏡射/開放廚房/開窗抖動)另由 test_house_variant_* 覆蓋。
+HOUSE = dict(site_width=19000, site_depth=13000, bedrooms=3, seed=5)
 
 
 # ── 基本產出 ──────────────────────────────────────────────────────────────
@@ -189,16 +191,19 @@ def test_house_wet_stack_aligned():
 
 
 @pytest.mark.parametrize("site", [
-    HOUSE,                                                  # D2 示範基地
+    dict(site_width=19000, site_depth=13000, bedrooms=3),   # D2 示範基地
     dict(site_width=30000, site_depth=12000, bedrooms=2),   # 寬基地(E1 反饋)
 ])
-def test_house_columns_hidden_in_wall_junctions(site):
+@pytest.mark.parametrize("seed", [0, 1, 4, 5, 9])           # 涵蓋 8 種變體組合
+def test_house_columns_hidden_in_wall_junctions(site, seed):
     """使用者反饋 2026-07-14(兩次):柱要站在兩道豎牆的交會處,不能凸在
     房間牆段中間 → 每條中間軸線都必須有一道豎牆坐在上面(三種樓層都查)。
-    寬基地案例:2 房攤在 26m 寬會生出沒牆可吸附的軸線,靠建築寬度收斂修掉。"""
+    寬基地案例:2 房攤在 26m 寬會生出沒牆可吸附的軸線,靠建築寬度收斂修掉。
+    設計變體(E2:樓梯東西/服務帶南北/開放廚房)也不得破壞藏柱——鏡射整張
+    一起翻、開放廚房留中島腳包柱,所以多個 seed 都要成立。"""
     from src.design.layout_generator import (
         generate_house_basement, generate_house_public, generate_house_upper)
-    brief = HouseBrief(**site)
+    brief = HouseBrief(seed=seed, **site)
     for spec in (generate_house_public(brief), generate_house_upper(brief),
                  generate_house_basement(brief)):
         ox = spec.grid_origin[0]
@@ -254,6 +259,64 @@ def test_house_divider_columns_tucked_off_south_band():
         centers_by_floor.append(sorted(spec.column_centers))
     assert centers_by_floor[0] == centers_by_floor[1] == centers_by_floor[2], \
         "各層柱心不一致 → 上下對不齊"
+
+
+# ---------------------------------------------------------------------------
+# 設計變體(E2:同一句需求,換 seed 換方案)
+# ---------------------------------------------------------------------------
+def _house_signature(building):
+    """把一棟樓濃縮成可比對的「設計指紋」:各層房名+牆線+柱心+樓梯位置。"""
+    sig = []
+    for fl in building.floors:
+        s = fl.spec
+        sig.append((
+            fl.label,
+            tuple(sorted(r.name for r in s.rooms)),
+            tuple(sorted((round(w.start[0]), round(w.start[1]),
+                          round(w.end[0]), round(w.end[1])) for w in s.walls)),
+            tuple(sorted((round(c[0]), round(c[1]))
+                         for c in (s.column_centers or []))),
+            tuple(sorted((round(st.origin[0]), round(st.origin[1]), st.direction)
+                         for st in s.stairs)),
+        ))
+    return tuple(sig)
+
+
+def _build(seed):
+    return generate_building(BuildingBrief(
+        typical=HouseBrief(site_width=19000, site_depth=13000, bedrooms=3,
+                           seed=seed),
+        floors=3, basements=1, differentiated=True))
+
+
+def test_variant_same_seed_is_reproducible():
+    """同 seed → 完全相同的設計(可重現,才能測試/重畫)。"""
+    assert _house_signature(_build(7)) == _house_signature(_build(7))
+
+
+def test_variant_different_seeds_differ():
+    """不同 seed 至少要換出不同結構——8 個 seed 至少 4 種不同指紋。"""
+    sigs = {_house_signature(_build(s)) for s in range(8)}
+    assert len(sigs) >= 4
+
+
+def test_variant_covers_stair_band_kitchen():
+    """8 個 seed 應涵蓋樓梯東西、服務帶南北、開放/獨立廚房各兩種。"""
+    from src.design.layout_generator import HouseBrief as HB
+    from src.design.layout_generator import _house_variant
+    vs = [_house_variant(HB(site_width=19000, site_depth=13000, seed=s))
+          for s in range(8)]
+    assert {v.mx for v in vs} == {True, False}          # 樓梯東/西都有
+    assert {v.my for v in vs} == {True, False}          # 服務帶南/北都有
+    assert {v.kitchen_open for v in vs} == {True, False}  # 開放/獨立都有
+
+
+def test_variant_all_seeds_valid_and_aligned():
+    """隨便抽的 seed 都要生得出、且柱位上下對齊(抽選落在檢核守得住的範圍)。"""
+    for seed in range(12):
+        b = _build(seed)
+        assert not check_column_alignment(b)
+        assert len(b.floors) == 4                       # B1F+1F+2F+3F
 
 
 def test_house_floors_furnished():

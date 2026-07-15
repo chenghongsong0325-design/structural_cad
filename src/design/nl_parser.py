@@ -173,7 +173,7 @@ def _brief_from_data(data: dict) -> Brief:
     raise ValueError(f"未知建築類型:{btype!r}(需為 house 或 corridor)")
 
 
-def _building_from_data(data: dict) -> "BuildingBrief":
+def _building_from_data(data: dict, seed: int = 0) -> "BuildingBrief":
     """解析結果 dict → BuildingBrief(整棟樓需求)。
 
     標準層沿用 _brief_from_data;樓層數/地下室在這裡接上 D 階段的
@@ -182,10 +182,14 @@ def _building_from_data(data: dict) -> "BuildingBrief":
       * 透天(house)只要「多層或有地下室」就開層別分化 differentiated
         (1F 公共層、2F+ 臥室層、B1 車庫)——這是 D2 的預設玩法,也是
         generate_building 對「透天+地下室」的硬性要求。
+    seed:設計變體種子(E2)——同 seed 同方案、換 seed 換方案;只對透天
+      HouseBrief 有效(集合住宅變體未做)。
     """
     from src.design.building_generator import BuildingBrief
 
     typical = _brief_from_data(data)
+    if isinstance(typical, HouseBrief):
+        typical.seed = seed
     floors = int(data.get("floors_above") or 1)
     basements = int(data.get("basements") or 0)
     differentiated = isinstance(typical, HouseBrief) and (
@@ -213,19 +217,20 @@ def parse_brief(text: str, client: Optional[object] = None) -> Brief:
     return _brief_from_data(_call_llm(text, client))
 
 
-def parse_building_brief(text: str,
-                         client: Optional[object] = None) -> "BuildingBrief":
+def parse_building_brief(text: str, client: Optional[object] = None,
+                         seed: int = 0) -> "BuildingBrief":
     """中文需求描述 → BuildingBrief(整棟樓,E1 網頁化的入口)。
 
     與 parse_brief 同一次 LLM 呼叫、同一張 schema,多接住樓層數/地下室;
     沒講樓層就是單層,行為與 parse_brief + generate_floor_plan 一致。
+    seed:設計變體種子(E2),同 seed 同方案、換 seed 換方案(透天限定)。
     """
     if not text or not text.strip():
         raise ValueError("需求描述是空的")
     if client is None:
         from google import genai
         client = genai.Client()   # 自動讀 GEMINI_API_KEY / GOOGLE_API_KEY
-    return _building_from_data(_call_llm(text, client))
+    return _building_from_data(_call_llm(text, client), seed=seed)
 
 
 def _call_llm(text: str, client: object) -> dict:

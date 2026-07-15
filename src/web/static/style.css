@@ -88,7 +88,21 @@ button.primary:disabled { opacity: .55; cursor: wait; }
 /* 結果區 */
 .result { margin-top: 16px; }
 .result-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.result-info { display: flex; flex-direction: column; gap: 2px; }
+.result-actions { display: flex; align-items: center; gap: 14px; }
 .summary { color: var(--muted); font-size: 14px; }
+.design-note { color: var(--accent); font-size: 13px; }
+button.ghost {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 14px;
+  cursor: pointer;
+}
+button.ghost:hover { background: var(--accent); color: #10233a; }
+button.ghost:disabled { opacity: .55; cursor: wait; }
 .download { color: var(--accent); font-size: 14px; text-decoration: none; }
 .download:hover { text-decoration: underline; }
 
