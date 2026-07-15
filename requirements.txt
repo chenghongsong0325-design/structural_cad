@@ -13,5 +13,10 @@ matplotlib>=3.7
 # C2:自然語言介面(中文需求 → 設計需求),呼叫 Gemini API 解析
 google-genai>=1.0
 
-# 開發:單元測試
+# E1:網頁介面(FastAPI 後端;uvicorn 是啟動用的伺服器)
+fastapi>=0.110
+uvicorn[standard]>=0.29
+
+# 開發:單元測試(httpx 給 FastAPI 的 TestClient 用)
 pytest>=7.0
+httpx>=0.27

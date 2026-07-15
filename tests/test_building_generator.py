@@ -188,12 +188,17 @@ def test_house_wet_stack_aligned():
             == x_range(by_label["B1F"], "機房"))
 
 
-def test_house_columns_hidden_in_wall_junctions():
-    """使用者反饋 2026-07-14:柱要站在兩道豎牆的交會處,不能凸在房間牆
-    段中間 → 每條中間軸線都必須有一道豎牆坐在上面(三種樓層都查)。"""
+@pytest.mark.parametrize("site", [
+    HOUSE,                                                  # D2 示範基地
+    dict(site_width=30000, site_depth=12000, bedrooms=2),   # 寬基地(E1 反饋)
+])
+def test_house_columns_hidden_in_wall_junctions(site):
+    """使用者反饋 2026-07-14(兩次):柱要站在兩道豎牆的交會處,不能凸在
+    房間牆段中間 → 每條中間軸線都必須有一道豎牆坐在上面(三種樓層都查)。
+    寬基地案例:2 房攤在 26m 寬會生出沒牆可吸附的軸線,靠建築寬度收斂修掉。"""
     from src.design.layout_generator import (
         generate_house_basement, generate_house_public, generate_house_upper)
-    brief = HouseBrief(**HOUSE)
+    brief = HouseBrief(**site)
     for spec in (generate_house_public(brief), generate_house_upper(brief),
                  generate_house_basement(brief)):
         ox = spec.grid_origin[0]
@@ -204,6 +209,51 @@ def test_house_columns_hidden_in_wall_junctions():
         for a in axes[1:-1]:                     # 中間軸線(兩端在外牆上)
             assert any(abs(a - wx) < 1 for wx in wall_xs), \
                 f"{spec.floor_label} 軸線 x={a} 上沒有豎牆(柱會凸在房間裡)"
+
+
+def test_house_width_capped_on_wide_site():
+    """建築寬度隨房數收斂:30×12m 基地做 2 房,建築不該攤滿 26m 可建寬,
+    要封頂(房間全到上限的寬度)且置中,臥室寬不得爆表。"""
+    from src.design.layout_generator import (
+        MAX_BEDROOM_WIDTH, generate_house_upper)
+    spec = generate_house_upper(
+        HouseBrief(site_width=30000, site_depth=12000, bedrooms=2))
+    ox = spec.grid_origin[0]
+    width = sum(spec.x_spacings)
+    assert width < 15000                        # 收斂了,不是 26000
+    assert ox > 2000 + 1000                     # 退縮線再往內縮(置中留側院)
+    assert abs((ox - 2000) - (26000 - width - (ox - 2000))) < 1   # 兩側院等寬
+    beds = [r for r in spec.rooms if r.kind == "bedroom"]
+    assert beds and all(
+        (max(p[0] for p in r.points) - min(p[0] for p in r.points))
+        <= MAX_BEDROOM_WIDTH + 1 for r in beds)
+
+
+def test_house_divider_columns_tucked_off_south_band():
+    """使用者反饋 2026-07-15(附 AutoCAD 截圖):分界牆上的 T 型柱不能凸進
+    南側大客廳/起居室——柱南面要貼齊分界牆南皮。三種樓層都查,且各層該排
+    柱心一致(上下對齊)。"""
+    from src.design.layout_generator import (
+        INT, generate_house_basement, generate_house_public,
+        generate_house_upper)
+    brief = HouseBrief(site_width=30000, site_depth=12000, bedrooms=2)
+    centers_by_floor = []
+    for spec in (generate_house_public(brief), generate_house_upper(brief),
+                 generate_house_basement(brief)):
+        assert spec.column_centers is not None
+        by0 = spec.grid_origin[1]
+        yd = by0 + spec.y_spacings[0]               # 分界牆 y(南帶進深)
+        half = spec.column_size / 2
+        divider = sorted(c for c in spec.column_centers
+                         if abs(c[1] - half + INT / 2 - yd) < 1)  # 南面≈yd 的柱
+        assert len(divider) == len(spec.x_spacings) + 1, \
+            f"{spec.floor_label} 分界牆那排柱數不對"
+        for cx, cy in divider:
+            assert cy - half >= yd - INT / 2 - 1, \
+                f"{spec.floor_label} 柱南面 {cy-half} 凸過分界牆南皮 {yd-INT/2}"
+        centers_by_floor.append(sorted(spec.column_centers))
+    assert centers_by_floor[0] == centers_by_floor[1] == centers_by_floor[2], \
+        "各層柱心不一致 → 上下對不齊"
 
 
 def test_house_floors_furnished():

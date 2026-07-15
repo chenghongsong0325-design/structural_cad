@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>自動建築平面圖生成器</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>自動建築平面圖生成器</h1>
+  <p class="sub">用一句中文描述需求,自動設計出整棟樓的平面圖(可下載 DXF 回 AutoCAD)</p>
+</header>
+
+<main>
+  <section class="input-panel">
+    <textarea id="text" rows="3"
+      placeholder="例:透天三層,基地19×13米,三房,地下一層車庫"></textarea>
+
+    <div class="examples" id="examples">
+      <span class="hint">試試看:</span>
+      <button class="chip">透天三層,基地19×13米,三房,地下一層車庫</button>
+      <button class="chip">集合住宅每排6戶,走廊2米寬,五層樓,地下一層</button>
+      <button class="chip">基地16×14米,三房,主臥在西南角,廚房靠北</button>
+    </div>
+
+    <div class="actions">
+      <input id="code" type="password" placeholder="通行碼" class="hidden">
+      <button id="generate" class="primary">生成平面圖</button>
+      <span id="status"></span>
+    </div>
+
+    <div id="error" class="error hidden"></div>
+  </section>
+
+  <section id="result" class="result hidden">
+    <div class="result-head">
+      <span id="summary" class="summary"></span>
+      <a id="zip" class="download" download>⬇ 下載全部 DXF (zip)</a>
+    </div>
+    <div class="tabs" id="tabs"></div>
+    <div class="viewer" id="viewer">
+      <div class="canvas" id="canvas"></div>
+      <div class="viewer-tools">
+        <a id="dxf" class="download" download>⬇ 下載此張 DXF</a>
+        <span class="hint">滾輪縮放 · 拖曳平移 · 雙擊還原</span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# Render.com 一鍵部署設定(E1)
+# 用法:repo 推上 GitHub → Render 選「New +」→「Blueprint」→ 指到這個 repo,
+# 它會讀這個檔案自動建好服務;只要再到儀表板填兩個環境變數即可。
+services:
+  - type: web
+    name: structural-cad
+    runtime: docker
+    plan: free                  # 免費方案:15 分鐘沒人用會休眠,再訪問要等它醒來
+    envVars:
+      - key: GEMINI_API_KEY     # 必填:Gemini API 金鑰(儀表板手動填,不進 git)
+        sync: false
+      - key: ACCESS_CODE        # 建議填:通行碼,防路人亂打 API 燒你的額度
+        sync: false

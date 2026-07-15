@@ -1,0 +1,12 @@
+# Docker 建置時不要帶進容器的東西(跟 .gitignore 同理,但給 Docker 用)
+.git
+.venv
+venv
+__pycache__
+**/__pycache__
+.pytest_cache
+output
+ErrorReports
+tests
+scripts
+*.err

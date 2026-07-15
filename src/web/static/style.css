@@ -1,0 +1,137 @@
+/* 深色 CAD 風格 —— 跟 AutoCAD 模型空間一樣黑底,圖面線條才看得清楚 */
+:root {
+  --bg: #1b1d21;
+  --panel: #26292f;
+  --border: #3a3e46;
+  --text: #e8e9eb;
+  --muted: #9aa0aa;
+  --accent: #4da3ff;
+  --accent-dark: #2f7fd6;
+  --error-bg: #3a2426;
+  --error-border: #a05252;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "Microsoft JhengHei", "PingFang TC", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+header { padding: 20px 24px 0; }
+h1 { margin: 0; font-size: 22px; }
+.sub { margin: 6px 0 0; color: var(--muted); font-size: 14px; }
+main { padding: 16px 24px 24px; max-width: 1280px; margin: 0 auto; }
+
+/* 輸入區 */
+.input-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+}
+textarea {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 16px;
+  font-family: inherit;
+  resize: vertical;
+}
+textarea:focus { outline: 1px solid var(--accent); }
+.examples { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.hint { color: var(--muted); font-size: 13px; }
+.chip {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.chip:hover { border-color: var(--accent); }
+.actions { margin-top: 12px; display: flex; gap: 10px; align-items: center; }
+#code {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  width: 130px;
+}
+button.primary {
+  background: var(--accent);
+  color: #10233a;
+  font-weight: 700;
+  border: 0;
+  border-radius: 8px;
+  padding: 9px 22px;
+  font-size: 15px;
+  cursor: pointer;
+}
+button.primary:hover { background: var(--accent-dark); color: #fff; }
+button.primary:disabled { opacity: .55; cursor: wait; }
+#status { color: var(--muted); font-size: 14px; }
+.error {
+  margin-top: 12px;
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+  white-space: pre-wrap;
+}
+
+/* 結果區 */
+.result { margin-top: 16px; }
+.result-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.summary { color: var(--muted); font-size: 14px; }
+.download { color: var(--accent); font-size: 14px; text-decoration: none; }
+.download:hover { text-decoration: underline; }
+
+.tabs { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.tab {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  padding: 7px 18px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.tab.active { background: #000; color: var(--accent); border-color: var(--accent); }
+
+.viewer {
+  border: 1px solid var(--border);
+  border-radius: 0 8px 8px 8px;
+  background: #000;                /* 圖面本身黑底,與 SVG 一致 */
+  overflow: hidden;
+}
+.canvas {
+  height: 62vh;
+  min-height: 380px;
+  overflow: hidden;
+  cursor: grab;
+  position: relative;
+  touch-action: none;
+}
+.canvas:active { cursor: grabbing; }
+.canvas .pane {                    /* 縮放/平移都作用在這層 */
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+}
+.canvas svg { width: 100%; height: 100%; display: block; }
+.viewer-tools {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+.hidden { display: none !important; }

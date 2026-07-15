@@ -78,6 +78,7 @@ Point = tuple[float, float]
 
 # ── 設計規則常數(mm)——待確認:皆為合理經驗值 ────────────────────────────
 MIN_BEDROOM_WIDTH = 2800     # 臥室最小淨寬
+MAX_BEDROOM_WIDTH = 4200     # 臥室最大合理寬(建築寬度收斂用,見 _house_frame)
 MASTER_RATIO = 1.35          # 主臥室寬度加大倍率
 MIN_DINING_WIDTH = 2700      # 餐廳最小寬,低於此併入客廳成「客餐廳」
 SERVICE_WIDTH_RANGE = (2600, 3400)   # 服務核(廚房+浴廁)寬度範圍
@@ -862,6 +863,18 @@ def _house_frame(brief: HouseBrief) -> SimpleNamespace:
     if not 1 <= brief.bedrooms <= 4:
         raise ValueError(f"支援 1~4 間臥室,收到 {brief.bedrooms}")
 
+    # 建築寬度隨房數收斂(使用者反饋 2026-07-14:柱要像真實建案一樣站在
+    # 牆跟牆的交點)。基地很寬時若把房間攤滿整個可建範圍,為守 9m 跨距
+    # 硬補的中間軸線沒有隔牆可吸附 → 柱光溜溜凸在牆段中間/房間裡。
+    # 房間寬到合理上限就封頂,建築在可建範圍內置中,多的寬度留作側院;
+    # 柱網因此縮回「每條軸線都有牆交點可藏」的範圍。
+    ratios = [MASTER_RATIO] + [1.0] * (brief.bedrooms - 1)
+    w_cap = max(MAX_BEDROOM_WIDTH * sum(ratios) / MASTER_RATIO
+                + WET_W + STAIRWELL_W, 10000)
+    if W > w_cap:
+        side = (W - w_cap) / 2
+        bx0, bx1, W = bx0 + side, bx1 - side, w_cap
+
     dn = _clamp(D * 0.5, *NORTH_BAND_RANGE)   # 北帶進深(同單層的兩帶式)
     ds = D - dn
     yd = by0 + ds                              # 帶分界牆 y
@@ -869,7 +882,6 @@ def _house_frame(brief: HouseBrief) -> SimpleNamespace:
     xb = xs - WET_W                            # 濕區西牆(管道牆,每層同位)
 
     # 臥室隔牆(2F+ 用)先定,好讓軸網吸附 → 柱藏隔牆交點。
-    ratios = [MASTER_RATIO] + [1.0] * (brief.bedrooms - 1)
     Wb = xb - bx0
     bed_w = [Wb * r / sum(ratios) for r in ratios]
     if min(bed_w) < MIN_BEDROOM_WIDTH:
@@ -900,6 +912,23 @@ def _house_frame(brief: HouseBrief) -> SimpleNamespace:
 
     blocked = _blocked(grid_x, brief.column_size)   # 開口躲柱用(X 向各牆線通用)
 
+    # 柱位微調:柱(500 見方)比牆(INT120)胖,壓在軸線交點上會兩邊各凸出
+    # 約 190mm,朝房間那側就變成「柱探進房間」(使用者反饋 2026-07-15,附
+    # AutoCAD 截圖指的是南北帶分界牆上的 T 型柱:南側是大客廳/起居室,柱下
+    # 半截凸進去)。把分界牆這一排柱心往北(服務/臥室帶)推,讓南面貼齊分界
+    # 牆南皮 → 南帶淨空;分界牆上的垂直骨架牆(濕區/樓梯間西牆)都往北走,
+    # 柱正好藏進交點。外牆柱維持在軸線上(不動,避免與門窗定位打架)。
+    # 推移量只依分界牆(每層都相同的骨架)決定 → 各層推法一致,柱位仍上下
+    # 對齊(check_column_alignment 照過)。
+    s_div = brief.column_size / 2 - INT / 2         # 往北推、南面貼分界牆南皮
+    y_axes = [by0, yd, by1]
+
+    def _tuck(x: float, y: float) -> Point:
+        dy = s_div if abs(y - yd) < 1 else 0.0      # 只調分界牆這一排
+        return (x, y + dy)
+
+    column_centers = [_tuck(x, y) for x in grid_x for y in y_axes]
+
     spec_kw = dict(
         site_boundary=[(0, 0), (brief.site_width, 0),
                        (brief.site_width, brief.site_depth),
@@ -909,6 +938,7 @@ def _house_frame(brief: HouseBrief) -> SimpleNamespace:
         y_spacings=[ds, dn],
         grid_origin=(bx0, by0),
         column_size=brief.column_size,
+        column_centers=column_centers,
         dim_chains=True, sheet=True, north_arrow=True,
         title_block=CompetitionTitleData(),
     )

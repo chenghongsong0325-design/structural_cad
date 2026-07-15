@@ -17,7 +17,9 @@ from src.design.layout_generator import CorridorBrief, HouseBrief, generate_floo
 from src.design.nl_parser import (
     BRIEF_SCHEMA,
     _brief_from_data,
+    _building_from_data,
     parse_brief,
+    parse_building_brief,
 )
 
 
@@ -48,7 +50,8 @@ def _payload(**over) -> dict:
     """齊全欄位的解析結果(schema 的 required 全帶),再覆寫。"""
     base = {"brief_type": "house", "site_width_m": 16, "site_depth_m": 14,
             "bedrooms": 3, "units_per_row": None, "corridor_width_m": None,
-            "floor_label": None, "master_corner": None, "kitchen_side": None}
+            "floor_label": None, "master_corner": None, "kitchen_side": None,
+            "floors_above": None, "basements": None}
     base.update(over)
     return base
 
@@ -168,3 +171,41 @@ def test_parsed_constraints_generate_valid_plan() -> None:
     k = Polygon(next(r for r in spec.rooms if r.kind == "kitchen").points).centroid
     assert m.x < mx and m.y < my          # 主臥在西南
     assert k.y > my                       # 廚房在北
+
+
+# ---------------------------------------------------------------------------
+# 4) 多樓層(E1):_building_from_data / parse_building_brief
+# ---------------------------------------------------------------------------
+def test_building_defaults_single_floor() -> None:
+    """沒講樓層 → 單層,不開層別分化(行為同 C2 時期)。"""
+    bb = _building_from_data(_payload())
+    assert bb.floors == 1
+    assert bb.basements == 0
+    assert bb.differentiated is False
+    assert isinstance(bb.typical, HouseBrief)
+
+
+def test_building_house_multifloor_turns_on_differentiated() -> None:
+    """透天多層/有地下室 → 自動開層別分化(D2 的預設玩法)。"""
+    bb = _building_from_data(_payload(site_width_m=19, site_depth_m=13,
+                                      floors_above=3, basements=1))
+    assert (bb.floors, bb.basements, bb.differentiated) == (3, 1, True)
+
+
+def test_building_corridor_never_differentiated() -> None:
+    """集合住宅不做層別分化(generate_building 只支援透天分化)。"""
+    bb = _building_from_data(_payload(brief_type="corridor", units_per_row=6,
+                                      floors_above=5, basements=1))
+    assert (bb.floors, bb.basements, bb.differentiated) == (5, 1, False)
+
+
+def test_parse_building_brief_end_to_end() -> None:
+    """假 client 一路到 generate_building:樓層數/標高正確、柱網對齊。"""
+    from src.design.building_generator import generate_building
+
+    client = _FakeClient(_payload(site_width_m=19, site_depth_m=13,
+                                  floors_above=3, basements=1))
+    bb = parse_building_brief("透天三層,基地19×13米,三房,地下一層", client=client)
+    building = generate_building(bb)
+    assert [f.label for f in building.floors] == ["B1F", "1F", "2F", "3F"]
+    assert building.floors[0].elevation < 0

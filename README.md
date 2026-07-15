@@ -76,6 +76,37 @@ python scripts/preview.py
 
 ---
 
+## 網頁版(E1):瀏覽器輸入一句話,直接看圖、下載 DXF
+
+```powershell
+# 1) 設定 Gemini API 金鑰(https://aistudio.google.com 申請;只在這個視窗有效)
+$env:GEMINI_API_KEY = "你的金鑰"
+
+# 2) 啟動伺服器
+uvicorn src.web.app:app --reload
+
+# 3) 瀏覽器開 http://localhost:8000
+#    輸入例:「透天三層,基地19×13米,三房,地下一層車庫」→ 生成
+#    每層樓一個頁籤(含剖面/立面),滾輪縮放、拖曳平移,可下載 DXF
+```
+
+生成的檔案存在 `output/web/`(每次生成一個資料夾),整個刪掉也不影響程式。
+
+### 放上網路(Render.com 免費方案)
+
+1. 把 repo 推上 GitHub(私有 repo 也可以)。
+2. 到 [render.com](https://render.com) 註冊 → **New +** → **Blueprint** → 選這個 repo
+   (它會自動讀 `render.yaml` 和 `Dockerfile`)。
+3. 在服務的 **Environment** 頁填兩個環境變數:
+   - `GEMINI_API_KEY`:你的 Gemini 金鑰(**不要**寫進程式碼或 git)。
+   - `ACCESS_CODE`:自訂通行碼——設了之後,網頁上要輸入通行碼才能生成,
+     防止陌生人亂按、消耗你的 API 額度。
+4. 部署完成會得到一個 `https://xxx.onrender.com` 網址,任何人開網址就能用。
+
+> 免費方案 15 分鐘沒人用會休眠,下次打開要等約 30 秒喚醒,屬正常現象。
+
+---
+
 ## 如何確認 DXF 能被 AutoCAD 正常開啟
 
 1. 直接在 AutoCAD(或 DWG TrueView、BricsCAD、免費的 LibreCAD)開啟 `output/hello_cad.dxf`。

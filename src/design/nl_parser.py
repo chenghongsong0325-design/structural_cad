@@ -100,10 +100,19 @@ BRIEF_SCHEMA = {
             "description": "廚房靠哪一側(單戶限定):靠北=N、靠南=S、"
                            "靠東=E、靠西=W。沒講就 null",
         },
+        "floors_above": {
+            "type": "integer", "nullable": True,
+            "description": "地上樓層數(「透天三層」=3、「五層公寓」=5)。"
+                           "沒講就 null",
+        },
+        "basements": {
+            "type": "integer", "nullable": True,
+            "description": "地下層數(「地下一層」「B1 車庫」=1)。沒講就 null",
+        },
     },
     "required": ["brief_type", "site_width_m", "site_depth_m", "bedrooms",
                  "units_per_row", "corridor_width_m", "floor_label",
-                 "master_corner", "kitchen_side"],
+                 "master_corner", "kitchen_side", "floors_above", "basements"],
 }
 
 SYSTEM_PROMPT = """\
@@ -119,6 +128,8 @@ SYSTEM_PROMPT = """\
   除以 2。
 - 方位(單戶限定):「主臥要在西南角」→ master_corner="SW";
   「廚房靠北」→ kitchen_side="N"。方位用羅盤縮寫(N北/S南/E東/W西)。
+- 樓層:「透天三層」「三層樓」→ floors_above=3;「地下一層」「B1」→
+  basements=1。只講「透天」沒講層數 → 都 null。
 - 沒提到的欄位一律 null,不要瞎猜數值。
 """
 
@@ -162,6 +173,27 @@ def _brief_from_data(data: dict) -> Brief:
     raise ValueError(f"未知建築類型:{btype!r}(需為 house 或 corridor)")
 
 
+def _building_from_data(data: dict) -> "BuildingBrief":
+    """解析結果 dict → BuildingBrief(整棟樓需求)。
+
+    標準層沿用 _brief_from_data;樓層數/地下室在這裡接上 D 階段的
+    building_generator:
+      * floors_above 沒講 → 1(單層,行為同 C2 時期)。
+      * 透天(house)只要「多層或有地下室」就開層別分化 differentiated
+        (1F 公共層、2F+ 臥室層、B1 車庫)——這是 D2 的預設玩法,也是
+        generate_building 對「透天+地下室」的硬性要求。
+    """
+    from src.design.building_generator import BuildingBrief
+
+    typical = _brief_from_data(data)
+    floors = int(data.get("floors_above") or 1)
+    basements = int(data.get("basements") or 0)
+    differentiated = isinstance(typical, HouseBrief) and (
+        floors > 1 or basements > 0)
+    return BuildingBrief(typical=typical, floors=floors, basements=basements,
+                         differentiated=differentiated)
+
+
 # ---------------------------------------------------------------------------
 # LLM 呼叫
 # ---------------------------------------------------------------------------
@@ -178,6 +210,25 @@ def parse_brief(text: str, client: Optional[object] = None) -> Brief:
         from google import genai
         client = genai.Client()   # 自動讀 GEMINI_API_KEY / GOOGLE_API_KEY
 
+    return _brief_from_data(_call_llm(text, client))
+
+
+def parse_building_brief(text: str,
+                         client: Optional[object] = None) -> "BuildingBrief":
+    """中文需求描述 → BuildingBrief(整棟樓,E1 網頁化的入口)。
+
+    與 parse_brief 同一次 LLM 呼叫、同一張 schema,多接住樓層數/地下室;
+    沒講樓層就是單層,行為與 parse_brief + generate_floor_plan 一致。
+    """
+    if not text or not text.strip():
+        raise ValueError("需求描述是空的")
+    if client is None:
+        from google import genai
+        client = genai.Client()   # 自動讀 GEMINI_API_KEY / GOOGLE_API_KEY
+    return _building_from_data(_call_llm(text, client))
+
+
+def _call_llm(text: str, client: object) -> dict:
     response = client.models.generate_content(
         model=MODEL,
         contents=text,
@@ -187,7 +238,7 @@ def parse_brief(text: str, client: Optional[object] = None) -> Brief:
             "response_schema": BRIEF_SCHEMA,
         },
     )
-    return _brief_from_data(json.loads(response.text))
+    return json.loads(response.text)
 
 
 # ---------------------------------------------------------------------------
