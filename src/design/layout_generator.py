@@ -1422,6 +1422,22 @@ def _patio_name(f: SimpleNamespace) -> str:
     return "中庭" if (f.ypn - f.yd) >= 3200 else "天井"
 
 
+def max_house_bedrooms(brief: HouseBrief) -> int:
+    """這塊基地(多樓層透天骨架)最多放得下幾房(0 = 連 1 房都塞不下)。
+
+    給「設計建議」用:基地很大、使用者只要 3 房時,告訴他其實放得下 4 房。
+    只跑骨架計算(_house_frame),不出圖,很快。
+    """
+    best = 0
+    for n in range(1, 5):                    # HouseBrief 支援 1~4 房
+        try:
+            _house_frame(replace(brief, bedrooms=n))
+            best = n
+        except ValueError:
+            pass
+    return best
+
+
 def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
     """透天 1F 公共層(D2):南帶 客廳+玄關(東南角),北帶 廚房|餐廳|衛浴|樓梯間。
 

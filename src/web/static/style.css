@@ -92,6 +92,10 @@ button.primary:disabled { opacity: .55; cursor: wait; }
 .result-actions { display: flex; align-items: center; gap: 14px; }
 .summary { color: var(--muted); font-size: 14px; }
 .design-note { color: var(--accent); font-size: 13px; }
+.suggestions {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  margin-top: 6px;
+}
 button.ghost {
   background: transparent;
   color: var(--accent);

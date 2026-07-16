@@ -95,6 +95,21 @@ def test_generate_multifloor_house_with_basement() -> None:
     assert "樓梯" in data["design_note"] and "廚房" in data["design_note"]
 
 
+def test_suggestions_offer_site_upgrades() -> None:
+    """設計建議:告訴使用者基地還放得下什麼,每則附完整需求句(可點擊
+    重新生成)。19×13 無地下室 → 至少建議「加地下車庫」;文字要能直接
+    當需求送(含基地尺寸)。"""
+    c = _client(_payload(site_width_m=19, site_depth_m=13, floors_above=2))
+    r = c.post("/api/generate", json={"text": "透天二層,基地19×13米,三房"})
+    assert r.status_code == 200
+    sugg = r.json()["suggestions"]
+    labels = [s["label"] for s in sugg]
+    assert "加地下車庫" in labels
+    for s in sugg:
+        assert "基地19×13米" in s["text"]     # 完整需求句,點了能直接重生成
+        assert s["note"]
+
+
 def test_seed_reproducible_and_random(monkeypatch) -> None:
     """同 seed → 同方案(同設計說明);不帶 seed → 伺服器隨機抽,會給回 seed。"""
     payload = _payload(site_width_m=19, site_depth_m=13,

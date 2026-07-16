@@ -44,7 +44,11 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from src.design.building_generator import BuildingSpec, generate_building
-from src.design.layout_generator import HouseBrief, house_design_note
+from src.design.layout_generator import (
+    HouseBrief,
+    house_design_note,
+    max_house_bedrooms,
+)
 from src.design.nl_parser import parse_building_brief
 from src.web.render import build_sheets, sheet_svg
 
@@ -104,6 +108,51 @@ def _summary(brief, building: BuildingSpec) -> str:
         if yard_bits:
             parts.append("、".join(yard_bits) + "(庭園/停車)")
     return " · ".join(parts)
+
+
+_NUM = {1: "一", 2: "二", 3: "三", 4: "四", 5: "五"}
+
+
+def _suggestions(brief, building: BuildingSpec) -> list[dict]:
+    """設計建議:這塊基地還放得下什麼(升級房數/加地下車庫/加蓋樓層)。
+
+    真正的設計師不只交圖,還會告訴業主「其實你的地可以做更多」。每個建議
+    附一句完整需求(text),前端做成可點的按鈕——點了直接以該需求重新生成。
+    只對透天(HouseBrief)提;數量上限:房 1~4、樓層 4(合理透天規模)。
+    """
+    t = brief.typical
+    if not isinstance(t, HouseBrief):
+        return []
+    above = sum(1 for f in building.floors if f.level > 0)
+    below = sum(1 for f in building.floors if f.level < 0)
+    site = (f"基地{t.site_width / 1000:g}×{t.site_depth / 1000:g}米")
+    car = ",地下一層車庫" if below else ""
+
+    def req(floors: int, bedrooms: int, with_car: str) -> str:
+        head = f"透天{_NUM[floors]}層," if floors >= 2 else ""
+        return f"{head}{site},{_NUM[bedrooms]}房{with_car}"
+
+    out: list[dict] = []
+    mb = max_house_bedrooms(t)
+    if mb > t.bedrooms:
+        out.append({
+            "label": f"升級 {mb} 房",
+            "text": req(above, mb, car),
+            "note": f"基地寬度還放得下 {mb} 房,建築會加寬",
+        })
+    if not below:
+        out.append({
+            "label": "加地下車庫",
+            "text": req(max(above, 2), t.bedrooms, ",地下一層車庫"),
+            "note": "地下室作車庫+儲藏,樓梯直通",
+        })
+    if 2 <= above < 4:
+        out.append({
+            "label": f"加蓋到 {above + 1} 層",
+            "text": req(above + 1, t.bedrooms, car),
+            "note": "多一層臥室層,格局與柱位不變",
+        })
+    return out
 
 
 def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI:
@@ -171,6 +220,7 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             "seed": seed,
             "summary": _summary(brief, building),
             "design_note": house_design_note(brief.typical),
+            "suggestions": _suggestions(brief, building),
             "sheets": out_sheets,
             "zip": f"/api/jobs/{job_id}/all_dxf.zip",
         }

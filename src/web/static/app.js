@@ -59,6 +59,7 @@ async function generate(reuseText) {
     $("summary").textContent = data.summary;
     $("design-note").textContent = data.design_note
       ? "本案設計:" + data.design_note : "";
+    renderSuggestions(data.suggestions || []);
     $("zip").href = data.zip;
     buildTabs();
     const keep = sheets.findIndex((s) => s.label === keepLabel);   // 沿用當前樓層
@@ -77,6 +78,29 @@ function showError(msg) {
   $("error").classList.remove("hidden");
 }
 function hideError() { $("error").classList.add("hidden"); }
+
+// ── 設計建議:基地還放得下什麼(升級房數/加車庫/加樓層),點了直接重生成 ──
+function renderSuggestions(items) {
+  const box = $("suggestions");
+  box.innerHTML = "";
+  if (!items.length) { box.classList.add("hidden"); return; }
+  const hint = document.createElement("span");
+  hint.className = "hint";
+  hint.textContent = "💡 這塊基地還可以:";
+  box.appendChild(hint);
+  items.forEach((s) => {
+    const b = document.createElement("button");
+    b.className = "chip";
+    b.textContent = s.label;
+    b.title = s.note + "\n→ " + s.text;   // 滑鼠停留看細節與完整需求句
+    b.addEventListener("click", () => {
+      $("text").value = s.text;           // 換成建議的需求句,直接重新生成
+      generate(null);
+    });
+    box.appendChild(b);
+  });
+  box.classList.remove("hidden");
+}
 
 // ── 頁籤 ───────────────────────────────────────────────────────────
 function buildTabs() {
