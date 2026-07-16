@@ -235,10 +235,10 @@ def test_house_width_capped_on_wide_site():
 
 
 def test_house_depth_capped_on_deep_site():
-    """使用者反饋 2026-07-15:19×19 基地生不出來(南帶 9.5m 撞 Y 跨距上限)。
-    深基地建築深度要封頂(MAX_HOUSE_DEPTH=北帶上限+南帶採光上限)、前後留院
-    置中——跟寬基地收斂同一個道理,什麼深度的基地都該能生。"""
-    from src.design.layout_generator import MAX_HOUSE_DEPTH
+    """使用者反饋 2026-07-15 兩則:19×19 生不出來 → 20×38 只蓋 11.5m 深
+    「不像設計師」。深基地兩段式:先插天井帶變三帶(最深 15.8m,中段靠
+    天井採光),更深才封頂留前後院置中。什麼深度的基地都該能生。"""
+    from src.design.layout_generator import MAX_HOUSE_DEPTH, PATIO_BAND_RANGE
     b = generate_building(BuildingBrief(
         typical=HouseBrief(site_width=19000, site_depth=19000, bedrooms=3),
         floors=3, basements=1, differentiated=True))
@@ -247,11 +247,33 @@ def test_house_depth_capped_on_deep_site():
     for fl in b.floors:
         spec = fl.spec
         depth = sum(spec.y_spacings)
-        assert depth <= MAX_HOUSE_DEPTH + 1
+        assert depth <= MAX_HOUSE_DEPTH + PATIO_BAND_RANGE[1] + 1
         assert max(spec.y_spacings) <= 9000            # 結構跨距
         oy = spec.grid_origin[1]
         front, back = oy - 2000, (19000 - 2000) - (oy + depth)
         assert abs(front - back) < 1                   # 前後院等深(置中)
+    # 19×19(可建深 15m)已達天井門檻:樓上要有三帶+天井。
+    up = next(f.spec for f in b.floors if f.label == "2F")
+    assert len(up.y_spacings) == 3
+    assert any(r.kind == "patio" for r in up.rooms)
+
+
+def test_house_patio_stacks_and_basement_absorbs():
+    """深基地天井:各地上層天井同一位置直落(採光井的意義);B1F 沒有天井
+    (車庫連天井帶一起用);建築深度用好用滿(20×38 至少 15m 深,不再是
+    11.5m 的小房子)。"""
+    b = generate_building(BuildingBrief(
+        typical=HouseBrief(site_width=20000, site_depth=38000, bedrooms=3),
+        floors=3, basements=1, differentiated=True))
+    assert not check_column_alignment(b)
+    patios = {}
+    for fl in b.floors:
+        pts = [tuple(map(round, p)) for r in fl.spec.rooms
+               for p in r.points if r.kind == "patio"]
+        patios[fl.label] = sorted(set(pts))
+        assert sum(fl.spec.y_spacings) >= 15000        # 深度用起來了
+    assert patios["B1F"] == []                         # 地下無天井
+    assert patios["1F"] and patios["1F"] == patios["2F"] == patios["3F"]
 
 
 @pytest.mark.parametrize("site_depth", [16000, 22000, 30000])
