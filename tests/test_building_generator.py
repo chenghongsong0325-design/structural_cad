@@ -234,6 +234,37 @@ def test_house_width_capped_on_wide_site():
         <= MAX_BEDROOM_WIDTH + 1 for r in beds)
 
 
+def test_house_depth_capped_on_deep_site():
+    """使用者反饋 2026-07-15:19×19 基地生不出來(南帶 9.5m 撞 Y 跨距上限)。
+    深基地建築深度要封頂(MAX_HOUSE_DEPTH=北帶上限+南帶採光上限)、前後留院
+    置中——跟寬基地收斂同一個道理,什麼深度的基地都該能生。"""
+    from src.design.layout_generator import MAX_HOUSE_DEPTH
+    b = generate_building(BuildingBrief(
+        typical=HouseBrief(site_width=19000, site_depth=19000, bedrooms=3),
+        floors=3, basements=1, differentiated=True))
+    assert not check_column_alignment(b)
+    assert len(b.floors) == 4
+    for fl in b.floors:
+        spec = fl.spec
+        depth = sum(spec.y_spacings)
+        assert depth <= MAX_HOUSE_DEPTH + 1
+        assert max(spec.y_spacings) <= 9000            # 結構跨距
+        oy = spec.grid_origin[1]
+        front, back = oy - 2000, (19000 - 2000) - (oy + depth)
+        assert abs(front - back) < 1                   # 前後院等深(置中)
+
+
+@pytest.mark.parametrize("site_depth", [16000, 22000, 30000])
+def test_house_deep_sites_generate(site_depth):
+    """深基地(16/22/30m)一律要能生:E2b 之後 seed 變體也不得破功。"""
+    for seed in (0, 5):
+        b = generate_building(BuildingBrief(
+            typical=HouseBrief(site_width=19000, site_depth=site_depth,
+                               bedrooms=3, seed=seed),
+            floors=2, basements=1, differentiated=True))
+        assert not check_column_alignment(b)
+
+
 def test_house_divider_columns_tucked_off_south_band():
     """使用者反饋 2026-07-15(附 AutoCAD 截圖):分界牆上的 T 型柱不能凸進
     南側大客廳/起居室——柱南面要貼齊分界牆南皮。三種樓層都查,且各層該排
