@@ -18,11 +18,13 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Optional
 
 import ezdxf
 from ezdxf.addons.drawing import Frontend, RenderContext
+from ezdxf.addons.drawing.config import BackgroundPolicy, Configuration
 from ezdxf.addons.drawing.layout import Page
 from ezdxf.addons.drawing.svg import SVGBackend
 
@@ -43,12 +45,16 @@ class Sheet:
     label:頁籤/檔名用(1F、B1F、剖面、立面)。
     kind:floor(平面)/ section(剖面)/ elevation(立面),前端分組用。
     filename:下載檔名(ASCII,剖面/立面用英文避免瀏覽器編碼問題)。
+    doc:給使用者下載的 DXF(平面圖含 A3 競賽圖框+標題欄)。
+    preview_doc:給瀏覽器預覽的版本(平面圖「去掉圖框」,讓平面本身放大填滿
+      畫面、看得更清楚;None 表示跟 doc 同一份 = 剖面/立面本來就沒圖框)。
     """
 
     label: str
     kind: str
     filename: str
     doc: "ezdxf.document.Drawing"
+    preview_doc: Optional["ezdxf.document.Drawing"] = None
 
 
 def _new_doc():
@@ -61,9 +67,13 @@ def build_sheets(building: BuildingSpec) -> list[Sheet]:
     sheets: list[Sheet] = []
     for fl in building.floors:
         doc, layers = _new_doc()
-        draw_floor_plan(doc.modelspace(), fl.spec, layers)
+        draw_floor_plan(doc.modelspace(), fl.spec, layers)   # DXF:含圖框
+        # 預覽:同一份平面圖但拿掉 A3 圖框/標題欄 → 平面本身填滿畫面看得更清楚。
+        pdoc, players = _new_doc()
+        draw_floor_plan(pdoc.modelspace(),
+                        replace(fl.spec, sheet=False, title_block=None), players)
         sheets.append(Sheet(label=fl.label, kind="floor",
-                            filename=f"{fl.label}.dxf", doc=doc))
+                            filename=f"{fl.label}.dxf", doc=doc, preview_doc=pdoc))
 
     if len(building.floors) > 1:      # 單層樓疊不出剖面/立面,跳過
         doc, layers = _new_doc()
@@ -80,12 +90,49 @@ def build_sheets(building: BuildingSpec) -> list[Sheet]:
     return sheets
 
 
+# 預覽用繪圖設定:把「出圖線粗」放大顯示。真實建築線粗(牆 0.35mm、尺寸線
+# 0.15mm…)是給印在 A3 紙上看的,瀏覽器把整張圖縮到螢幕時,那些線只剩不到
+# 半個像素 → 糊成看不見(使用者反映「看不清楚」)。AutoCAD 靠「線寬顯示」補償,
+# 這裡用 lineweight_scaling 做同一件事:等比例放大線粗(牆仍比尺寸線粗),
+# 黑底貼近 CAD 深色畫面。40 倍是實測「清楚但不糊成一團」的值。
+_SVG_CONFIG = Configuration(
+    lineweight_scaling=40,
+    background_policy=BackgroundPolicy.BLACK,
+)
+
+# 預覽用替代字型——⚠️ default.yaml 的 STRUCT 樣式用「標楷體」kaiu.ttf(給
+# AutoCAD/競賽出圖),但 ezdxf 把 kaiu.ttf 的複雜筆畫中文字(樓梯間/衛浴/
+# 客廳…)轉成 SVG 路徑時,字形輪廓會自我相交、破碎成「打勾/裂開」的樣子
+# (kaiu.ttf 本身的字型檔問題,只在向量路徑轉換時出現,AutoCAD 原生渲染不會
+# 犯這個錯,使用者截圖抓到的就是這個)。實測換成微軟正黑體 msjh.ttc 完全乾淨。
+# 只覆寫「送去轉 SVG 的那份文件」的 STRUCT 樣式字型,不動 default.yaml——
+# DXF 下載檔仍是標楷體(競賽規範/AutoCAD 顯示都正常,不受影響)。
+_PREVIEW_FONT = "msjh.ttc"
+
+
 def doc_to_svg(doc) -> str:
-    """ezdxf 文件 → SVG 字串(黑底,模擬 CAD 深色畫面,同 scripts/preview.py)。
+    """ezdxf 文件 → SVG 字串(黑底、線粗放大,像 AutoCAD 那樣清楚可讀)。
 
     Page(0, 0) = 紙張大小自動貼合圖面內容,瀏覽器端再自由縮放。
+
+    ⚠️ 剖面/立面的 Sheet 沒有獨立的 preview_doc,SVG 轉換跟 DXF 下載共用同一份
+    doc——字型覆寫用完就還原,不管呼叫順序(先存檔或先轉 SVG)都不會讓下載
+    的 DXF 意外變成 msjh.ttc。
     """
-    backend = SVGBackend()
-    Frontend(RenderContext(doc), backend).draw_layout(doc.modelspace(),
-                                                      finalize=True)
-    return backend.get_string(Page(0, 0))
+    struct_style = doc.styles.get("STRUCT")
+    original_font = struct_style.dxf.font if struct_style is not None else None
+    if struct_style is not None:
+        struct_style.dxf.font = _PREVIEW_FONT
+    try:
+        backend = SVGBackend()
+        Frontend(RenderContext(doc), backend, config=_SVG_CONFIG).draw_layout(
+            doc.modelspace(), finalize=True)
+        return backend.get_string(Page(0, 0))
+    finally:
+        if struct_style is not None:
+            struct_style.dxf.font = original_font
+
+
+def sheet_svg(sheet: Sheet) -> str:
+    """一張圖的預覽 SVG——平面圖用去圖框的 preview_doc,其餘用 doc。"""
+    return doc_to_svg(sheet.preview_doc or sheet.doc)

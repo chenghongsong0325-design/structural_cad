@@ -46,7 +46,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from src.design.building_generator import BuildingSpec, generate_building
 from src.design.layout_generator import HouseBrief, house_design_note
 from src.design.nl_parser import parse_building_brief
-from src.web.render import build_sheets, doc_to_svg
+from src.web.render import build_sheets, sheet_svg
 
 JOBS_DIR = _PROJECT_ROOT / "output" / "web"          # 每次生成一個子資料夾
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -133,7 +133,7 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             out_sheets.append({
                 "label": s.label,
                 "kind": s.kind,
-                "svg": doc_to_svg(s.doc),
+                "svg": sheet_svg(s),
                 "dxf": f"/api/jobs/{job_id}/{s.filename}",
             })
         with zipfile.ZipFile(job_dir / "all_dxf.zip", "w",
