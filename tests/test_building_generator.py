@@ -311,12 +311,66 @@ def test_variant_covers_stair_band_kitchen():
     assert {v.kitchen_open for v in vs} == {True, False}  # 開放/獨立都有
 
 
+def test_variant_covers_master_and_bay():
+    """E2 第二步:主臥倍率、柱網跨數偏好也開放抽選了,seed 間要有變化
+    (不再固定為 1.35 / 0)。"""
+    from src.design.layout_generator import HouseBrief as HB
+    from src.design.layout_generator import _house_variant
+    vs = [_house_variant(HB(site_width=19000, site_depth=13000, seed=s))
+          for s in range(8)]
+    assert len({v.master_ratio for v in vs}) >= 2       # 主臥倍率有變化
+    assert len({v.bay_pref for v in vs}) >= 2           # 柱網跨數偏好有變化
+    assert all("主臥" in v.note or "均等" in v.note for v in vs)  # 說明含主臥描述
+
+
 def test_variant_all_seeds_valid_and_aligned():
     """隨便抽的 seed 都要生得出、且柱位上下對齊(抽選落在檢核守得住的範圍)。"""
     for seed in range(12):
         b = _build(seed)
         assert not check_column_alignment(b)
         assert len(b.floors) == 4                       # B1F+1F+2F+3F
+
+
+@pytest.mark.parametrize("bedrooms,site", [(2, 16000), (3, 19000), (4, 26000)])
+@pytest.mark.parametrize("seed", range(8))
+def test_house_variant_knobs_stay_aligned(bedrooms, site, seed):
+    """開放主臥倍率/柱網跨數後,任何 seed 三層仍「零孤柱 + 通過檢核」——
+    _house_frame 的可行性守門會把會產生孤柱的抽選退回較溫和的值
+    (柱網規則性優先,使用者定調)。含 4 房寬基地(最會逼出孤柱的情形)。"""
+    from src.design.layout_generator import (
+        generate_house_basement, generate_house_public, generate_house_upper,
+        validate_spec)
+    brief = HouseBrief(site_width=site, site_depth=13000,
+                       bedrooms=bedrooms, seed=seed)
+    for spec in (generate_house_public(brief), generate_house_upper(brief),
+                 generate_house_basement(brief)):
+        ox = spec.grid_origin[0]
+        axes = [ox]
+        for s in spec.x_spacings:
+            axes.append(axes[-1] + s)
+        wall_xs = {w.start[0] for w in spec.walls if w.start[0] == w.end[0]}
+        for a in axes[1:-1]:
+            assert any(abs(a - wx) < 1 for wx in wall_xs), \
+                f"{spec.floor_label} 軸線 x={a} 上沒有豎牆(柱凸進房間)"
+        assert not validate_spec(spec)
+
+
+@pytest.mark.parametrize("bedrooms,site", [(2, 16000), (3, 19000), (4, 26000)])
+@pytest.mark.parametrize("seed", range(6))
+def test_house_kitchen_wall_sits_on_axis(bedrooms, site, seed):
+    """1F 廚房|餐廳分界坐在軸線上(與 2F 臥室牆共用同一批軸線 → 1F 柱也藏
+    進豎牆,不再各算各的搶軸線);廚房靠管道牆 xb(與衛浴共用給排水立管),
+    寬度合理。這是開放主臥倍率/柱網跨數的關鍵連動。"""
+    from src.design.layout_generator import MIN_BEDROOM_WIDTH, _house_frame
+    f = _house_frame(HouseBrief(site_width=site, site_depth=13000,
+                                bedrooms=bedrooms, seed=seed))
+    if f.west_lines:                                    # 有內部軸線可藏
+        assert any(abs(f.xk - g) < 1 for g in f.grid_x)  # xk 必坐在某條軸線上
+        assert abs(f.xk - max(f.west_lines)) < 1         # = 最東一條(廚房靠 xb)
+        assert f.xb - f.xk >= MIN_BEDROOM_WIDTH - 1      # 廚房寬 ≥ 2.8m
+    else:                                               # 無軸線可藏 → 固定廚房寬
+        assert 2600 - 1 <= f.xb - f.xk <= 3400 + 1
+    assert f.xk < f.xb                                   # 廚房在餐廳之東、貼管道牆
 
 
 def test_house_floors_furnished():

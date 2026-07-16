@@ -878,28 +878,45 @@ def _slot(desired: float, widths: list[float], lo: float, hi: float,
 class HouseVariant:
     """一組抽定的設計選擇(從 seed 算出,純函式)。
 
-    這一版(E2 第一步)只放「不會破壞藏柱」的安全軸:樓梯東西、服務帶南北
-    (皆靠整張圖鏡射,翻完仍藏柱)、開放/獨立廚房(開放版留中島腳包柱)、
-    開窗位置(跨內抖動,仍躲柱)。主臥倍率/柱網跨數暫固定(它們會改臥室
-    隔牆位置,而軸網三層共用、須同時藏 1F 廚房牆與 2F 臥室牆——要安全地變
-    得先讓 1F 廚房位置跟軸網連動,留待下一步)。master_ratio/bay_pref 欄位
-    先擺著,之後接上連動再開放抽選。
+    安全軸靠整張圖鏡射達成、翻完仍藏柱:樓梯東西(mx)、服務帶南北(my);
+    另有開放/獨立廚房(開放版留中島腳包柱)、開窗位置(跨內抖動,仍躲柱)。
+
+    主臥倍率(master_ratio)/柱網跨數(bay_pref)也開放抽選了(E2 第二步)——
+    它們會改臥室隔牆位置、進而動到三層共用的軸網,所以搭配兩道保護:
+      * 1F 廚房牆改成「坐在軸線上」(廚房靠管道牆 xb 側,牆貼軸線→藏柱;
+        餐廳內若還有軸線就立短牆包柱),不再獨立算位置跟 2F 臥室牆搶軸線。
+      * _house_frame 抽到的 (master_ratio, bay_pref) 若讓軸網無法完全落在
+        臥室隔牆上(柱會凸進房間),自動退回較溫和的值——柱網規則性優先
+        (使用者定調),見 _house_frame 的可行性守門。
+    抽選範圍見 _MASTER_CHOICES / _BAY_CHOICES。
     """
 
     mx: bool                # 左右翻:樓梯/服務核 東(F)/西(T)
     my: bool                # 上下翻:服務帶 南(T)/北(F)
     kitchen_open: bool      # 1F 廚房 開放式(併入餐廳)/獨立間
-    master_ratio: float = MASTER_RATIO   # (暫固定)主臥加大倍率
-    bay_pref: int = 0                    # (暫固定)柱網跨數偏好
+    master_ratio: float = MASTER_RATIO   # 主臥加大倍率(抽選;過大會被守門退回)
+    bay_pref: int = 0                    # 柱網跨數偏好(-1 少柱大跨 / 0 近目標 / +1 密柱)
 
     @property
     def note(self) -> str:
         """給使用者看的一行設計說明。"""
+        if self.master_ratio >= 1.3:
+            master = "主臥放大"
+        elif self.master_ratio <= 1.05:
+            master = "各房均等"
+        else:
+            master = "主臥略大"
+        bay = {-1: "大跨少柱", 0: "標準柱距", 1: "密柱短跨"}[self.bay_pref]
         return " · ".join([
             f"樓梯{'西' if self.mx else '東'}側",
             f"廚房臥室朝{'南' if self.my else '北'}",
             "開放式廚房" if self.kitchen_open else "獨立廚房",
+            master, bay,
         ])
+
+
+_MASTER_CHOICES = (1.0, 1.2, 1.35, 1.5)   # 主臥倍率抽選(1.0=各房均等)
+_BAY_CHOICES = (-1, 0, 1)                  # 柱網跨數偏好抽選
 
 
 def _house_variant(brief: HouseBrief) -> HouseVariant:
@@ -909,6 +926,8 @@ def _house_variant(brief: HouseBrief) -> HouseVariant:
         mx=rng.random() < 0.5,
         my=rng.random() < 0.5,
         kitchen_open=rng.random() < 0.5,
+        master_ratio=rng.choice(_MASTER_CHOICES),
+        bay_pref=rng.choice(_BAY_CHOICES),
     )
 
 
@@ -956,53 +975,80 @@ def _house_frame(brief: HouseBrief) -> SimpleNamespace:
     if not 1 <= brief.bedrooms <= 4:
         raise ValueError(f"支援 1~4 間臥室,收到 {brief.bedrooms}")
 
-    # 建築寬度隨房數收斂(使用者反饋 2026-07-14:柱要像真實建案一樣站在
-    # 牆跟牆的交點)。基地很寬時若把房間攤滿整個可建範圍,為守 9m 跨距
-    # 硬補的中間軸線沒有隔牆可吸附 → 柱光溜溜凸在牆段中間/房間裡。
-    # 房間寬到合理上限就封頂,建築在可建範圍內置中,多的寬度留作側院;
-    # 柱網因此縮回「每條軸線都有牆交點可藏」的範圍。
     v = _house_variant(brief)                       # 這棟樓的設計抽選(同 seed 同結果)
-    ratios = [v.master_ratio] + [1.0] * (brief.bedrooms - 1)
-    w_cap = max(MAX_BEDROOM_WIDTH * sum(ratios) / v.master_ratio
-                + WET_W + STAIRWELL_W, 10000)
-    if W > w_cap:
-        side = (W - w_cap) / 2
-        bx0, bx1, W = bx0 + side, bx1 - side, w_cap
-
     dn = _clamp(D * 0.5, *NORTH_BAND_RANGE)   # 北帶進深(同單層的兩帶式)
     ds = D - dn
     yd = by0 + ds                              # 帶分界牆 y
-    xs = bx1 - STAIRWELL_W                     # 樓梯間西牆(每層同位)
-    xb = xs - WET_W                            # 濕區西牆(管道牆,每層同位)
 
-    # 臥室隔牆(2F+ 用)先定,好讓軸網吸附 → 柱藏隔牆交點。
-    Wb = xb - bx0
-    bed_w = [Wb * r / sum(ratios) for r in ratios]
-    if min(bed_w) < MIN_BEDROOM_WIDTH:
+    # 臥室隔牆 + 軸網,由「主臥倍率 mr、跨數偏好 bp」一起決定(見下方守門)。
+    # 建築寬度隨房數收斂(使用者反饋 2026-07-14:柱要站在牆跟牆的交點)——
+    # 基地很寬時把房間攤滿,為守 9m 跨距硬補的中間軸線沒有隔牆可吸附 → 柱
+    # 凸在房間裡。房間寬到合理上限就封頂、建築在可建範圍內置中留側院;柱網
+    # 縮回「每條軸線都有牆交點可藏」。⚠️ 收斂量依 mr(主臥越大、封頂寬越窄),
+    # 故 mr 一變、整個外殼跟著重算,守門才能真的換掉會產生孤柱的方案。
+    def _try(mr: float, bp: int):
+        rs = [mr] + [1.0] * (brief.bedrooms - 1)
+        w_cap = max(MAX_BEDROOM_WIDTH * sum(rs) / mr
+                    + WET_W + STAIRWELL_W, 10000)
+        x0, x1, w = bx0, bx1, W
+        if w > w_cap:
+            side = (w - w_cap) / 2
+            x0, x1, w = x0 + side, x1 - side, w_cap
+        xs_ = x1 - STAIRWELL_W                 # 樓梯間西牆
+        xb_ = xs_ - WET_W                      # 濕區西牆(管道牆)
+        Wb = xb_ - x0                          # 臥室帶可用寬
+        bw = [Wb * r / sum(rs) for r in rs]
+        if min(bw) < MIN_BEDROOM_WIDTH:
+            return None
+        bx = [x0]
+        for bwi in bw:
+            bx.append(bx[-1] + bwi)            # bx[-1] == xb_
+        gx = _plan_x_grid(x0, w, bx[1:-1] + [xb_], prefer=bp)
+        # 反向吸附:隔牆距軸線 < WALL_SNAP_TOL 就挪到軸線上(柱正好站在
+        # 隔牆與帶分界牆/北外牆的交點);吸附後房寬仍須合格。
+        for i in range(1, brief.bedrooms):
+            g = min(gx, key=lambda t: abs(t - bx[i]))
+            if 0 < abs(g - bx[i]) < WALL_SNAP_TOL:
+                trial = bx[:i] + [g] + bx[i + 1:]
+                tw = [trial[j + 1] - trial[j] for j in range(brief.bedrooms)]
+                if min(tw) >= MIN_BEDROOM_WIDTH and tw[0] >= max(tw):
+                    bx = trial
+        cover = set(bx) | {xb_}
+        orphans = sum(1 for g in gx[1:-1]
+                      if not any(abs(g - c) < 1 for c in cover))
+        return SimpleNamespace(bx0=x0, bx1=x1, W=w, xs=xs_, xb=xb_,
+                               bed_x=bx, grid_x=gx, orphans=orphans)
+
+    # 守門:抽到的 (mr, bp) 先試;若軸網有孤柱(柱凸進房間),往主臥較小、
+    # 跨數近目標退,取第一個「零孤柱」方案(柱網規則性優先,使用者定調)。
+    eff_mr, eff_bp, chosen = v.master_ratio, v.bay_pref, None
+    for mr, bp in [(v.master_ratio, v.bay_pref), (v.master_ratio, 0),
+                   (MASTER_RATIO, v.bay_pref), (MASTER_RATIO, 0),
+                   (1.0, v.bay_pref), (1.0, 0)]:
+        r = _try(mr, bp)
+        if r is None:
+            continue
+        if chosen is None:                      # 保底:可行方案(可能仍有孤柱)
+            chosen, eff_mr, eff_bp = r, mr, bp
+        if r.orphans == 0:                      # 零孤柱 → 定案
+            chosen, eff_mr, eff_bp = r, mr, bp
+            break
+    if chosen is None:
         raise ValueError(
-            f"{brief.bedrooms} 房分下來最窄 {min(bed_w)/1000:.2f}m"
-            f"(需 ≥{MIN_BEDROOM_WIDTH/1000:.1f}m),請加大基地或減臥室")
-    bed_x = [bx0]
-    for w in bed_w:
-        bed_x.append(bed_x[-1] + w)            # bed_x[-1] == xb
+            f"{brief.bedrooms} 房分下來最窄房寬不足 {MIN_BEDROOM_WIDTH/1000:.1f}m,"
+            f"請加大基地或減臥室")
+    bx0, bx1, W = chosen.bx0, chosen.bx1, chosen.W
+    xs, xb, bed_x, grid_x = chosen.xs, chosen.xb, chosen.bed_x, chosen.grid_x
 
-    grid_x = _plan_x_grid(bx0, W, bed_x[1:-1] + [xb], prefer=v.bay_pref)
-
-    # 反向吸附:隔牆距軸線 < WALL_SNAP_TOL 就挪到軸線上(柱正好站在
-    # 隔牆與帶分界牆/北外牆的交點);吸附後房寬仍須合格。
-    for i in range(1, brief.bedrooms):
-        g = min(grid_x, key=lambda v: abs(v - bed_x[i]))
-        if 0 < abs(g - bed_x[i]) < WALL_SNAP_TOL:
-            trial = bed_x[:i] + [g] + bed_x[i + 1:]
-            tw = [trial[j + 1] - trial[j] for j in range(brief.bedrooms)]
-            if min(tw) >= MIN_BEDROOM_WIDTH and tw[0] >= max(tw):
-                bed_x = trial
-
-    # 1F 廚房東牆也吸附軸線(容差放寬到 900,吸附後廚房寬守 2.6~4.5m)。
-    xk = bx0 + _clamp(W * 0.25, *SERVICE_WIDTH_RANGE)
-    g = min(grid_x, key=lambda v: abs(v - xk))
-    if 0 < abs(g - xk) <= 900 and 2600 <= g - bx0 <= 4500:
-        xk = g
+    # 1F 廚房|餐廳的分界牆坐在軸線上——廚房靠管道牆 xb 側(與衛浴共用給排水
+    # 立管,真實常識),牆貼最東一條內部軸線 → 1F 的柱也藏進豎牆,與 2F 臥室
+    # 牆共用同一批軸線,不再各算各的位置搶軸線。餐廳(西側)內若還有更西的
+    # 軸線,由呼叫端立短牆(柱包)蓋住;無內部軸線可藏就給廚房固定寬。
+    west_lines = [g for g in grid_x[1:-1] if g < xb - 1]
+    if west_lines:
+        xk = max(west_lines)
+    else:
+        xk = xb - _clamp((xb - bx0) * 0.3, *SERVICE_WIDTH_RANGE)
 
     blocked = _blocked(grid_x, brief.column_size)   # 開口躲柱用(X 向各牆線通用)
 
@@ -1038,8 +1084,9 @@ def _house_frame(brief: HouseBrief) -> SimpleNamespace:
     )
     return SimpleNamespace(bx0=bx0, by0=by0, bx1=bx1, by1=by1, W=W, D=D,
                            dn=dn, ds=ds, yd=yd, xs=xs, xb=xb, xk=xk,
-                           bed_x=bed_x, grid_x=grid_x, blocked=blocked,
-                           v=v, spec_kw=spec_kw)
+                           west_lines=west_lines, bed_x=bed_x, grid_x=grid_x,
+                           blocked=blocked, v=v, eff_master_ratio=eff_mr,
+                           eff_bay_pref=eff_bp, spec_kw=spec_kw)
 
 
 def _house_stair(f: SimpleNamespace, label: str = "上"):
@@ -1057,11 +1104,15 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
     真實透天的標準分層。客餐之間開 1.5m 開放通道(無門扇)。
     """
     f = _house_frame(brief)
-    xk = f.xk                                                # 廚房/餐廳分界(已吸附軸線)
+    xk = f.xk                                                # 廚房|餐廳分界(坐軸線)
     xf = f.bx1 - FOYER_W                                     # 玄關西緣(東南角)
     foy_n = f.by0 + FOYER_D
     rng = _win_rng(brief, "1F")                              # 開窗位置抖動(E2)
     open_kitchen = f.v.kitchen_open                          # 開放式廚房(併入餐廳)
+    # 餐廳(西,[bx0,xk])內側若還有更西的軸線,立短牆(柱包)蓋住 tuck 後
+    # 凸進服務帶的柱——與開放廚房的中島腳同一手法。廚房(東,[xk,xb])靠管道
+    # 牆 xb,與衛浴共用給排水立管。
+    inner = sorted(g for g in f.west_lines if g < xk - 1)
 
     # 開口位置(絕對 x;皆自動躲柱)。窗的期望位置隨 seed 在跨內抖動。
     entry, ew = _slot((xf + f.bx1) / 2, [ENTRY_DOOR_WIDTH], xf, f.bx1, f.blocked, "大門")
@@ -1069,10 +1120,10 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
                       [1800, 1500], f.bx0, xf, f.blocked, "客廳南窗1")
     wl2, wl2w = _slot(_jitter(rng, f.bx0 + f.W * 0.55, f.bx0, xf),
                       [1800, 1500], f.bx0, xf, f.blocked, "客廳南窗2")
-    wk, wkw = _slot(_jitter(rng, (f.bx0 + xk) / 2, f.bx0, xk),
-                    [1200, 900], f.bx0, xk, f.blocked, "廚房北窗")
-    wd, wdw = _slot(_jitter(rng, (xk + f.xb) / 2, xk, f.xb),
-                    [1500, 1200], xk, f.xb, f.blocked, "餐廳北窗")
+    wd, wdw = _slot(_jitter(rng, (f.bx0 + xk) / 2, f.bx0, xk),
+                    [1500, 1200], f.bx0, xk, f.blocked, "餐廳北窗")
+    wkit, wkw = _slot(_jitter(rng, (xk + f.xb) / 2, xk, f.xb),
+                      [1200, 900], xk, f.xb, f.blocked, "廚房北窗")
     wb, wbw = _slot((f.xb + f.xs) / 2, [800, 600], f.xb, f.xs, f.blocked, "衛浴北窗")
     db, dbw = _slot((f.xb + f.xs) / 2, [750], f.xb, f.xs, f.blocked, "衛浴門")
     dst, dstw = _slot((f.xs + f.bx1) / 2, [DOOR_WIDTH], f.xs, f.bx1, f.blocked, "樓梯間門")
@@ -1082,9 +1133,10 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
                            Opening(wl1 - f.bx0, wl1w, "window"),
                            Opening(wl2 - f.bx0, wl2w, "window")])
     north = Wall((f.bx0, f.by1), (f.bx1, f.by1), EXT,       # 1 北外牆
-                 openings=[Opening(wk - f.bx0, wkw, "window"),
-                           Opening(wd - f.bx0, wdw, "window"),
+                 openings=[Opening(wd - f.bx0, wdw, "window"),
+                           Opening(wkit - f.bx0, wkw, "window"),
                            Opening(wb - f.bx0, wbw, "window")])
+    stubs = [Wall((g, f.yd), (g, f.yd + 900), INT) for g in inner]   # 柱包短牆
 
     if open_kitchen:
         # 開放式廚房:拆掉廚|餐隔牆,廚+餐合成一間「餐廚」,對客廳開寬通道。
@@ -1094,9 +1146,8 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
                        openings=[Opening(dp - f.bx0, dpw, "door"),
                                  Opening(db - f.bx0, dbw, "door"),
                                  Opening(dst - f.bx0, dstw, "door")])
-        # 中島腳:開放廚房拆了廚|餐牆,原本藏在該牆的柱會露進餐廚;留一段
-        # 短半牆(從分界牆往北 900,坐在同一條軸線 xk)把柱包住,兼作餐廚
-        # 之間的視覺分界(常見的開放廚房半牆/中島腳)。
+        # 中島腳:開放廚房拆了廚|餐牆,原藏在牆裡的柱會露進餐廚;每條內部軸線
+        # (xk 及更西的 inner)都留一段短半牆把柱包住,兼作餐廚視覺分界。
         walls = [south, north,
                  Wall((f.bx0, f.by0), (f.bx0, f.by1), EXT),  # 2 西外牆
                  Wall((f.bx1, f.by0), (f.bx1, f.by1), EXT),  # 3 東外牆
@@ -1104,7 +1155,8 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
                  Wall((f.xb, f.yd), (f.xb, f.by1), INT),     # 5 餐廚|衛(管道牆)
                  Wall((f.xs, f.yd), (f.xs, f.by1), INT),     # 6 衛|梯
                  Wall((xf, f.by0), (xf, foy_n), INT),        # 7 玄關隔屏
-                 Wall((xk, f.yd), (xk, f.yd + 900), INT)]    # 8 中島腳(包柱)
+                 Wall((xk, f.yd), (xk, f.yd + 900), INT),    # 8 中島腳(包柱)
+                 *stubs]
         doors = [
             DoorPlacement(0, 0, Door(hinge="left", swing="out")),   # 大門
             DoorPlacement(4, 1, Door(hinge="left", swing="out")),   # 衛浴
@@ -1115,34 +1167,36 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
                  kind="dining", code=ROOM_CODES["dining"]),
         ]
     else:
-        # 獨立廚房:廚|餐有隔牆,廚房自帶門,餐廳對客廳開放通道(無門扇)。
-        dk, dkw = _slot((f.bx0 + xk) / 2, [DOOR_WIDTH], f.bx0, xk, f.blocked, "廚房門")
-        dp, dpw = _slot((xk + f.xb) / 2, [PASSAGE_WIDTH, 1200], xk, f.xb,
+        # 獨立廚房:廚(東,靠管道牆)|餐(西)有隔牆坐軸線;廚房自帶門,
+        # 餐廳對客廳開放通道(無門扇)。
+        dk, dkw = _slot((xk + f.xb) / 2, [DOOR_WIDTH], xk, f.xb, f.blocked, "廚房門")
+        dp, dpw = _slot((f.bx0 + xk) / 2, [PASSAGE_WIDTH, 1200], f.bx0, xk,
                         f.blocked, "客餐通道")
         divider = Wall((f.bx0, f.yd), (f.bx1, f.yd), INT,   # 4 帶分界牆
-                       openings=[Opening(dk - f.bx0, dkw, "door"),
-                                 Opening(dp - f.bx0, dpw, "door"),
+                       openings=[Opening(dp - f.bx0, dpw, "door"),
+                                 Opening(dk - f.bx0, dkw, "door"),
                                  Opening(db - f.bx0, dbw, "door"),
                                  Opening(dst - f.bx0, dstw, "door")])
         walls = [south, north,
                  Wall((f.bx0, f.by0), (f.bx0, f.by1), EXT),  # 2 西外牆
                  Wall((f.bx1, f.by0), (f.bx1, f.by1), EXT),  # 3 東外牆
                  divider,
-                 Wall((xk, f.yd), (xk, f.by1), INT),         # 5 廚|餐
-                 Wall((f.xb, f.yd), (f.xb, f.by1), INT),     # 6 餐|衛(管道牆)
+                 Wall((xk, f.yd), (xk, f.by1), INT),         # 5 餐|廚(坐軸線)
+                 Wall((f.xb, f.yd), (f.xb, f.by1), INT),     # 6 廚|衛(管道牆)
                  Wall((f.xs, f.yd), (f.xs, f.by1), INT),     # 7 衛|梯
-                 Wall((xf, f.by0), (xf, foy_n), INT)]        # 8 玄關隔屏
+                 Wall((xf, f.by0), (xf, foy_n), INT),        # 8 玄關隔屏
+                 *stubs]
         doors = [
             DoorPlacement(0, 0, Door(hinge="left", swing="out")),   # 大門
-            DoorPlacement(4, 0, Door(hinge="left", swing="out")),   # 廚房
+            DoorPlacement(4, 1, Door(hinge="left", swing="out")),   # 廚房
             DoorPlacement(4, 2, Door(hinge="left", swing="out")),   # 衛浴
             DoorPlacement(4, 3, Door(hinge="left", swing="out")),   # 樓梯間
         ]
         service_rooms = [
-            Room("廚房", [(f.bx0, f.yd), (xk, f.yd), (xk, f.by1), (f.bx0, f.by1)],
-                 kind="kitchen", code=ROOM_CODES["kitchen"]),
-            Room("餐廳", [(xk, f.yd), (f.xb, f.yd), (f.xb, f.by1), (xk, f.by1)],
+            Room("餐廳", [(f.bx0, f.yd), (xk, f.yd), (xk, f.by1), (f.bx0, f.by1)],
                  kind="dining", code=ROOM_CODES["dining"]),
+            Room("廚房", [(xk, f.yd), (f.xb, f.yd), (f.xb, f.by1), (xk, f.by1)],
+                 kind="kitchen", code=ROOM_CODES["kitchen"]),
         ]
 
     windows = [WindowPlacement(0, 1), WindowPlacement(0, 2),
@@ -1168,10 +1222,10 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
         FixturePlacement("table4", ((f.bx0 + xf) / 2, cy_s), 0),     # 客廳方桌
         FixturePlacement("shoe_cabinet",                             # 鞋櫃貼玄關東牆
                          (f.bx1 - 75, (f.by0 + foy_n) / 2), 90),
-        FixturePlacement("table4",                                   # 餐桌
-                         ((xk + f.xb) / 2, (f.yd + f.by1) / 2), 0),
-        # 廚房:一字型流理台沿北牆(水槽靠窗,實務慣例)。
-        Counter(start=(xk - 60, f.by1 - 75), end=(f.bx0 + 75, f.by1 - 75),
+        FixturePlacement("table4",                                   # 餐桌(西,餐廳)
+                         ((f.bx0 + xk) / 2, (f.yd + f.by1) / 2), 0),
+        # 廚房(東,靠管道牆):一字型流理台沿北牆(水槽靠窗,實務慣例)。
+        Counter(start=(f.xb - 75, f.by1 - 75), end=(xk + 60, f.by1 - 75),
                 sink=True),
         # 衛浴:馬桶+洗手台靠東牆北半(讓開南側門的迴轉)。
         FixturePlacement("toilet", (f.xs - 60, f.by1 - 500), 90),
@@ -1259,8 +1313,13 @@ def generate_house_upper(brief: HouseBrief) -> FloorPlanSpec:
     # 衣櫃貼東側牆近北角;起居室沙發+方桌;衛浴馬桶+洗手台。
     fixtures: list = []
     for i in range(brief.bedrooms):
-        cx = (bed_x[i] + bed_x[i + 1]) / 2
+        # 床置中,但東側貼牆的衣櫃佔約 660mm——主臥開放後可能只有最小寬 2.8m
+        # (mr=1.0 各房均等),雙人床(1.6m)置中會壓到衣櫃,故把床心往西夾到
+        # 「東緣讓開衣櫃」的位置(房間夠寬時 cx 本就更西,不受影響)。
+        bed_half = 800 if i == 0 else 500
         bed = "bed_double" if i == 0 else "bed_single"
+        cx = min((bed_x[i] + bed_x[i + 1]) / 2,
+                 bed_x[i + 1] - bed_half - 710)
         fixtures.append(FixturePlacement(bed, (cx, f.by1 - 75), 180))
         fixtures.append(FixturePlacement(
             "wardrobe", (bed_x[i + 1] - 60, f.by1 - 75 - 750), 90))
