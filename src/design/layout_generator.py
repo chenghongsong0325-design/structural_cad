@@ -97,7 +97,8 @@ WINDOW_WIDTHS = {"bedroom": 1500, "living": 1800, "dining": 1200,
 ROOM_CODES = {"living": "X03", "dining": "X04", "bedroom": "X05",
               "kitchen": "X07", "bathroom": "X08", "corridor": "X00",
               "stair": "X01", "elevator": "X02", "storage": "X09",
-              "foyer": "X10", "patio": "X11", "parking": "X13", "ramp": "X14"}
+              "foyer": "X10", "patio": "X11", "study": "X12",
+              "parking": "X13", "ramp": "X14"}
 ENSUITE_W, ENSUITE_D = 1800, 2000     # 主臥套房衛浴尺寸(≥3房自動加)
 CORE_W = 3100                          # 集合住宅端部逃生核(樓梯+電梯)的開間寬
 RAMP_GAP = 2700                        # 地下室車道口寬(限一跨內躲柱;機車坡道)
@@ -115,8 +116,10 @@ MAX_HOUSE_DEPTH = NORTH_BAND_RANGE[1] + DAYLIGHT_DEPTH_MAX   # 11.5m(兩帶式)
 # 天井帶(深基地第三帶,多樓層透天):基地深到兩帶+前後院也消化不完時,
 # 在南北帶之間插一條「天井帶」——西段天井(採光井,各層同位直落,把光引進
 # 建築中段)+ 北側 1.2m 走道 + 東段餐廳/家庭廳。台灣街屋消化深基地的經典
-# 解法,建築深度可到 MAX_HOUSE_DEPTH + 4.3 = 15.8m。範圍含走道 HALL_DEPTH。
-PATIO_BAND_RANGE = (2800, 4300)
+# 解法。基地更深,天井跟著長大成「中庭」(名稱依深度自動切換,見
+# _patio_name),建築深度可到 MAX_HOUSE_DEPTH + 6.7 = 18.2m(帶跨 6.7m
+# 仍在 9m 結構跨距內);再深才封頂留前後院。範圍含走道 HALL_DEPTH。
+PATIO_BAND_RANGE = (2800, 6700)
 FOYER_W, FOYER_D = 2200, 1500          # 玄關落塵區(大門內側,C1.5b)
 COLUMN_CLEARANCE = 300       # 洞口與柱面的最小淨距(柱要避開開口部,不貼門窗)
 
@@ -1167,7 +1170,7 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
                       [1800, 1500], f.bx0, xf, f.blocked, "客廳南窗1")
     wl2, wl2w = _slot(_jitter(rng, f.bx0 + f.W * 0.55, f.bx0, xf),
                       [1800, 1500], f.bx0, xf, f.blocked, "客廳南窗2")
-    # 北帶開口:廚房/衛浴北窗。
+    # 北帶開口:廚房/衛浴北窗(書房北窗在分間後決定,見下)。
     wk, wkw = _slot(_jitter(rng, (xk + f.xb) / 2, xk, f.xb),
                     [1200, 900], xk, f.xb, f.blocked, "廚房北窗")
     wb, wbw = _slot((f.xb + f.xs) / 2, [800, 600], f.xb, f.xs, f.blocked, "衛浴北窗")
@@ -1178,14 +1181,18 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
     doors: list[DoorPlacement] = [
         DoorPlacement(0, 0, Door(hinge="left", swing="out"))]      # 大門
 
-    # 帶分界牆 2(yn):儲藏(依軸線分間,每間一門)|廚房|衛浴|樓梯間 的門。
+    # 帶分界牆 2(yn):西端房間(依軸線分間,每間一門)|廚房|衛浴|樓梯間。
+    # 大基地時北帶西端很寬——第一間(靠西外牆)升級成「書房」開北窗
+    # (真正的設計師不會在大房子裡塞一間 40m² 的無窗儲藏室);其餘仍儲藏。
     div_x = ([f.bx0]
              + [g for g in f.grid_x[1:-1] if f.bx0 + 500 < g < xk - 500]
              + [xk])
+    has_study = div_x[1] - div_x[0] >= 2800
     band_open: list[Opening] = []
     for i in range(len(div_x) - 1):
+        what = "書房" if (has_study and i == 0) else f"儲藏室{i+1}"
         pos, dw = _slot((div_x[i] + div_x[i + 1]) / 2, [DOOR_WIDTH, 750],
-                        div_x[i], div_x[i + 1], f.blocked, f"儲藏室{i+1}門")
+                        div_x[i], div_x[i + 1], f.blocked, f"{what}門")
         doors.append(DoorPlacement(5, len(band_open),
                                    Door(hinge="left", swing="out")))
         band_open.append(Opening(pos - f.bx0, dw, "door"))
@@ -1207,6 +1214,14 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
     doors.append(DoorPlacement(5, len(band_open), Door(hinge="left", swing="out")))
     band_open.append(Opening(dst - f.bx0, dstw, "door"))
 
+    # 書房北窗(有書房才開)。
+    north_open = [Opening(wk - f.bx0, wkw, "window"),
+                  Opening(wb - f.bx0, wbw, "window")]
+    if has_study:
+        ws_, wsw = _slot((div_x[0] + div_x[1]) / 2, [1500, 1200, 900],
+                         div_x[0], div_x[1], f.blocked, "書房北窗")
+        north_open.append(Opening(ws_ - f.bx0, wsw, "window"))
+
     # 天井北牆(走道側):門(進出天井)+ 窗(借光)。這道牆不在軸線上,
     # 整段無柱,開口不必躲柱。
     pl = xp - f.bx0                                    # 牆長
@@ -1221,8 +1236,7 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
                        Opening(wl1 - f.bx0, wl1w, "window"),
                        Opening(wl2 - f.bx0, wl2w, "window")]),
         Wall((f.bx0, f.by1), (f.bx1, f.by1), EXT,           # 1 北外牆
-             openings=[Opening(wk - f.bx0, wkw, "window"),
-                       Opening(wb - f.bx0, wbw, "window")]),
+             openings=north_open),
         Wall((f.bx0, f.by0), (f.bx0, f.by1), EXT),          # 2 西外牆
         Wall((f.bx1, f.by0), (f.bx1, f.by1), EXT),          # 3 東外牆
         Wall((f.bx0, yd), (f.bx1, yd), INT,                 # 4 帶分界牆1(通道)
@@ -1241,6 +1255,8 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
     windows = [WindowPlacement(0, 1), WindowPlacement(0, 2),
                WindowPlacement(1, 0), WindowPlacement(1, 1),
                WindowPlacement(6, 1)]
+    if has_study:
+        windows.append(WindowPlacement(1, 2))
 
     rooms = [
         Room("客廳", [(f.bx0, f.by0), (xf, f.by0), (xf, foy_n), (f.bx1, foy_n),
@@ -1248,7 +1264,7 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
              kind="living", code=ROOM_CODES["living"]),
         Room("玄關", [(xf, f.by0), (f.bx1, f.by0), (f.bx1, foy_n), (xf, foy_n)],
              kind="foyer", code=ROOM_CODES["foyer"]),
-        Room("天井", [(f.bx0, yd), (xp, yd), (xp, ypn), (f.bx0, ypn)],
+        Room(_patio_name(f), [(f.bx0, yd), (xp, yd), (xp, ypn), (f.bx0, ypn)],
              kind="patio", code=ROOM_CODES["patio"]),
         # 餐廳 L 形:東段(xp~bx1 全深)+ 天井北側走道段。
         Room("餐廳", [(xp, yd), (f.bx1, yd), (f.bx1, yn), (f.bx0, yn),
@@ -1262,9 +1278,14 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
              kind="stair", code=ROOM_CODES["stair"]),
     ]
     for i in range(len(div_x) - 1):
-        rooms.append(Room("儲藏室", [(div_x[i], yn), (div_x[i + 1], yn),
-                                     (div_x[i + 1], f.by1), (div_x[i], f.by1)],
-                          kind="storage", code=ROOM_CODES["storage"]))
+        pts = [(div_x[i], yn), (div_x[i + 1], yn),
+               (div_x[i + 1], f.by1), (div_x[i], f.by1)]
+        if has_study and i == 0:
+            rooms.append(Room("書房", pts, kind="study",
+                              code=ROOM_CODES["study"]))
+        else:
+            rooms.append(Room("儲藏室", pts, kind="storage",
+                              code=ROOM_CODES["storage"]))
 
     # 家具:客廳同兩帶式;餐桌在天井帶東段(偏南,讓開北側各室門的迴轉)。
     cy_s = (f.by0 + yd) / 2
@@ -1278,7 +1299,10 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
         FixturePlacement("basin", (f.xs - 60, f.by1 - 1300), 90),
     ]
     if f.xb - xp >= 2400:
-        fixtures.append(FixturePlacement("table4", ((xp + f.xb) / 2, yd + 850), 0))
+        # 餐桌 y:天井帶淺時貼南(讓開 yn 各室門的迴轉 900),深(中庭)時
+        # 往帶中挪——上限守「桌組頂 ≤ yn-900-100」。
+        ty = min(yd + max(850, f.dp * 0.35), yn - 900 - 780 - 100)
+        fixtures.append(FixturePlacement("table4", ((xp + f.xb) / 2, ty), 0))
 
     spec = FloorPlanSpec(walls=walls, rooms=rooms, doors=doors, windows=windows,
                          fixtures=fixtures,
@@ -1355,7 +1379,7 @@ def _house_upper_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
     rooms = [
         Room("起居室", [(f.bx0, f.by0), (f.bx1, f.by0), (f.bx1, yd), (f.bx0, yd)],
              kind="living", code=ROOM_CODES["living"]),
-        Room("天井", [(f.bx0, yd), (xp, yd), (xp, ypn), (f.bx0, ypn)],
+        Room(_patio_name(f), [(f.bx0, yd), (xp, yd), (xp, ypn), (f.bx0, ypn)],
              kind="patio", code=ROOM_CODES["patio"]),
         Room("家庭廳", [(xp, yd), (f.bx1, yd), (f.bx1, yn), (f.bx0, yn),
                         (f.bx0, ypn), (xp, ypn)],
@@ -1390,6 +1414,12 @@ def _house_upper_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
                          fixtures=fixtures,
                          stairs=[_house_stair(f)], floor_label="2F", **f.spec_kw)
     return _finish_house(spec, f, "透天臥室層(天井)")
+
+
+def _patio_name(f: SimpleNamespace) -> str:
+    """天井的顯示名:長到中庭尺度(淨深 ≥3.2m)就叫「中庭」——大基地的
+    天井帶會自動加深(PATIO_BAND_RANGE 上限 6.7m),名稱跟著升級。"""
+    return "中庭" if (f.ypn - f.yd) >= 3200 else "天井"
 
 
 def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:

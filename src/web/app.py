@@ -67,7 +67,12 @@ def _has_api_key() -> bool:
 
 
 def _summary(brief, building: BuildingSpec) -> str:
-    """給前端顯示的一行摘要:解析出了什麼、蓋了幾層。"""
+    """給前端顯示的一行摘要:解析出了什麼、蓋了幾層、建築配置的取捨。
+
+    後半段是「設計師的說明」——基地很大時建築不會照抄基地尺寸(房間有
+    合理上限,再大就失去尺度),多的地留院子;使用者要看得到這個決策
+    (建築多大、院子留多深、有沒有中庭),不然會以為尺寸被無視。
+    """
     t = brief.typical
     if isinstance(t, HouseBrief):
         kind = (f"單戶住宅 {t.bedrooms} 房,基地 "
@@ -78,7 +83,27 @@ def _summary(brief, building: BuildingSpec) -> str:
     above = sum(1 for f in building.floors if f.level > 0)
     below = sum(1 for f in building.floors if f.level < 0)
     floors = f"地上 {above} 層" + (f" + 地下 {below} 層" if below else "")
-    return f"{kind} · {floors}"
+    parts = [kind, floors]
+
+    if isinstance(t, HouseBrief):
+        spec = building.floors[-1].spec          # 任一層(外殼各層相同)
+        bw, bd = sum(spec.x_spacings), sum(spec.y_spacings)
+        parts.append(f"建築 {bw / 1000:.1f}×{bd / 1000:.1f} 米")
+        courtyard = next((r.name for fl in building.floors
+                          for r in fl.spec.rooms if r.kind == "patio"), None)
+        if courtyard:
+            parts.append(f"{courtyard}採光")
+        ox, oy = spec.grid_origin                 # 建築置中 → 前後/兩側院等深
+        front = oy / 1000                         # 基地邊到建築的距離
+        side = (t.site_width - ox - bw) / 1000
+        yard_bits = []
+        if front > 3.5:                           # 比退縮線明顯多才值得說
+            yard_bits.append(f"前後院各約 {front:.0f} 米")
+        if side > 3.5:
+            yard_bits.append(f"兩側院各約 {side:.0f} 米")
+        if yard_bits:
+            parts.append("、".join(yard_bits) + "(庭園/停車)")
+    return " · ".join(parts)
 
 
 def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI:
