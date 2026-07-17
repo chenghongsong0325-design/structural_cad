@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -266,17 +267,42 @@ def parse_building_brief(text: str, client: Optional[object] = None,
     return _building_from_data(_call_llm(text, client), seed=seed)
 
 
+# 暫時性錯誤的重試(Gemini 伺服器過載/限流時,等一下再試通常就過了):
+# 使用者實際遇過「503 UNAVAILABLE: This model is currently experiencing high
+# demand」——那不是需求描述有問題,不該讓使用者自己按重來。只重試「等一下
+# 會好」的錯誤,金鑰錯誤/描述違規(400/403)立刻拋出,重試也沒用。
+_RETRY_MARKERS = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED",
+                  "500", "INTERNAL", "overloaded", "high demand")
+_RETRY_DELAYS = (1.0, 3.0, 6.0)      # 三次重試的等待秒數(遞增)
+
+
+def _is_transient(exc: Exception) -> bool:
+    """這個錯誤等一下再試會不會好?(伺服器過載/限流 → 會;金鑰錯 → 不會)"""
+    msg = str(exc)
+    return any(m in msg for m in _RETRY_MARKERS)
+
+
 def _call_llm(text: str, client: object) -> dict:
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=text,
-        config={
-            "system_instruction": SYSTEM_PROMPT,
-            "response_mime_type": "application/json",
-            "response_schema": BRIEF_SCHEMA,
-        },
-    )
-    return json.loads(response.text)
+    """呼叫 Gemini 解析需求;伺服器暫時過載會自動重試(遞增等待)。"""
+    last: Optional[Exception] = None
+    for attempt in range(len(_RETRY_DELAYS) + 1):
+        try:
+            response = client.models.generate_content(
+                model=MODEL,
+                contents=text,
+                config={
+                    "system_instruction": SYSTEM_PROMPT,
+                    "response_mime_type": "application/json",
+                    "response_schema": BRIEF_SCHEMA,
+                },
+            )
+            return json.loads(response.text)
+        except Exception as exc:                     # noqa: BLE001
+            if not _is_transient(exc) or attempt >= len(_RETRY_DELAYS):
+                raise
+            last = exc
+            time.sleep(_RETRY_DELAYS[attempt])
+    raise last                                        # pragma: no cover(防禦)
 
 
 # ---------------------------------------------------------------------------
