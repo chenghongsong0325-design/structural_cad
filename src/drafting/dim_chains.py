@@ -31,6 +31,9 @@ Point = tuple[float, float]
 # 三層離建築外緣的距離(由內到外:細部/軸距/總長)。待確認。
 TIER_OFFSETS = (1200.0, 2000.0, 2800.0)
 
+# 基地標註各層之間、以及與建築最外層之間的淨距(mm)。
+SITE_TIER_GAP = 900.0
+
 # 判斷「牆貼在建築外緣線上」的容差(mm)。
 SIDE_TOL = 1.0
 
@@ -44,6 +47,13 @@ def building_extent(spec) -> tuple[float, float, float, float]:
     """由軸網原點與跨距推回建築範圍 (bx0, by0, bx1, by1)。"""
     bx0, by0 = spec.grid_origin
     return (bx0, by0, bx0 + sum(spec.x_spacings), by0 + sum(spec.y_spacings))
+
+
+def site_extent(spec) -> tuple[float, float, float, float]:
+    """地界線的外接範圍 (sx0, sy0, sx1, sy1)。"""
+    xs = [p[0] for p in spec.site_boundary]
+    ys = [p[1] for p in spec.site_boundary]
+    return (min(xs), min(ys), max(xs), max(ys))
 
 
 def wall_side(wall: Wall, extent: tuple[float, float, float, float]) -> Optional[str]:
@@ -137,6 +147,78 @@ def _add_chain(msp, side: str, coords: list[float], offset: float,
         dim.render()
         n += 1
     return n
+
+
+def _add_site_chain(msp, side: str, coords: list[float], line_pos: float,
+                    anchor: float, layer: str, dimstyle: str) -> int:
+    """基地標註的一列:沿 side 軸把 coords 逐段標在 line_pos 這條線上。
+
+    anchor = 標註點的另一軸座標(一律取地界線,延伸線才會從地界拉出來);
+    line_pos = 尺寸線所在位置(地界外側)。回傳道數。
+    """
+    n = 0
+    for a, b in zip(coords, coords[1:]):
+        if b - a <= SIDE_TOL:
+            continue
+        if side == "south":
+            p1, p2, base, angle = (a, anchor), (b, anchor), ((a + b) / 2, line_pos), 0
+        else:  # west
+            p1, p2, base, angle = (anchor, a), (anchor, b), (line_pos, (a + b) / 2), 90
+        dim = msp.add_linear_dim(
+            base=base, p1=p1, p2=p2, angle=angle,
+            dimstyle=dimstyle, dxfattribs={"layer": layer},
+        )
+        dim.render()
+        n += 1
+    return n
+
+
+def site_dim_reach(spec) -> float:
+    """基地標註最外層離地界線多遠(mm)。
+
+    圖面配件(標題欄/樓層大字)要讓開這個距離,才不會疊在基地標註上。
+    """
+    sx0, sy0, sx1, sy1 = site_extent(spec)
+    bx0, by0, bx1, by1 = building_extent(spec)
+    overall = TIER_OFFSETS[-1]                 # 建築最外層(總長)離建築外緣
+    spill = max(0.0,                           # 該層伸出地界線外多少
+                overall - (by0 - sy0), overall - (bx0 - sx0),
+                overall - (sy1 - by1), overall - (sx1 - bx1))
+    return spill + SITE_TIER_GAP * 2
+
+
+def draw_site_dims(msp, spec, layers: dict[str, str], *,
+                   dimstyle: str = "STRUCT") -> int:
+    """基地尺寸標註(畫在地界線外側,下方 + 左方),回傳畫了幾道。
+
+    兩層,由內到外:
+      * 分段層:「側院 | 建築 | 側院」與「前院 | 建築 | 後院」——把「基地
+        沒蓋滿、多的地變成院子」這個設計決策直接標在圖上(使用者只看到
+        建築尺寸會以為基地尺寸被無視)。
+      * 總長層:基地總寬 / 總深(= 使用者輸入的那組數字)。
+
+    自動讓開建築的最外層尺寸鏈:院子比 TIER_OFFSETS[-1] 窄時,那層會伸出
+    地界線外,基地標註必須退得比它更外面才不會疊在一起(見 site_dim_reach)。
+    """
+    layer = layers["DIM"]
+    sx0, sy0, sx1, sy1 = site_extent(spec)
+    bx0, by0, bx1, by1 = building_extent(spec)
+
+    off2 = site_dim_reach(spec)
+    off1 = off2 - SITE_TIER_GAP
+
+    total = 0
+    # 下方:量 X —— 西側院 | 建築寬 | 東側院,再一道基地總寬。
+    total += _add_site_chain(msp, "south", [sx0, bx0, bx1, sx1],
+                             sy0 - off1, sy0, layer, dimstyle)
+    total += _add_site_chain(msp, "south", [sx0, sx1],
+                             sy0 - off2, sy0, layer, dimstyle)
+    # 左方:量 Y —— 前院 | 建築深 | 後院,再一道基地總深。
+    total += _add_site_chain(msp, "west", [sy0, by0, by1, sy1],
+                             sx0 - off1, sx0, layer, dimstyle)
+    total += _add_site_chain(msp, "west", [sy0, sy1],
+                             sx0 - off2, sx0, layer, dimstyle)
+    return total
 
 
 def draw_dim_chains(msp, spec, layers: dict[str, str], *,

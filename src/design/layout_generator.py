@@ -660,7 +660,7 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
         grid_origin=(bx0, by0),
         column_size=col,
         walls=walls, rooms=rooms, doors=doors, windows=windows, fixtures=fixtures,
-        dim_chains=True, sheet=True,
+        dim_chains=True, sheet=False,
         floor_label=brief.floor_label, north_arrow=True,
         title_block=CompetitionTitleData(),
     )
@@ -792,7 +792,7 @@ def _corridor_shell(brief: CorridorBrief, unit_list: list[UnitSpec],
         y_spacings=[depth, brief.corridor_width, depth],
         grid_origin=(x0, y0),
         column_size=brief.column_size,
-        dim_chains=True, sheet=True, north_arrow=True,
+        dim_chains=True, sheet=False, north_arrow=True,
         title_block=CompetitionTitleData(),
     )
     geo = SimpleNamespace(x0=x0, y0=y0, xw=xw, xe=xe, bx1=bx1, by1=by1,
@@ -1253,7 +1253,7 @@ def _house_frame(brief: HouseBrief) -> SimpleNamespace:
         grid_origin=(bx0, by0),
         column_size=brief.column_size,
         column_centers=column_centers,
-        dim_chains=True, sheet=True, north_arrow=True,
+        dim_chains=True, sheet=False, north_arrow=True,
         title_block=CompetitionTitleData(),
     )
     return SimpleNamespace(bx0=bx0, by0=by0, bx1=bx1, by1=by1, W=W, D=D,

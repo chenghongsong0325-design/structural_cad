@@ -110,8 +110,9 @@ def test_draw_floor_plan_layers(doc_and_layers) -> None:
     # OTHER:A3 圖框 2 + 標題欄 1 + 電梯符號 3 + 設備家具圖塊 11 +
     #        流理台(2 段多義線 + 1 水槽圓)3 + 北向箭頭 1 = 21。
     assert by_layer.get("OTHER") == 21
-    # 尺度在 DIM:四邊三層尺寸鏈(細部 20 + 軸距 10 + 總長 4)= 34 個。
-    assert by_layer.get("DIM") == 34
+    # 尺度在 DIM:四邊三層尺寸鏈(細部 20 + 軸距 10 + 總長 4)= 34,
+    # 加基地標註 8(下方/左方各:院|建築|院 3 段 + 基地總長 1)= 42 個。
+    assert by_layer.get("DIM") == 42
     # 文字(軸網編號 7 + 房間名稱/面積 7×2 = 21)在 TEXT 之上(軸網圈在 AXIS)。
     assert by_layer.get("TEXT", 0) >= 21
 

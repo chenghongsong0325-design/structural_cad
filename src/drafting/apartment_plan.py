@@ -49,7 +49,7 @@ from src.drafting.balcony_elevator import (
     draw_elevator_symbol,
     elevator_walls,
 )
-from src.drafting.dim_chains import draw_dim_chains
+from src.drafting.dim_chains import draw_dim_chains, draw_site_dims, site_dim_reach
 from src.drafting.fixtures import (
     Counter,
     FixturePlacement,
@@ -227,7 +227,9 @@ def _title_insert(spec: FloorPlanSpec) -> Point:
 
     xs = [p[0] for p in spec.site_boundary]
     ys = [p[1] for p in spec.site_boundary]
-    return (max(xs) - tb_w, min(ys) - tb_h - 2600)
+    # 無圖框:退到地界線下方,並讓開基地標註(開 dim_chains 時畫在地界外側)。
+    below = site_dim_reach(spec) + 1200 if spec.dim_chains else 2600
+    return (max(xs) - tb_w, min(ys) - tb_h - below)
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +256,7 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
     if spec.dim_chains:
         draw_grid(msp, grid, layers, bubble_offset=2600)
         draw_dim_chains(msp, spec, layers)
+        draw_site_dims(msp, spec, layers)      # 基地總尺寸 + 院子分段(地界外側)
     else:
         draw_grid(msp, grid, layers)
         draw_grid_dimensions(msp, grid, layers)
@@ -336,8 +339,10 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
         elif spec.sheet:
             ox, oy = spec.sheet_origin or _auto_sheet_origin(spec)
             pos = (ox + spec.sheet_margin + 2200, oy + spec.sheet_margin + 1800)
-        else:
-            pos = (min(xs) + 1500, min(ys) - 5000)
+        else:      # 無圖框:地界線下方,讓開基地標註
+            pos = (min(xs) + 1500,
+                   min(ys) - (site_dim_reach(spec) + 2400 if spec.dim_chains
+                              else 5000))
         draw_floor_label(msp, spec.floor_label, pos, layers)
     if spec.north_arrow:
         if spec.north_arrow_insert is not None:

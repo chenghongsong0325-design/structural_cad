@@ -153,6 +153,8 @@ def test_floor_plan_dim_chains_integration(doc_and_layers) -> None:
     draw_floor_plan(msp, demo_spec(), layers)   # demo 已開 dim_chains=True
 
     dims = [e for e in msp.query("DIMENSION")]
-    assert len(dims) == 34
+    # 建築四邊三層(細部 20 + 軸距 10 + 總長 4)= 34,
+    # 加基地標註 8(下方:院|建築|院 3 + 總寬 1;左方:院|建築|院 3 + 總深 1)。
+    assert len(dims) == 42
     for d in dims:
         assert d.dxf.layer == layers["DIM"]
