@@ -122,6 +122,11 @@ MAX_HOUSE_DEPTH = NORTH_BAND_RANGE[1] + DAYLIGHT_DEPTH_MAX   # 11.5m(兩帶式)
 PATIO_BAND_RANGE = (2800, 6700)
 FOYER_W, FOYER_D = 2200, 1500          # 玄關落塵區(大門內側,C1.5b)
 COLUMN_CLEARANCE = 300       # 洞口與柱面的最小淨距(柱要避開開口部,不貼門窗)
+# 指定房間需求(E3)——
+MIN_STUDY_WIDTH = 2400       # 書房最小淨寬(比臥室略窄可接受:一桌一椅一櫃)
+STUDY_RATIO = 0.85           # 書房相對臥室的寬度分配比(略小,不搶臥室空間)
+CAR_STALL = (2500, 5500)     # 單一汽車位淨尺寸(寬×長,mm;台灣法定約 2.5×5.5m)
+CAR_AISLE = 5500             # 車道/迴轉淨深(垂直式停車進出車道,mm)
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +154,13 @@ class HouseBrief:
     kitchen_side: Optional[str] = None    # "N"/"S"/"E"/"W"
     seed: int = 0                         # 設計變體種子(E2:同 seed 同方案,
                                           # 換 seed 換方案;見 _house_variant)
+    # ── 指定房間需求(E3:使用者點名要某種房間)─────────────────────────
+    want_study: bool = False              # 要書房(臥室帶多一格,擺書桌;
+                                          # 單層與多樓層臥室層皆可,見 _north_program)
+    want_elder_room: bool = False         # 要孝親房(一樓臥室,共用該層衛浴;
+                                          # 單層=臥室帶多一格、多樓層=1F 北帶西端)
+    car_spaces: int = 0                   # 汽車停車位數(0=不要;需地下車庫,
+                                          # 沒地下室時由 _building_from_data 自動補 B1F)
 
 
 @dataclass
@@ -173,6 +185,22 @@ class CorridorBrief:
 
 
 Brief = Union[HouseBrief, CorridorBrief]
+
+
+def _house_slot_names(roles: list) -> list:
+    """單層臥室帶各格顯示名:主臥室 / 臥室A,B,C… / 書房 / 孝親房(E3)。"""
+    names, letter = [], 0
+    for r in roles:
+        if r == "master":
+            names.append("主臥室")
+        elif r == "study":
+            names.append("書房")
+        elif r == "elder":
+            names.append("孝親房")
+        else:
+            names.append(f"臥室{'ABC'[letter]}")
+            letter += 1
+    return names
 
 
 # ---------------------------------------------------------------------------
@@ -284,12 +312,20 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
     yd = by0 + ds                                # 帶分界牆 y
 
 
-    ratios = [MASTER_RATIO] + [1.0] * (brief.bedrooms - 1)
+    # 臥室帶分間程式(E3):臥室(主臥在西端 index 0)+ 選填書房 + 選填孝親房
+    # (東端,近南側服務核/衛浴;孝親房=一樓臥室、共用該層衛浴)。
+    roles = (["master"] + ["bedroom"] * (brief.bedrooms - 1)
+             + (["study"] if brief.want_study else [])
+             + (["elder"] if brief.want_elder_room else []))
+    n = len(roles)
+    ratios = [MASTER_RATIO if r == "master"
+              else (STUDY_RATIO if r == "study" else 1.0) for r in roles]
+    mins = [MIN_STUDY_WIDTH if r == "study" else MIN_BEDROOM_WIDTH for r in roles]
     bed_w = [W * r / sum(ratios) for r in ratios]
-    if min(bed_w) < MIN_BEDROOM_WIDTH:
+    if any(bed_w[i] < mins[i] for i in range(n)):
         raise ValueError(
-            f"{brief.bedrooms} 房分下來最窄 {min(bed_w)/1000:.2f}m"
-            f"(需 ≥{MIN_BEDROOM_WIDTH/1000:.1f}m),請加大基地或減臥室")
+            f"這些房間分下來寬度不足(最窄 {min(bed_w)/1000:.2f}m),"
+            f"請加大基地或減少房間")
     bed_x = [bx0]
     for w in bed_w:
         bed_x.append(bed_x[-1] + w)
@@ -305,12 +341,12 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
 
     # C1.5c:隔間坐樑(補正)——隔牆距軸線 <WALL_SNAP_TOL 就吸附到軸線上
     # (牆下有樑);吸附後仍須守 最小房寬 / 主臥最大 / 套衛放得下。
-    for i in range(1, brief.bedrooms):
+    for i in range(1, n):
         g = min(grid_x, key=lambda v: abs(v - bed_x[i]))
         if 0 < abs(g - bed_x[i]) < WALL_SNAP_TOL:
             trial = bed_x[:i] + [g] + bed_x[i + 1:]
-            widths = [trial[j + 1] - trial[j] for j in range(brief.bedrooms)]
-            ok = (min(widths) >= MIN_BEDROOM_WIDTH
+            widths = [trial[j + 1] - trial[j] for j in range(n)]
+            ok = (all(widths[j] >= mins[j] for j in range(n))
                   and widths[0] >= max(widths))
             if brief.bedrooms >= 3:
                 ok = ok and widths[0] >= ENSUITE_W + 2700
@@ -340,9 +376,9 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
     # ≥3 房必設(3+ 扇臥室門不宜全開進客餐廳);2 房動線融入客餐廳、
     # 預設不設,但東臥門若被服務核+柱位擠到只能開進廚房,退回設走道;
     # 1 房必不設。(集合住宅的走廊是另一套,見 _generate_corridor。)
-    has_hall = brief.bedrooms >= 3
+    has_hall = n >= 3
     pos_direct: Optional[float] = None           # 2房直開客餐廳時的東臥門位
-    if brief.bedrooms == 2:
+    if n == 2:
         pos_direct = _find_clear_position(
             (bed_x[-2] + sx) / 2 - bx0, DOOR_WIDTH,
             bed_x[-2] - bx0 + 150, sx - bx0 - 150, blocked_band)
@@ -382,7 +418,7 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
         Wall((sx, by0), (sx, yc if has_notch else yd), INT),
         Wall((sx, yb), (bx1, yb), INT),       # 6 浴廁/廚房分界
     ]
-    for i in range(1, brief.bedrooms):        # 7.. 臥室隔牆
+    for i in range(1, n):                     # 7.. 臥室帶隔牆(含書房/孝親房)
         walls.append(Wall((bed_x[i], yd), (bed_x[i], by1), INT))
 
     doors: list[DoorPlacement] = []
@@ -432,12 +468,12 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
 
     # 臥室:門在帶分界牆(有走道時門要落在走道正面 x ≤ x_he;主臥的門
     # 讓開套衛牆段;東臥用預先算好的門位)、窗在北牆。
-    for i in range(brief.bedrooms):
+    for i in range(n):
         x_l, x_r = bed_x[i], bed_x[i + 1]
         cx = (x_l + x_r) / 2
-        if has_hall and i == brief.bedrooms - 1:
+        if has_hall and i == n - 1:
             door_lo, door_hi, door_desired = pos_e - 450, pos_e + 450, pos_e
-        elif not has_hall and pos_direct is not None and i == brief.bedrooms - 1:
+        elif not has_hall and pos_direct is not None and i == n - 1:
             # 2 房無走道:東臥門直開客餐廳(位置已預先算好,避開廚房正面)。
             door_lo, door_hi = pos_direct - 450, pos_direct + 450
             door_desired = pos_direct
@@ -551,8 +587,8 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
     else:
         rooms.append(Room("廚房", [(sx, yb), (bx1, yb), (bx1, yd), (sx, yd)],
                           kind="kitchen", code=ROOM_CODES["kitchen"]))
-    bed_names = ["主臥室", "臥室A", "臥室B", "臥室C"]
-    for i in range(brief.bedrooms):
+    slot_names = _house_slot_names(roles)
+    for i in range(n):
         if i == 0 and has_ensuite:
             # 主臥 L 形(西南角讓給套衛)+ 主臥浴。
             rooms.append(Room("主臥室",
@@ -563,20 +599,25 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
                               [(bx0, yd), (ex1, yd), (ex1, ey1), (bx0, ey1)],
                               kind="bathroom", code=ROOM_CODES["bathroom"]))
         else:
-            rooms.append(Room(bed_names[i],
+            kind = "study" if roles[i] == "study" else "bedroom"
+            rooms.append(Room(slot_names[i],
                               [(bed_x[i], yd), (bed_x[i + 1], yd),
                                (bed_x[i + 1], by1), (bed_x[i], by1)],
-                              kind="bedroom", code=ROOM_CODES["bedroom"]))
+                              kind=kind, code=ROOM_CODES[kind]))
 
     # ── 家具設備(依房型規則自動擺放)──────────────────────────────────
     fixtures: list = []
     # 臥室:床(主臥雙人、其餘單人)頭靠北牆;衣櫃貼東側牆、緊鄰北牆角。
-    for i in range(brief.bedrooms):
+    # 書房:書桌貼北牆、椅朝南(無床無衣櫃)。孝親房是臥室,同臥室擺法。
+    for i in range(n):
         x_l, x_r = bed_x[i], bed_x[i + 1]
         cx = (x_l + x_r) / 2
-        bed = "bed_double" if i == 0 else "bed_single"
+        if roles[i] == "study":
+            fixtures.append(FixturePlacement("desk", (cx, by1 - 75), 180))
+            continue
+        bed = "bed_double" if roles[i] == "master" else "bed_single"
         fixtures.append(FixturePlacement(bed, (cx, by1 - 75), 180))
-        inner = 75 if i == brief.bedrooms - 1 else 60   # 排尾靠外牆(150)
+        inner = 75 if i == n - 1 else 60   # 排尾靠外牆(150)
         fixtures.append(FixturePlacement("wardrobe", (x_r - inner, by1 - 75 - 750), 90))
     # 玄關:鞋櫃貼短隔屏牆內側(讓開大門迴轉方塊)。
     fixtures.append(FixturePlacement(
@@ -970,6 +1011,81 @@ def _jitter(rng: random.Random, center: float, lo: float, hi: float,
     return _clamp(center + rng.uniform(-reach, reach), lo, hi)
 
 
+def _frame_slot_kinds(brief: HouseBrief) -> list[str]:
+    """多樓層透天臥室帶的分間種類:臥室×n(主臥在 index 0)+ 選填書房(東端)。
+
+    書房與臥室同帶(樓上臥室層),孝親房不在此(1F,見 generate_house_public)。
+    """
+    kinds = ["bedroom"] * brief.bedrooms
+    if brief.want_study:
+        kinds.append("study")
+    return kinds
+
+
+# ── 臥室帶共用組件(單層/多樓層臥室層共用;書房邏輯只寫一次)──────────────
+def _band_slot_openings(f: SimpleNamespace, bed_x: list, kinds: list,
+                        rng: random.Random, wall4: int = 4) -> tuple:
+    """臥室帶各格的門(帶分界牆 wall4)+ 北窗(北外牆 index 1);書房同樣配門窗。
+
+    回傳 (band_open, doors, win_open, windows):band_open/win_open 是要塞進
+    對應牆的 Opening 清單,doors/windows 是對應的放置。呼叫端接著補衛浴/樓梯。
+    """
+    band_open: list[Opening] = []
+    doors: list[DoorPlacement] = []
+    win_open: list[Opening] = []
+    windows: list[WindowPlacement] = []
+    for i in range(len(kinds)):
+        label = "書房" if kinds[i] == "study" else f"臥室{i+1}"
+        cx = (bed_x[i] + bed_x[i + 1]) / 2
+        dpos, dw = _slot(cx, [DOOR_WIDTH, 750], bed_x[i], bed_x[i + 1],
+                         f.blocked, f"{label}門")
+        doors.append(DoorPlacement(wall4, len(band_open),
+                                   Door(hinge="left", swing="out")))
+        band_open.append(Opening(dpos - f.bx0, dw, "door"))
+        wpos, ww = _slot(_jitter(rng, cx, bed_x[i], bed_x[i + 1]),
+                         [1500, 1200, 900], bed_x[i], bed_x[i + 1],
+                         f.blocked, f"{label}窗")
+        windows.append(WindowPlacement(1, len(win_open)))
+        win_open.append(Opening(wpos - f.bx0, ww, "window"))
+    return band_open, doors, win_open, windows
+
+
+def _band_rooms(bed_x: list, kinds: list, ydiv: float, ytop: float) -> list:
+    """臥室帶的房間:臥室(主臥在 index 0)+ 書房(kind=study,code X12)。"""
+    rooms: list = []
+    bedno = 0
+    for i in range(len(kinds)):
+        pts = [(bed_x[i], ydiv), (bed_x[i + 1], ydiv),
+               (bed_x[i + 1], ytop), (bed_x[i], ytop)]
+        if kinds[i] == "study":
+            rooms.append(Room("書房", pts, kind="study", code=ROOM_CODES["study"]))
+        else:
+            bedno += 1
+            name = "主臥室" if bedno == 1 else f"臥室{bedno}"
+            rooms.append(Room(name, pts, kind="bedroom", code=ROOM_CODES["bedroom"]))
+    return rooms
+
+
+def _band_fixtures(f: SimpleNamespace, bed_x: list, kinds: list) -> list:
+    """臥室帶家具:臥室=床(主臥雙人)+衣櫃;書房=書桌(貼北牆,椅朝南)。"""
+    fixtures: list = []
+    bedno = 0
+    for i in range(len(kinds)):
+        x_l, x_r = bed_x[i], bed_x[i + 1]
+        if kinds[i] == "study":
+            fixtures.append(FixturePlacement("desk", ((x_l + x_r) / 2, f.by1 - 75), 180))
+            continue
+        bedno += 1
+        # 床置中,但東側貼牆的衣櫃佔約 660mm——最小寬 2.8m 時雙人床置中會壓到
+        # 衣櫃,故床心往西夾到「東緣讓開衣櫃」的位置(房間夠寬時不受影響)。
+        bed_half = 800 if bedno == 1 else 500
+        bed = "bed_double" if bedno == 1 else "bed_single"
+        cx = min((x_l + x_r) / 2, x_r - bed_half - 710)
+        fixtures.append(FixturePlacement(bed, (cx, f.by1 - 75), 180))
+        fixtures.append(FixturePlacement("wardrobe", (x_r - 60, f.by1 - 75 - 750), 90))
+    return fixtures
+
+
 def _house_frame(brief: HouseBrief) -> SimpleNamespace:
     """透天多樓層的「不變骨架」(D2):外殼、南北兩帶、東端[濕區|樓梯間]、軸網。
 
@@ -1023,8 +1139,16 @@ def _house_frame(brief: HouseBrief) -> SimpleNamespace:
     # 凸在房間裡。房間寬到合理上限就封頂、建築在可建範圍內置中留側院;柱網
     # 縮回「每條軸線都有牆交點可藏」。⚠️ 收斂量依 mr(主臥越大、封頂寬越窄),
     # 故 mr 一變、整個外殼跟著重算,守門才能真的換掉會產生孤柱的方案。
+    # 臥室帶的分間程式(E3):臥室×n(主臥在西端 index 0)+ 選填書房(東端,
+    # 靠濕區,略窄)。孝親房不在此(單層另加、多樓層在 1F,不上樓)。
+    kinds = _frame_slot_kinds(brief)
+    nslot = len(kinds)
+    mins = [MIN_STUDY_WIDTH if k == "study" else MIN_BEDROOM_WIDTH for k in kinds]
+
     def _try(mr: float, bp: int):
-        rs = [mr] + [1.0] * (brief.bedrooms - 1)
+        # 各格寬度比:主臥 mr、書房 STUDY_RATIO、其餘臥室 1.0。
+        rs = [mr if i == 0 else (STUDY_RATIO if kinds[i] == "study" else 1.0)
+              for i in range(nslot)]
         w_cap = max(MAX_BEDROOM_WIDTH * sum(rs) / mr
                     + WET_W + STAIRWELL_W, 10000)
         x0, x1, w = bx0, bx1, W
@@ -1035,7 +1159,7 @@ def _house_frame(brief: HouseBrief) -> SimpleNamespace:
         xb_ = xs_ - WET_W                      # 濕區西牆(管道牆)
         Wb = xb_ - x0                          # 臥室帶可用寬
         bw = [Wb * r / sum(rs) for r in rs]
-        if min(bw) < MIN_BEDROOM_WIDTH:
+        if any(bw[i] < mins[i] for i in range(nslot)):   # 每格各有最小寬
             return None
         bx = [x0]
         for bwi in bw:
@@ -1043,12 +1167,13 @@ def _house_frame(brief: HouseBrief) -> SimpleNamespace:
         gx = _plan_x_grid(x0, w, bx[1:-1] + [xb_], prefer=bp)
         # 反向吸附:隔牆距軸線 < WALL_SNAP_TOL 就挪到軸線上(柱正好站在
         # 隔牆與帶分界牆/北外牆的交點);吸附後房寬仍須合格。
-        for i in range(1, brief.bedrooms):
+        for i in range(1, nslot):
             g = min(gx, key=lambda t: abs(t - bx[i]))
             if 0 < abs(g - bx[i]) < WALL_SNAP_TOL:
                 trial = bx[:i] + [g] + bx[i + 1:]
-                tw = [trial[j + 1] - trial[j] for j in range(brief.bedrooms)]
-                if min(tw) >= MIN_BEDROOM_WIDTH and tw[0] >= max(tw):
+                tw = [trial[j + 1] - trial[j] for j in range(nslot)]
+                if (all(tw[j] >= mins[j] for j in range(nslot))
+                        and tw[0] >= max(tw)):
                     bx = trial
         cover = set(bx) | {xb_}
         orphans = sum(1 for g in gx[1:-1]
@@ -1136,6 +1261,7 @@ def _house_frame(brief: HouseBrief) -> SimpleNamespace:
                            has_patio=has_patio, xp=xp, ypn=ypn,
                            xs=xs, xb=xb, xk=xk,
                            west_lines=west_lines, bed_x=bed_x, grid_x=grid_x,
+                           slot_kinds=kinds,
                            blocked=blocked, v=v, eff_master_ratio=eff_mr,
                            eff_bay_pref=eff_bp, spec_kw=spec_kw)
 
@@ -1184,13 +1310,27 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
     # 帶分界牆 2(yn):西端房間(依軸線分間,每間一門)|廚房|衛浴|樓梯間。
     # 大基地時北帶西端很寬——第一間(靠西外牆)升級成「書房」開北窗
     # (真正的設計師不會在大房子裡塞一間 40m² 的無窗儲藏室);其餘仍儲藏。
+    # 使用者已明確指定書房(E3)時樓上臥室層已配一間,這裡不再自動升級、回歸儲藏。
     div_x = ([f.bx0]
              + [g for g in f.grid_x[1:-1] if f.bx0 + 500 < g < xk - 500]
              + [xk])
-    has_study = div_x[1] - div_x[0] >= 2800
+    # 孝親房(E3):西端格改一樓臥室(共用 1F 衛浴);與自動書房互斥(擇一)。
+    elder = brief.want_elder_room
+    if elder and div_x[1] - div_x[0] < MIN_BEDROOM_WIDTH:
+        raise ValueError(
+            f"孝親房(1F 西端 {(div_x[1]-div_x[0])/1000:.1f}m 寬)不足 "
+            f"{MIN_BEDROOM_WIDTH/1000:.1f}m,請加大基地寬")
+    has_study = ((div_x[1] - div_x[0] >= 2800)
+                 and not brief.want_study and not elder)
+    west_win = has_study or elder             # 西端格(書房/孝親房)要開北窗
     band_open: list[Opening] = []
     for i in range(len(div_x) - 1):
-        what = "書房" if (has_study and i == 0) else f"儲藏室{i+1}"
+        if i == 0 and elder:
+            what = "孝親房"
+        elif i == 0 and has_study:
+            what = "書房"
+        else:
+            what = f"儲藏室{i+1}"
         pos, dw = _slot((div_x[i] + div_x[i + 1]) / 2, [DOOR_WIDTH, 750],
                         div_x[i], div_x[i + 1], f.blocked, f"{what}門")
         doors.append(DoorPlacement(5, len(band_open),
@@ -1214,12 +1354,12 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
     doors.append(DoorPlacement(5, len(band_open), Door(hinge="left", swing="out")))
     band_open.append(Opening(dst - f.bx0, dstw, "door"))
 
-    # 書房北窗(有書房才開)。
+    # 西端房北窗(書房/孝親房才開)。
     north_open = [Opening(wk - f.bx0, wkw, "window"),
                   Opening(wb - f.bx0, wbw, "window")]
-    if has_study:
+    if west_win:
         ws_, wsw = _slot((div_x[0] + div_x[1]) / 2, [1500, 1200, 900],
-                         div_x[0], div_x[1], f.blocked, "書房北窗")
+                         div_x[0], div_x[1], f.blocked, "西端房北窗")
         north_open.append(Opening(ws_ - f.bx0, wsw, "window"))
 
     # 天井北牆(走道側):門(進出天井)+ 窗(借光)。這道牆不在軸線上,
@@ -1255,7 +1395,7 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
     windows = [WindowPlacement(0, 1), WindowPlacement(0, 2),
                WindowPlacement(1, 0), WindowPlacement(1, 1),
                WindowPlacement(6, 1)]
-    if has_study:
+    if west_win:
         windows.append(WindowPlacement(1, 2))
 
     rooms = [
@@ -1280,7 +1420,10 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
     for i in range(len(div_x) - 1):
         pts = [(div_x[i], yn), (div_x[i + 1], yn),
                (div_x[i + 1], f.by1), (div_x[i], f.by1)]
-        if has_study and i == 0:
+        if i == 0 and elder:
+            rooms.append(Room("孝親房", pts, kind="bedroom",
+                              code=ROOM_CODES["bedroom"]))
+        elif i == 0 and has_study:
             rooms.append(Room("書房", pts, kind="study",
                               code=ROOM_CODES["study"]))
         else:
@@ -1298,6 +1441,13 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
         FixturePlacement("toilet", (f.xs - 60, f.by1 - 500), 90),
         FixturePlacement("basin", (f.xs - 60, f.by1 - 1300), 90),
     ]
+    if elder:                                  # 孝親房(西端格):雙人床+衣櫃
+        x_l, x_r = div_x[0], div_x[1]
+        cx_e = min((x_l + x_r) / 2, x_r - 800 - 710)
+        fixtures += [
+            FixturePlacement("bed_double", (cx_e, f.by1 - 75), 180),
+            FixturePlacement("wardrobe", (x_r - 60, f.by1 - 75 - 750), 90),
+        ]
     if f.xb - xp >= 2400:
         # 餐桌 y:天井帶淺時貼南(讓開 yn 各室門的迴轉 900),深(中庭)時
         # 往帶中挪——上限守「桌組頂 ≤ yn-900-100」。
@@ -1318,25 +1468,11 @@ def _house_upper_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
     (走道正面),不會開向露天的天井。
     """
     bed_x = f.bed_x
+    kinds = f.slot_kinds                                    # 臥室×n(+選填書房,E3)
     rng = _win_rng(brief, "2F")
     yd, yn, ypn, xp = f.yd, f.yn, f.ypn, f.xp
 
-    band_open: list[Opening] = []
-    doors: list[DoorPlacement] = []
-    win_open: list[Opening] = []
-    windows: list[WindowPlacement] = []
-    for i in range(brief.bedrooms):
-        dpos, dw = _slot((bed_x[i] + bed_x[i + 1]) / 2, [DOOR_WIDTH, 750],
-                         bed_x[i], bed_x[i + 1], f.blocked, f"臥室{i+1}門")
-        doors.append(DoorPlacement(4, len(band_open),
-                                   Door(hinge="left", swing="out")))
-        band_open.append(Opening(dpos - f.bx0, dw, "door"))
-        wpos, ww = _slot(_jitter(rng, (bed_x[i] + bed_x[i + 1]) / 2,
-                                 bed_x[i], bed_x[i + 1]),
-                         [1500, 1200, 900],
-                         bed_x[i], bed_x[i + 1], f.blocked, f"臥室{i+1}窗")
-        windows.append(WindowPlacement(1, len(win_open)))
-        win_open.append(Opening(wpos - f.bx0, ww, "window"))
+    band_open, doors, win_open, windows = _band_slot_openings(f, bed_x, kinds, rng)
     db, dbw = _slot((f.xb + f.xs) / 2, [750], f.xb, f.xs, f.blocked, "衛浴門")
     doors.append(DoorPlacement(4, len(band_open), Door(hinge="left", swing="out")))
     band_open.append(Opening(db - f.bx0, dbw, "door"))
@@ -1389,21 +1525,9 @@ def _house_upper_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
         Room("樓梯間", [(f.xs, yn), (f.bx1, yn), (f.bx1, f.by1), (f.xs, f.by1)],
              kind="stair", code=ROOM_CODES["stair"]),
     ]
-    for i in range(brief.bedrooms):
-        name = "主臥室" if i == 0 else f"臥室{i+1}"
-        rooms.append(Room(name, [(bed_x[i], yn), (bed_x[i + 1], yn),
-                                 (bed_x[i + 1], f.by1), (bed_x[i], f.by1)],
-                          kind="bedroom", code=ROOM_CODES["bedroom"]))
+    rooms += _band_rooms(bed_x, kinds, yn, f.by1)          # 臥室(+書房)
 
-    fixtures: list = []
-    for i in range(brief.bedrooms):
-        bed_half = 800 if i == 0 else 500
-        bed = "bed_double" if i == 0 else "bed_single"
-        cx = min((bed_x[i] + bed_x[i + 1]) / 2,
-                 bed_x[i + 1] - bed_half - 710)
-        fixtures.append(FixturePlacement(bed, (cx, f.by1 - 75), 180))
-        fixtures.append(FixturePlacement(
-            "wardrobe", (bed_x[i + 1] - 60, f.by1 - 75 - 750), 90))
+    fixtures = _band_fixtures(f, bed_x, kinds)
     cy_s = (f.by0 + yd) / 2
     fixtures.append(FixturePlacement("sofa3", (f.bx0 + 75, cy_s), 270))
     fixtures.append(FixturePlacement("table4", ((f.bx0 + f.bx1) / 2, cy_s), 0))
@@ -1452,7 +1576,14 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
     xf = f.bx1 - FOYER_W                                     # 玄關西緣(東南角)
     foy_n = f.by0 + FOYER_D
     rng = _win_rng(brief, "1F")                              # 開窗位置抖動(E2)
-    open_kitchen = f.v.kitchen_open                          # 開放式廚房(併入餐廳)
+    # 孝親房(E3):把 1F 北帶西端「餐廳」格改成一樓臥室(共用 1F 衛浴),餐廳
+    # 併入客廳成「客餐廳」。需獨立廚房版(西端有獨立房格可改),且該格夠寬。
+    elder = brief.want_elder_room
+    if elder and xk - f.bx0 < MIN_BEDROOM_WIDTH:
+        raise ValueError(
+            f"孝親房(1F 西端 {(xk-f.bx0)/1000:.1f}m 寬)不足 "
+            f"{MIN_BEDROOM_WIDTH/1000:.1f}m,請加大基地寬")
+    open_kitchen = f.v.kitchen_open and not elder            # 開放式廚房(併入餐廳)
     # 餐廳(西,[bx0,xk])內側若還有更西的軸線,立短牆(柱包)蓋住 tuck 後
     # 凸進服務帶的柱——與開放廚房的中島腳同一手法。廚房(東,[xk,xb])靠管道
     # 牆 xb,與衛浴共用給排水立管。
@@ -1514,8 +1645,10 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
         # 獨立廚房:廚(東,靠管道牆)|餐(西)有隔牆坐軸線;廚房自帶門,
         # 餐廳對客廳開放通道(無門扇)。
         dk, dkw = _slot((xk + f.xb) / 2, [DOOR_WIDTH], xk, f.xb, f.blocked, "廚房門")
-        dp, dpw = _slot((f.bx0 + xk) / 2, [PASSAGE_WIDTH, 1200], f.bx0, xk,
-                        f.blocked, "客餐通道")
+        # 西端格:孝親房時開一扇私密門(門扇);否則客餐開放通道(無門扇)。
+        dp, dpw = _slot((f.bx0 + xk) / 2,
+                        [DOOR_WIDTH] if elder else [PASSAGE_WIDTH, 1200],
+                        f.bx0, xk, f.blocked, "孝親房門" if elder else "客餐通道")
         divider = Wall((f.bx0, f.yd), (f.bx1, f.yd), INT,   # 4 帶分界牆
                        openings=[Opening(dp - f.bx0, dpw, "door"),
                                  Opening(dk - f.bx0, dkw, "door"),
@@ -1536,19 +1669,30 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
             DoorPlacement(4, 2, Door(hinge="left", swing="out")),   # 衛浴
             DoorPlacement(4, 3, Door(hinge="left", swing="out")),   # 樓梯間
         ]
-        service_rooms = [
-            Room("餐廳", [(f.bx0, f.yd), (xk, f.yd), (xk, f.by1), (f.bx0, f.by1)],
-                 kind="dining", code=ROOM_CODES["dining"]),
-            Room("廚房", [(xk, f.yd), (f.xb, f.yd), (f.xb, f.by1), (xk, f.by1)],
-                 kind="kitchen", code=ROOM_CODES["kitchen"]),
-        ]
+        if elder:
+            # 西端 → 孝親房(一樓臥室,門開向客餐廳);餐廳併入客廳。
+            doors.append(DoorPlacement(4, 0, Door(hinge="left", swing="out")))
+            service_rooms = [
+                Room("孝親房", [(f.bx0, f.yd), (xk, f.yd), (xk, f.by1), (f.bx0, f.by1)],
+                     kind="bedroom", code=ROOM_CODES["bedroom"]),
+                Room("廚房", [(xk, f.yd), (f.xb, f.yd), (f.xb, f.by1), (xk, f.by1)],
+                     kind="kitchen", code=ROOM_CODES["kitchen"]),
+            ]
+        else:
+            service_rooms = [
+                Room("餐廳", [(f.bx0, f.yd), (xk, f.yd), (xk, f.by1), (f.bx0, f.by1)],
+                     kind="dining", code=ROOM_CODES["dining"]),
+                Room("廚房", [(xk, f.yd), (f.xb, f.yd), (f.xb, f.by1), (xk, f.by1)],
+                     kind="kitchen", code=ROOM_CODES["kitchen"]),
+            ]
 
     windows = [WindowPlacement(0, 1), WindowPlacement(0, 2),
                WindowPlacement(1, 0), WindowPlacement(1, 1), WindowPlacement(1, 2)]
 
     rooms = [
-        Room("客廳", [(f.bx0, f.by0), (xf, f.by0), (xf, foy_n), (f.bx1, foy_n),
-                      (f.bx1, f.yd), (f.bx0, f.yd)],
+        Room("客餐廳" if elder else "客廳",                  # 孝親房佔餐廳格 → 餐併客
+              [(f.bx0, f.by0), (xf, f.by0), (xf, foy_n), (f.bx1, foy_n),
+               (f.bx1, f.yd), (f.bx0, f.yd)],
              kind="living", code=ROOM_CODES["living"]),
         Room("玄關", [(xf, f.by0), (f.bx1, f.by0), (f.bx1, foy_n), (xf, foy_n)],
              kind="foyer", code=ROOM_CODES["foyer"]),
@@ -1563,11 +1707,9 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
     cy_s = (f.by0 + f.yd) / 2                   # 南帶(客廳)中心線
     fixtures: list = [
         FixturePlacement("sofa3", (f.bx0 + 75, cy_s), 270),          # 沙發背靠西牆
-        FixturePlacement("table4", ((f.bx0 + xf) / 2, cy_s), 0),     # 客廳方桌
+        FixturePlacement("table4", ((f.bx0 + xf) / 2, cy_s), 0),     # 客(餐)廳方桌
         FixturePlacement("shoe_cabinet",                             # 鞋櫃貼玄關東牆
                          (f.bx1 - 75, (f.by0 + foy_n) / 2), 90),
-        FixturePlacement("table4",                                   # 餐桌(西,餐廳)
-                         ((f.bx0 + xk) / 2, (f.yd + f.by1) / 2), 0),
         # 廚房(東,靠管道牆):一字型流理台沿北牆(水槽靠窗,實務慣例)。
         Counter(start=(f.xb - 75, f.by1 - 75), end=(xk + 60, f.by1 - 75),
                 sink=True),
@@ -1575,6 +1717,16 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
         FixturePlacement("toilet", (f.xs - 60, f.by1 - 500), 90),
         FixturePlacement("basin", (f.xs - 60, f.by1 - 1300), 90),
     ]
+    if elder:
+        # 孝親房(西端格):雙人床頭靠北牆、衣櫃貼東牆(xk),讓開衣櫃夾床心。
+        cx_e = min((f.bx0 + xk) / 2, xk - 800 - 710)
+        fixtures += [
+            FixturePlacement("bed_double", (cx_e, f.by1 - 75), 180),
+            FixturePlacement("wardrobe", (xk - 60, f.by1 - 75 - 750), 90),
+        ]
+    else:
+        fixtures.append(FixturePlacement(                            # 餐桌(西,餐廳)
+            "table4", ((f.bx0 + xk) / 2, (f.yd + f.by1) / 2), 0))
 
     spec = FloorPlanSpec(walls=walls, rooms=rooms, doors=doors, windows=windows,
                          fixtures=fixtures,
@@ -1594,24 +1746,10 @@ def generate_house_upper(brief: HouseBrief) -> FloorPlanSpec:
     if f.has_patio:
         return _house_upper_patio(brief, f)
     bed_x = f.bed_x        # 隔牆已在骨架吸附軸線(柱藏隔牆交點)
+    kinds = f.slot_kinds                                    # 臥室×n(+選填書房,E3)
     rng = _win_rng(brief, "2F")                             # 開窗位置抖動(E2)
 
-    band_open: list[Opening] = []
-    doors: list[DoorPlacement] = []
-    win_open: list[Opening] = []
-    windows: list[WindowPlacement] = []
-    for i in range(brief.bedrooms):
-        dpos, dw = _slot((bed_x[i] + bed_x[i + 1]) / 2, [DOOR_WIDTH, 750],
-                         bed_x[i], bed_x[i + 1], f.blocked, f"臥室{i+1}門")
-        doors.append(DoorPlacement(4, len(band_open),
-                                   Door(hinge="left", swing="out")))
-        band_open.append(Opening(dpos - f.bx0, dw, "door"))
-        wpos, ww = _slot(_jitter(rng, (bed_x[i] + bed_x[i + 1]) / 2,
-                                 bed_x[i], bed_x[i + 1]),
-                         [1500, 1200, 900],
-                         bed_x[i], bed_x[i + 1], f.blocked, f"臥室{i+1}窗")
-        windows.append(WindowPlacement(1, len(win_open)))
-        win_open.append(Opening(wpos - f.bx0, ww, "window"))
+    band_open, doors, win_open, windows = _band_slot_openings(f, bed_x, kinds, rng)
     db, dbw = _slot((f.xb + f.xs) / 2, [750], f.xb, f.xs, f.blocked, "衛浴門")
     doors.append(DoorPlacement(4, len(band_open), Door(hinge="left", swing="out")))
     band_open.append(Opening(db - f.bx0, dbw, "door"))
@@ -1650,26 +1788,10 @@ def generate_house_upper(brief: HouseBrief) -> FloorPlanSpec:
         Room("樓梯間", [(f.xs, f.yd), (f.bx1, f.yd), (f.bx1, f.by1), (f.xs, f.by1)],
              kind="stair", code=ROOM_CODES["stair"]),
     ]
-    for i in range(brief.bedrooms):
-        name = "主臥室" if i == 0 else f"臥室{i+1}"
-        rooms.append(Room(name, [(bed_x[i], f.yd), (bed_x[i + 1], f.yd),
-                                 (bed_x[i + 1], f.by1), (bed_x[i], f.by1)],
-                          kind="bedroom", code=ROOM_CODES["bedroom"]))
+    rooms += _band_rooms(bed_x, kinds, f.yd, f.by1)        # 臥室(+書房)
 
-    # 家具(同單層產生器的臥室規則):床頭靠北牆(主臥雙人床),
-    # 衣櫃貼東側牆近北角;起居室沙發+方桌;衛浴馬桶+洗手台。
-    fixtures: list = []
-    for i in range(brief.bedrooms):
-        # 床置中,但東側貼牆的衣櫃佔約 660mm——主臥開放後可能只有最小寬 2.8m
-        # (mr=1.0 各房均等),雙人床(1.6m)置中會壓到衣櫃,故把床心往西夾到
-        # 「東緣讓開衣櫃」的位置(房間夠寬時 cx 本就更西,不受影響)。
-        bed_half = 800 if i == 0 else 500
-        bed = "bed_double" if i == 0 else "bed_single"
-        cx = min((bed_x[i] + bed_x[i + 1]) / 2,
-                 bed_x[i + 1] - bed_half - 710)
-        fixtures.append(FixturePlacement(bed, (cx, f.by1 - 75), 180))
-        fixtures.append(FixturePlacement(
-            "wardrobe", (bed_x[i + 1] - 60, f.by1 - 75 - 750), 90))
+    # 家具:臥室=床(主臥雙人)+衣櫃;書房=書桌;起居室沙發+方桌;衛浴。
+    fixtures = _band_fixtures(f, bed_x, kinds)
     cy_s = (f.by0 + f.yd) / 2
     fixtures.append(FixturePlacement("sofa3", (f.bx0 + 75, cy_s), 270))
     fixtures.append(FixturePlacement("table4", ((f.bx0 + f.bx1) / 2, cy_s), 0))
@@ -1680,6 +1802,47 @@ def generate_house_upper(brief: HouseBrief) -> FloorPlanSpec:
                          fixtures=fixtures,
                          stairs=[_house_stair(f)], floor_label="2F", **f.spec_kw)
     return _finish_house(spec, f, "透天臥室層")
+
+
+def _parking_layout(brief: HouseBrief, bx0: float, bx1: float,
+                    by0: float, ytop: float) -> tuple[list, list]:
+    """把車庫矩形 [bx0,bx1]×[by0,ytop] 切成 car_spaces 格汽車位(E3)。
+
+    車位貼北(北帶分界牆側,那排門朝北開離車庫、不擋車),南側/兩側剩餘鋪
+    「車道」——房間精確鋪滿車庫、無重疊(validate 覆蓋檢核)。每格擺一台
+    汽車圖示。放不下(寬不夠/太淺)就報清楚的錯。回傳 (rooms, fixtures)。
+    """
+    n = brief.car_spaces
+    W, depth = bx1 - bx0, ytop - by0
+    stall_w, stall_l = CAR_STALL
+    if W < n * stall_w:
+        raise ValueError(
+            f"車庫寬 {W/1000:.1f}m 放不下 {n} 個汽車位"
+            f"(每位需 {stall_w/1000:.1f}m,共 {n*stall_w/1000:.1f}m),請加大基地寬")
+    if depth < 4800:
+        raise ValueError(
+            f"地下車庫進深 {depth/1000:.1f}m 太淺(汽車位需 ≥4.8m),請加大基地南北深")
+
+    sl = min(depth, stall_l)                       # 車位長(車庫夠深就在南側留車道)
+    y0 = ytop - sl                                 # 車位南緣
+    total_w = n * stall_w
+    sx0 = bx0 + (W - total_w) / 2                  # 車位帶置中
+    rooms: list = []
+    fixtures: list = []
+    for k in range(n):
+        xl, xr = sx0 + k * stall_w, sx0 + (k + 1) * stall_w
+        rooms.append(Room(f"車位{k+1}", [(xl, y0), (xr, y0), (xr, ytop), (xl, ytop)],
+                          kind="parking", code=ROOM_CODES["parking"]))
+        fixtures.append(FixturePlacement("car", ((xl + xr) / 2, (y0 + ytop) / 2), 0))
+
+    def drive(x0: float, x1: float, ya: float, yb: float) -> None:
+        if x1 - x0 > 1 and yb - ya > 1:            # 剩餘區 → 車道(鋪滿用)
+            rooms.append(Room("車道", [(x0, ya), (x1, ya), (x1, yb), (x0, yb)],
+                              kind="parking", code=ROOM_CODES["parking"]))
+    drive(bx0, bx1, by0, y0)                       # 南側車道(含車道口)
+    drive(bx0, sx0, y0, ytop)                      # 西側剩餘
+    drive(sx0 + total_w, bx1, y0, ytop)            # 東側剩餘
+    return rooms, fixtures
 
 
 def generate_house_basement(brief: HouseBrief) -> FloorPlanSpec:
@@ -1730,9 +1893,17 @@ def generate_house_basement(brief: HouseBrief) -> FloorPlanSpec:
     for xi in div_x[1:]:                        # 儲藏隔牆(坐軸線)+ 管道牆(xb)
         walls.append(Wall((xi, yn), (xi, f.by1), INT))
 
+    # 車庫:要汽車位就切成 car_spaces 格車位(+車道、擺車圖);否則整層一間車庫。
+    if brief.car_spaces > 0:
+        garage_rooms, car_fixtures = _parking_layout(brief, f.bx0, f.bx1, f.by0, yn)
+    else:
+        garage_rooms = [Room("車庫", [(f.bx0, f.by0), (f.bx1, f.by0),
+                                      (f.bx1, yn), (f.bx0, yn)],
+                             kind="parking", code=ROOM_CODES["parking"])]
+        car_fixtures = []
+
     rooms = [
-        Room("車庫", [(f.bx0, f.by0), (f.bx1, f.by0), (f.bx1, yn), (f.bx0, yn)],
-             kind="parking", code=ROOM_CODES["parking"]),
+        *garage_rooms,
         Room("機房", [(f.xb, yn), (f.xs, yn), (f.xs, f.by1), (f.xb, f.by1)],
              kind="storage", code=ROOM_CODES["storage"]),
         Room("樓梯間", [(f.xs, yn), (f.bx1, yn), (f.bx1, f.by1), (f.xs, f.by1)],
@@ -1744,6 +1915,7 @@ def generate_house_basement(brief: HouseBrief) -> FloorPlanSpec:
                           kind="storage", code=ROOM_CODES["storage"]))
 
     spec = FloorPlanSpec(walls=walls, rooms=rooms, doors=doors, windows=[],
+                         fixtures=car_fixtures,
                          stairs=[_house_stair(f)], floor_label="B1F", **f.spec_kw)
     return _finish_house(spec, f, "透天 B1F 車庫層")
 

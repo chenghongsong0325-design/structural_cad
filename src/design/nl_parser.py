@@ -109,10 +109,26 @@ BRIEF_SCHEMA = {
             "type": "integer", "nullable": True,
             "description": "地下層數(「地下一層」「B1 車庫」=1)。沒講就 null",
         },
+        "want_study": {
+            "type": "boolean", "nullable": True,
+            "description": "是否要書房/工作室/閱讀室(單戶限定)。有提到=true;"
+                           "沒提就 null",
+        },
+        "want_elder_room": {
+            "type": "boolean", "nullable": True,
+            "description": "是否要孝親房/長輩房/父母房(單戶限定,一樓臥室,"
+                           "多代同堂用)。有提到=true;沒提就 null",
+        },
+        "car_spaces": {
+            "type": "integer", "nullable": True,
+            "description": "汽車停車位數(單戶限定):「雙車位/停兩台車」=2、"
+                           "「一個車位」=1。機車位不算。沒提就 null",
+        },
     },
     "required": ["brief_type", "site_width_m", "site_depth_m", "bedrooms",
                  "units_per_row", "corridor_width_m", "floor_label",
-                 "master_corner", "kitchen_side", "floors_above", "basements"],
+                 "master_corner", "kitchen_side", "floors_above", "basements",
+                 "want_study", "want_elder_room", "car_spaces"],
 }
 
 SYSTEM_PROMPT = """\
@@ -130,6 +146,11 @@ SYSTEM_PROMPT = """\
   「廚房靠北」→ kitchen_side="N"。方位用羅盤縮寫(N北/S南/E東/W西)。
 - 樓層:「透天三層」「三層樓」→ floors_above=3;「地下一層」「B1」→
   basements=1。只講「透天」沒講層數 → 都 null。
+- 指定房間(單戶限定):「書房/工作室/閱讀室」→ want_study=true;
+  「孝親房/長輩房/父母房/多代同堂」→ want_elder_room=true;
+  「雙車位/停兩台車/兩個汽車位」→ car_spaces=2、「一個車位/停一台車」→
+  car_spaces=1(機車位不算車位)。這些是額外指定,臥室數不受影響
+  (「三房加書房」= bedrooms=3、want_study=true)。
 - 沒提到的欄位一律 null,不要瞎猜數值。
 """
 
@@ -158,6 +179,12 @@ def _brief_from_data(data: dict) -> Brief:
             kwargs["master_corner"] = data["master_corner"]
         if data.get("kitchen_side"):
             kwargs["kitchen_side"] = data["kitchen_side"]
+        if data.get("want_study"):              # 指定房間(E3)
+            kwargs["want_study"] = True
+        if data.get("want_elder_room"):
+            kwargs["want_elder_room"] = True
+        if data.get("car_spaces") is not None:
+            kwargs["car_spaces"] = int(data["car_spaces"])
         return HouseBrief(**kwargs)
 
     if btype == "corridor":
@@ -192,6 +219,12 @@ def _building_from_data(data: dict, seed: int = 0) -> "BuildingBrief":
         typical.seed = seed
     floors = int(data.get("floors_above") or 1)
     basements = int(data.get("basements") or 0)
+    # 汽車位需要地下車庫(E3):透天地下室必走 differentiated 骨架(柱位才對得上
+    # 標準層),而該骨架下 1F 是公共層、臥室在樓上——故「要車位」隱含「多樓層
+    # 透天+地下室」。使用者沒指定樓層/地下室時自動補齊(≥2 樓地上 + ≥1 地下)。
+    if isinstance(typical, HouseBrief) and typical.car_spaces > 0:
+        basements = max(basements, 1)
+        floors = max(floors, 2)
     differentiated = isinstance(typical, HouseBrief) and (
         floors > 1 or basements > 0)
     return BuildingBrief(typical=typical, floors=floors, basements=basements,

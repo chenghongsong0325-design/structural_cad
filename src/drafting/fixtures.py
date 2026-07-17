@@ -14,6 +14,7 @@
     toilet(馬桶) basin(洗手台) bathtub(浴缸)
     bed_single(單人床) bed_double(雙人床)
     table4(方桌+四椅) sofa3(三人沙發) wardrobe(衣櫃)
+    shoe_cabinet(鞋櫃) desk(書桌+椅) car(汽車,原點=車心)
 
 流理台(Counter):長度隨廚房而變,不做成固定圖塊,改用參數式繪製——
 start→end 為靠牆邊,檯面往行進方向「左手側」伸出 depth;L 型 = 兩段
@@ -120,6 +121,29 @@ def _build_shoe_cabinet(blk) -> None:
         blk.add_line((-600, y), (600, y), dxfattribs={"layer": "0"})
 
 
+def _build_desk(blk) -> None:
+    """書桌 1200×550(桌面貼牆)+ 椅子 400×400(桌前;書房用)。"""
+    blk.add_lwpolyline([(-600, 0), (600, 0), (600, 550), (-600, 550)],
+                       close=True, dxfattribs={"layer": "0"})
+    blk.add_line((-600, 120), (600, 120), dxfattribs={"layer": "0"})   # 桌板前緣
+    blk.add_lwpolyline([(-200, 300), (200, 300), (200, 700), (-200, 700)],
+                       close=True, dxfattribs={"layer": "0"})           # 椅子(半塞桌下)
+
+
+def _build_car(blk) -> None:
+    """汽車 1800×4600(原點=車心):車身外框(切角)+ 車艙 + 前擋線。
+
+    停車位圖示用:小客車常見尺寸,車位淨尺寸建議 ≥2.5×5.5m。
+    """
+    blk.add_lwpolyline(
+        [(-900, -1900), (-500, -2300), (500, -2300), (900, -1900),
+         (900, 1900), (500, 2300), (-500, 2300), (-900, 1900)],
+        close=True, dxfattribs={"layer": "0"})                          # 車身
+    blk.add_lwpolyline([(-750, -800), (750, -800), (750, 900), (-750, 900)],
+                       close=True, dxfattribs={"layer": "0"})           # 車艙
+    blk.add_line((-750, 900), (750, 900), dxfattribs={"layer": "0"})    # 前擋風
+
+
 FIXTURE_BUILDERS = {
     "toilet": _build_toilet,
     "basin": _build_basin,
@@ -130,7 +154,12 @@ FIXTURE_BUILDERS = {
     "sofa3": _build_sofa3,
     "wardrobe": _build_wardrobe,
     "shoe_cabinet": _build_shoe_cabinet,
+    "desk": _build_desk,
+    "car": _build_car,
 }
+
+# 原點在圖塊中心(不靠牆)的家具:方桌、汽車。其餘原點在貼牆邊中點、朝 +Y。
+_CENTER_ORIGIN = {"table4", "car"}
 
 # 各圖塊的佔地外框(寬w × 深d,局部座標;與 builder 幾何一致)。
 # table4 原點在中心(±780),其餘原點在貼牆邊中點、朝 +Y 伸出 d。
@@ -144,6 +173,8 @@ FIXTURE_SIZES = {
     "sofa3": (2000, 850),
     "wardrobe": (1500, 600),
     "shoe_cabinet": (1200, 350),
+    "desk": (1200, 700),         # 桌 550 + 椅子外緣(部分塞桌下)
+    "car": (1800, 4600),         # 小客車;原點=車心(_CENTER_ORIGIN)
 }
 
 
@@ -178,7 +209,7 @@ class FixturePlacement:
 def fixture_footprint(placement: FixturePlacement) -> list[Point]:
     """設備的佔地矩形(世界座標四角點,含旋轉)——碰撞檢核用(C1.5c)。"""
     w, d = FIXTURE_SIZES[placement.name]
-    if placement.name == "table4":                # 原點=桌心
+    if placement.name in _CENTER_ORIGIN:          # 原點=圖塊中心(方桌/汽車)
         local = [(-w / 2, -d / 2), (w / 2, -d / 2), (w / 2, d / 2), (-w / 2, d / 2)]
     else:                                          # 原點=貼牆邊中點,朝 +Y
         local = [(-w / 2, 0), (w / 2, 0), (w / 2, d), (-w / 2, d)]
