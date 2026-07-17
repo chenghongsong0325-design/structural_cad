@@ -65,7 +65,6 @@ from src.drafting.apartment_plan import (
 from src.drafting.door_window import Door, Window
 from src.drafting.fixtures import Counter, FixturePlacement
 from src.drafting.room import Room
-from src.drafting.titleblock import CompetitionTitleData
 # _t_rotation/_t_swing:B6 已驗證的鏡射語意(家具轉角/門向翻轉),單一來源。
 from src.drafting.unit import UnitSpec, _t_rotation, _t_swing, one_room_unit, place_unit
 from src.drafting.wall import (
@@ -662,7 +661,6 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
         walls=walls, rooms=rooms, doors=doors, windows=windows, fixtures=fixtures,
         dim_chains=True, sheet=False,
         floor_label=brief.floor_label, north_arrow=True,
-        title_block=CompetitionTitleData(),
     )
     return spec
 
@@ -793,7 +791,6 @@ def _corridor_shell(brief: CorridorBrief, unit_list: list[UnitSpec],
         grid_origin=(x0, y0),
         column_size=brief.column_size,
         dim_chains=True, sheet=False, north_arrow=True,
-        title_block=CompetitionTitleData(),
     )
     geo = SimpleNamespace(x0=x0, y0=y0, xw=xw, xe=xe, bx1=bx1, by1=by1,
                           y_corr=y_corr, y_top=y_top, y_hall=y_hall,
@@ -1254,7 +1251,6 @@ def _house_frame(brief: HouseBrief) -> SimpleNamespace:
         column_size=brief.column_size,
         column_centers=column_centers,
         dim_chains=True, sheet=False, north_arrow=True,
-        title_block=CompetitionTitleData(),
     )
     return SimpleNamespace(bx0=bx0, by0=by0, bx1=bx1, by1=by1, W=W, D=D,
                            dn=dn, ds=ds, yd=yd, yn=yn, dp=dp,
