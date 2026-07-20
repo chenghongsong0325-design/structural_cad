@@ -1170,6 +1170,38 @@ def _sofa_suite(fixtures: list, x_w: float, cy: float,
             fixtures.append(FixturePlacement("tv_cabinet", (tv_x - 60, tcy), 90))
 
 
+# 中島吧台(開放餐廚專用):檯面長×深、兩張吧檯椅間距。
+ISLAND_LEN = 1400
+ISLAND_DEPTH = 550
+ISLAND_STOOL_GAP = 500
+
+
+def _kitchen_island(fixtures: list, xk: float, xb: float,
+                    yd: float, by1: float) -> None:
+    """開放餐廚的中島吧台:廚房區(xk~xb)南側地坪加一座獨立中島
+    (檯面 + 2 張吧檯椅),界定「烹飪動線」與「開放地坪」。
+
+    不加這個的話,一整間 40+m² 的餐廚只有沿北牆一字型流理台,中段大片
+    地坪完全空著——不像有人設計過(建築師檢視 2026-07-20)。位置固定在
+    廚房區(靠管道牆 xb 那側)南側、遠離北牆主流理台/冰箱與西側餐廳的
+    餐桌,兩者間隔皆 >1m(見呼叫端座標推導),不會互相碰撞。
+
+    放不下(廚房區太窄,或北帶太淺以致南側地坪不足)就略過,不硬加——
+    同 _kitchen_fridge/_sofa_suite 的守門風格。
+    """
+    zone_w = xb - xk
+    if zone_w < ISLAND_LEN + 900 or by1 - yd < 4200:
+        return
+    cx = xk + zone_w * 0.55                        # 略偏東,讓開西側餐廳/走道
+    y_back = yd + 1700                              # 檯面北緣(離北牆主流理台/冰箱夠遠)
+    fixtures.append(Counter(
+        start=(cx + ISLAND_LEN / 2, y_back),
+        end=(cx - ISLAND_LEN / 2, y_back), depth=ISLAND_DEPTH))
+    stool_y = y_back - ISLAND_DEPTH - 300           # 吧檯椅(南側,面北)
+    for dx in (-ISLAND_STOOL_GAP / 2, ISLAND_STOOL_GAP / 2):
+        fixtures.append(FixturePlacement("bar_stool", (cx + dx, stool_y)))
+
+
 def _kitchen_fridge(fixtures: list, xb: float, ytop: float,
                     door_y_max: float) -> None:
     """冰箱(700×700)貼廚房管道牆(xb),在北牆流理台下方——冰箱底緣要離
@@ -1839,6 +1871,9 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
     _sofa_suite(fixtures, f.bx0, cy_s, f.by0, f.yd,
                 tv_x=f.bx1, tv_lo=foy_n, tv_hi=f.yd)
     _kitchen_fridge(fixtures, f.xb, f.by1, f.yd + 900)
+    if open_kitchen:
+        # 開放餐廚:加中島吧台,界定烹飪動線與開放地坪(放不下就略過)。
+        _kitchen_island(fixtures, xk, f.xb, f.yd, f.by1)
     if elder:
         # 孝親房(西端格):床+衣櫃+床頭櫃(空間守門)。
         _bedroom_set(fixtures, f.bx0, xk, f.by1, double=True)

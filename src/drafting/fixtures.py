@@ -17,6 +17,7 @@
     shoe_cabinet(鞋櫃) desk(書桌+椅) car(汽車,原點=車心)
     coffee_table(茶几,原點=中心) armchair(單人沙發) tv_cabinet(電視櫃)
     nightstand(床頭櫃) fridge(冰箱) bookshelf(書櫃)
+    bar_stool(吧檯椅,原點=中心;中島吧台配件)
 
 流理台(Counter):長度隨廚房而變,不做成固定圖塊,改用參數式繪製——
 start→end 為靠牆邊,檯面往行進方向「左手側」伸出 depth;L 型 = 兩段
@@ -176,6 +177,12 @@ def _build_fridge(blk) -> None:
     blk.add_line((0, 560), (0, 700), dxfattribs={"layer": "0"})         # 門縫
 
 
+def _build_bar_stool(blk) -> None:
+    """吧檯椅 400×400(原點=中心):簡化圓形座位符號(中島吧台配件)。"""
+    blk.add_circle((0, 0), radius=200, dxfattribs={"layer": "0"})
+    blk.add_circle((0, 0), radius=90, dxfattribs={"layer": "0"})   # 椅面內圈
+
+
 def _build_bookshelf(blk) -> None:
     """書櫃 1200×350(背貼牆):外框 + 兩道隔板(書房用)。"""
     blk.add_lwpolyline([(-600, 0), (600, 0), (600, 350), (-600, 350)],
@@ -216,10 +223,12 @@ FIXTURE_BUILDERS = {
     "nightstand": _build_nightstand,
     "fridge": _build_fridge,
     "bookshelf": _build_bookshelf,
+    "bar_stool": _build_bar_stool,
 }
 
-# 原點在圖塊中心(不靠牆)的家具:方桌、汽車、茶几。其餘原點在貼牆邊中點、朝 +Y。
-_CENTER_ORIGIN = {"table4", "car", "coffee_table"}
+# 原點在圖塊中心(不靠牆)的家具:方桌、汽車、茶几、吧檯椅。其餘原點在貼牆邊
+# 中點、朝 +Y。
+_CENTER_ORIGIN = {"table4", "car", "coffee_table", "bar_stool"}
 
 # 各圖塊的佔地外框(寬w × 深d,局部座標;與 builder 幾何一致)。
 # table4 原點在中心(±780),其餘原點在貼牆邊中點、朝 +Y 伸出 d。
@@ -241,6 +250,7 @@ FIXTURE_SIZES = {
     "nightstand": (450, 400),
     "fridge": (700, 700),
     "bookshelf": (1200, 350),
+    "bar_stool": (400, 400),      # 吧檯椅;原點=中心(_CENTER_ORIGIN)
 }
 
 

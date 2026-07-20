@@ -518,3 +518,40 @@ def test_full_depth_bath_gets_bathtub():
         tubs = [fx for fx in spec.fixtures
                 if getattr(fx, "name", "") == "bathtub"]
         assert len(tubs) == 1
+
+
+def test_open_kitchen_gets_island_when_it_fits():
+    """開放餐廚(kitchen_open=True)加中島吧台:檯面(Counter)+2張吧檯椅,
+    不與流理台/冰箱/餐桌/浴廁重疊(generate_house_public 內建碰撞檢核
+    會在有重疊時直接 raise,所以能生成就代表沒有重疊)。"""
+    from src.design.layout_generator import _house_variant, generate_house_public
+
+    found_with_island = False
+    for seed in range(15):
+        brief = HouseBrief(site_width=19000, site_depth=13000,
+                           bedrooms=3, seed=seed)
+        v = _house_variant(brief)
+        if not v.kitchen_open:
+            continue
+        spec = generate_house_public(brief)          # raises if fixtures collide
+        stools = [fx for fx in spec.fixtures
+                 if getattr(fx, "name", "") == "bar_stool"]
+        if stools:
+            found_with_island = True
+            assert len(stools) == 2
+    assert found_with_island, "19x13 三房該有至少一個 seed 放得下中島"
+
+
+def test_closed_kitchen_has_no_island():
+    """獨立廚房(未開放)不加中島——中島是開放式廚房才有的設計元素。"""
+    from src.design.layout_generator import _house_variant, generate_house_public
+
+    for seed in range(15):
+        brief = HouseBrief(site_width=19000, site_depth=13000,
+                           bedrooms=3, seed=seed)
+        v = _house_variant(brief)
+        if v.kitchen_open:
+            continue
+        spec = generate_house_public(brief)
+        assert not any(getattr(fx, "name", "") == "bar_stool"
+                      for fx in spec.fixtures)
