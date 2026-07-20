@@ -606,31 +606,37 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
 
     # ── 家具設備(依房型規則自動擺放)──────────────────────────────────
     fixtures: list = []
-    # 臥室:床(主臥雙人、其餘單人)頭靠北牆;衣櫃貼東側牆、緊鄰北牆角。
-    # 書房:書桌貼北牆、椅朝南(無床無衣櫃)。孝親房是臥室,同臥室擺法。
+    # 臥室:床+衣櫃+床頭櫃;書房:書桌+書櫃(皆空間守門,見共用組件)。
     for i in range(n):
         x_l, x_r = bed_x[i], bed_x[i + 1]
-        cx = (x_l + x_r) / 2
         if roles[i] == "study":
-            fixtures.append(FixturePlacement("desk", (cx, by1 - 75), 180))
-            continue
-        bed = "bed_double" if roles[i] == "master" else "bed_single"
-        fixtures.append(FixturePlacement(bed, (cx, by1 - 75), 180))
-        inner = 75 if i == n - 1 else 60   # 排尾靠外牆(150)
-        fixtures.append(FixturePlacement("wardrobe", (x_r - inner, by1 - 75 - 750), 90))
+            _study_set(fixtures, x_l, x_r, yd, by1)
+        else:                        # 主臥/孝親房雙人床,其餘單人
+            _bedroom_set(fixtures, x_l, x_r, by1,
+                         double=roles[i] in ("master", "elder"))
     # 玄關:鞋櫃貼短隔屏牆內側(讓開大門迴轉方塊)。
     fixtures.append(FixturePlacement(
         "shoe_cabinet", (fx1 - 60, by0 + (fy1 - by0) / 2), 90))
-    # 客廳:沙發背靠西牆;方桌居中偏東,桌組(含椅)半徑 780——會伸進
-    # 大門迴轉方塊或玄關就東移讓開;連東移都放不下就不擺(C1.5b/c)。
+    # 客廳:沙發背靠西牆 + 茶几(沙發前;參考客廳圖塊組——客廳的主角是
+    # 沙發+茶几+電視,不是餐桌)。併餐時方桌保留(它就是餐桌),茶几要
+    # 讓開它;獨立餐廳時客廳不再擺方桌。
     fixtures.append(FixturePlacement("sofa3", (bx0 + 75, living_cy), 270))
-    tx = (bx0 + living_e) / 2 + 500
-    if living_cy - 780 < by0 + ENTRY_DOOR_WIDTH:
-        tx = max(tx, entry_x + ENTRY_DOOR_WIDTH / 2 + 780 + 150)
-    if living_cy - 780 < fy1:
-        tx = max(tx, fx1 + 780 + 150)
-    if tx + 780 <= living_e - 60:
-        fixtures.append(FixturePlacement("table4", (tx, living_cy), 0))
+    table_w_edge = living_e - 60                    # 茶几東側的讓位邊界
+    if merged_dining:
+        # 併餐:方桌居中偏東(原邏輯——避大門迴轉、避玄關,擺不下就略過)。
+        tx = (bx0 + living_e) / 2 + 500
+        if living_cy - 780 < by0 + ENTRY_DOOR_WIDTH:
+            tx = max(tx, entry_x + ENTRY_DOOR_WIDTH / 2 + 780 + 150)
+        if living_cy - 780 < fy1:
+            tx = max(tx, fx1 + 780 + 150)
+        if tx + 780 <= living_e - 60:
+            fixtures.append(FixturePlacement("table4", (tx, living_cy), 0))
+            table_w_edge = tx - 780 - 150
+    # 茶几(沙發前;客廳東側是開放餐廳、沒有牆,故單層不放電視櫃——不硬加)。
+    ccx = bx0 + 75 + 850 + 400 + 300                # 沙發前留 400 走道
+    if (ccx + 300 <= table_w_edge
+            and living_cy - 300 >= max(by0 + 1100, fy1 + 100)):
+        fixtures.append(FixturePlacement("coffee_table", (ccx, living_cy), 90))
     # 餐廳(獨立時):餐桌。
     if not merged_dining:
         fixtures.append(FixturePlacement("table4", ((living_e + sx) / 2, living_cy), 0))
@@ -641,14 +647,21 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
     if has_ensuite:
         fixtures.append(FixturePlacement("toilet", (bx0 + 75, yd + 550), 270))
         fixtures.append(FixturePlacement("basin", (bx0 + 75, yd + 1450), 270))
-    # 廚房:L 型流理台(東牆段 + 北段,水槽在北段;北段東端讓開轉角、
+    # 廚房:L 型流理台(東牆段+北段,水槽北段、爐具東段;北段東端讓開轉角、
     # 西端讓開廚房門迴轉——門在走道端牆或服務核西牆,皆以 x_he 為準)。
     north_end = x_he + 1000
     if (bx1 - 675) - north_end >= 600:
-        fixtures.append(Counter(start=(bx1 - 75, yb + 60), end=(bx1 - 75, yd - 60)))
+        fixtures.append(Counter(start=(bx1 - 75, yb + 60), end=(bx1 - 75, yd - 60),
+                                stove=True))
         fixtures.append(Counter(start=(bx1 - 675, yd - 60), end=(north_end, yd - 60), sink=True))
-    else:                                   # 北段太短 → 一字型,水槽改東段
-        fixtures.append(Counter(start=(bx1 - 75, yb + 60), end=(bx1 - 75, yd - 60), sink=True))
+    else:                                   # 北段太短 → 一字型,水槽爐具同段
+        fixtures.append(Counter(start=(bx1 - 75, yb + 60), end=(bx1 - 75, yd - 60),
+                                sink=True, stove=True))
+    # 冰箱:貼浴廚分界牆(yb)北側近西端——讓開廚房門迴轉(門位 kitchen_cy)
+    # 與東牆流理台;擠不下就略過(小廚房,不硬加)。
+    if (yb + 760 <= kitchen_cy - 550
+            and sx + 850 <= bx1 - 675 - 100):
+        fixtures.append(FixturePlacement("fridge", (sx + 500, yb + 60), 0))
 
     spec = FloorPlanSpec(
         site_boundary=[(0, 0), (brief.site_width, 0),
@@ -1063,24 +1076,79 @@ def _band_rooms(bed_x: list, kinds: list, ydiv: float, ytop: float) -> list:
     return rooms
 
 
-def _band_fixtures(f: SimpleNamespace, bed_x: list, kinds: list) -> list:
-    """臥室帶家具:臥室=床(主臥雙人)+衣櫃;書房=書桌(貼北牆,椅朝南)。"""
+def _bedroom_set(fixtures: list, x_l: float, x_r: float, ytop: float,
+                 double: bool) -> None:
+    """一間臥室的家具:床(頭靠 ytop 北牆)+ 衣櫃(東牆角)+ 床頭櫃(床西側,
+    有空間才加——參考家具圖塊庫的臥室組;塞不下就略過,不硬加)。"""
+    bed_half = 800 if double else 500
+    bed = "bed_double" if double else "bed_single"
+    cx = min((x_l + x_r) / 2, x_r - bed_half - 710)
+    fixtures.append(FixturePlacement(bed, (cx, ytop - 75), 180))
+    fixtures.append(FixturePlacement("wardrobe", (x_r - 60, ytop - 75 - 750), 90))
+    ns_w = cx - bed_half - 100                     # 床頭櫃(450 寬)的東緣
+    if ns_w - 450 >= x_l + 60:
+        fixtures.append(FixturePlacement("nightstand", (ns_w - 225, ytop - 75), 180))
+
+
+def _study_set(fixtures: list, x_l: float, x_r: float,
+               ydiv: float, ytop: float) -> None:
+    """書房家具:書桌(貼北牆,椅朝南)+ 書櫃(西牆,房間夠寬才加)。"""
+    cx = (x_l + x_r) / 2
+    fixtures.append(FixturePlacement("desk", (cx, ytop - 75), 180))
+    # 書櫃貼西牆(深 350、長 1200 沿 y):南端讓開房門迴轉(門在 ydiv 牆上、
+    # 往北開進房內,掃過 ydiv~ydiv+900),北端讓開書桌。
+    bs_cy = max(ydiv + (ytop - ydiv) * 0.4, ydiv + 900 + 100 + 600)
+    if (cx - 600 >= x_l + 60 + 350 + 100            # x:不碰書桌西緣
+            and bs_cy + 600 <= ytop - 775 - 100):   # y:不碰書桌
+        fixtures.append(FixturePlacement("bookshelf", (x_l + 60, bs_cy), 270))
+
+
+def _band_fixtures(f: SimpleNamespace, bed_x: list, kinds: list,
+                   ydiv: Optional[float] = None) -> list:
+    """臥室帶家具:臥室=床+衣櫃+床頭櫃;書房=書桌+書櫃(皆空間守門)。"""
     fixtures: list = []
     bedno = 0
     for i in range(len(kinds)):
         x_l, x_r = bed_x[i], bed_x[i + 1]
         if kinds[i] == "study":
-            fixtures.append(FixturePlacement("desk", ((x_l + x_r) / 2, f.by1 - 75), 180))
+            _study_set(fixtures, x_l, x_r,
+                       ydiv if ydiv is not None else f.yn, f.by1)
             continue
         bedno += 1
-        # 床置中,但東側貼牆的衣櫃佔約 660mm——最小寬 2.8m 時雙人床置中會壓到
-        # 衣櫃,故床心往西夾到「東緣讓開衣櫃」的位置(房間夠寬時不受影響)。
-        bed_half = 800 if bedno == 1 else 500
-        bed = "bed_double" if bedno == 1 else "bed_single"
-        cx = min((x_l + x_r) / 2, x_r - bed_half - 710)
-        fixtures.append(FixturePlacement(bed, (cx, f.by1 - 75), 180))
-        fixtures.append(FixturePlacement("wardrobe", (x_r - 60, f.by1 - 75 - 750), 90))
+        _bedroom_set(fixtures, x_l, x_r, f.by1, double=(bedno == 1))
     return fixtures
+
+
+def _sofa_suite(fixtures: list, x_w: float, cy: float,
+                y_lo: float, y_hi: float,
+                tv_x: Optional[float] = None,
+                tv_lo: Optional[float] = None,
+                tv_hi: Optional[float] = None) -> None:
+    """客廳成套家具(參考客廳圖塊組的擺法):沙發背西牆 + 茶几,放得下再加
+    對坐單人沙發×2(茶几南北側)與東牆電視櫃——塞不下就各自略過(不硬加)。
+    """
+    fixtures.append(FixturePlacement("sofa3", (x_w + 75, cy), 270))
+    ccx = x_w + 75 + 850 + 400 + 300               # 沙發前緣留 400 走道,茶几半寬
+    fixtures.append(FixturePlacement("coffee_table", (ccx, cy), 90))
+    # 對坐單椅(900×850):茶几南北各一張,面向茶几;南北向都留 150 淨距。
+    if cy - 1775 >= y_lo + 150 and cy + 1775 <= y_hi - 150:
+        fixtures.append(FixturePlacement("armchair", (ccx, cy - 1775), 0))
+        fixtures.append(FixturePlacement("armchair", (ccx, cy + 1775), 180))
+    # 電視櫃(1600×450)貼東牆面向沙發:牆段夠長、且離茶几/單椅群夠遠才放。
+    if tv_x is not None and tv_lo is not None and tv_hi is not None:
+        tcy = (tv_lo + tv_hi) / 2
+        if (tv_hi - tv_lo >= 1600 + 300
+                and tv_x - 510 >= ccx + 450 + 150):
+            fixtures.append(FixturePlacement("tv_cabinet", (tv_x - 60, tcy), 90))
+
+
+def _kitchen_fridge(fixtures: list, xb: float, ytop: float,
+                    door_y_max: float) -> None:
+    """冰箱(700×700)貼廚房管道牆(xb),在北牆流理台下方——冰箱底緣要離
+    「南側門的迴轉範圍上緣」(door_y_max)≥100 才放(不硬加)。"""
+    cy = ytop - 675 - 100 - 350                    # 流理台(深 600+牆 75)下方
+    if cy - 350 >= door_y_max + 100:
+        fixtures.append(FixturePlacement("fridge", (xb - 60, cy), 90))
 
 
 def _house_frame(brief: HouseBrief) -> SimpleNamespace:
@@ -1426,24 +1494,23 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
             rooms.append(Room("儲藏室", pts, kind="storage",
                               code=ROOM_CODES["storage"]))
 
-    # 家具:客廳同兩帶式;餐桌在天井帶東段(偏南,讓開北側各室門的迴轉)。
+    # 家具:客廳成套(沙發+茶几+單椅+電視櫃,守門);餐桌在天井帶東段
+    # (偏南,讓開北側各室門的迴轉);冰箱貼廚房管道牆讓開 yn 門迴轉。
     cy_s = (f.by0 + yd) / 2
     fixtures: list = [
-        FixturePlacement("sofa3", (f.bx0 + 75, cy_s), 270),
-        FixturePlacement("table4", ((f.bx0 + xf) / 2, cy_s), 0),
         FixturePlacement("shoe_cabinet", (f.bx1 - 75, (f.by0 + foy_n) / 2), 90),
         Counter(start=(f.xb - 75, f.by1 - 75), end=(xk + 60, f.by1 - 75),
-                sink=True),
+                sink=True, stove=True),
         FixturePlacement("toilet", (f.xs - 60, f.by1 - 500), 90),
         FixturePlacement("basin", (f.xs - 60, f.by1 - 1300), 90),
     ]
-    if elder:                                  # 孝親房(西端格):雙人床+衣櫃
-        x_l, x_r = div_x[0], div_x[1]
-        cx_e = min((x_l + x_r) / 2, x_r - 800 - 710)
-        fixtures += [
-            FixturePlacement("bed_double", (cx_e, f.by1 - 75), 180),
-            FixturePlacement("wardrobe", (x_r - 60, f.by1 - 75 - 750), 90),
-        ]
+    _sofa_suite(fixtures, f.bx0, cy_s, f.by0, yd,
+                tv_x=f.bx1, tv_lo=foy_n, tv_hi=yd)
+    _kitchen_fridge(fixtures, f.xb, f.by1, yn + 900)
+    if elder:                                  # 孝親房(西端格):床+衣櫃+床頭櫃
+        _bedroom_set(fixtures, div_x[0], div_x[1], f.by1, double=True)
+    elif has_study:                            # 自動書房:書桌+書櫃(守門)
+        _study_set(fixtures, div_x[0], div_x[1], yn, f.by1)
     if f.xb - xp >= 2400:
         # 餐桌 y:天井帶淺時貼南(讓開 yn 各室門的迴轉 900),深(中庭)時
         # 往帶中挪——上限守「桌組頂 ≤ yn-900-100」。
@@ -1525,8 +1592,9 @@ def _house_upper_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
 
     fixtures = _band_fixtures(f, bed_x, kinds)
     cy_s = (f.by0 + yd) / 2
-    fixtures.append(FixturePlacement("sofa3", (f.bx0 + 75, cy_s), 270))
-    fixtures.append(FixturePlacement("table4", ((f.bx0 + f.bx1) / 2, cy_s), 0))
+    # 起居室成套(同客廳擺法:沙發+茶几+單椅+電視櫃,守門)。
+    _sofa_suite(fixtures, f.bx0, cy_s, f.by0, yd,
+                tv_x=f.bx1, tv_lo=f.by0, tv_hi=yd)
     fixtures.append(FixturePlacement("toilet", (f.xs - 60, f.by1 - 500), 90))
     fixtures.append(FixturePlacement("basin", (f.xs - 60, f.by1 - 1300), 90))
 
@@ -1699,27 +1767,26 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
              kind="stair", code=ROOM_CODES["stair"]),
     ]
 
-    # 家具設備(沿用單層產生器已驗證的擺法;皆通過碰撞/門迴轉檢核)。
+    # 家具設備(皆通過碰撞/門迴轉檢核)。
     cy_s = (f.by0 + f.yd) / 2                   # 南帶(客廳)中心線
     fixtures: list = [
-        FixturePlacement("sofa3", (f.bx0 + 75, cy_s), 270),          # 沙發背靠西牆
-        FixturePlacement("table4", ((f.bx0 + xf) / 2, cy_s), 0),     # 客(餐)廳方桌
         FixturePlacement("shoe_cabinet",                             # 鞋櫃貼玄關東牆
                          (f.bx1 - 75, (f.by0 + foy_n) / 2), 90),
-        # 廚房(東,靠管道牆):一字型流理台沿北牆(水槽靠窗,實務慣例)。
+        # 廚房(東,靠管道牆):一字型流理台沿北牆(水槽靠窗、爐具偏東)。
         Counter(start=(f.xb - 75, f.by1 - 75), end=(xk + 60, f.by1 - 75),
-                sink=True),
+                sink=True, stove=True),
         # 衛浴:馬桶+洗手台靠東牆北半(讓開南側門的迴轉)。
         FixturePlacement("toilet", (f.xs - 60, f.by1 - 500), 90),
         FixturePlacement("basin", (f.xs - 60, f.by1 - 1300), 90),
     ]
+    # 客廳成套:沙發+茶几(+單椅×2+電視櫃,放得下才加);電視櫃貼東外牆的
+    # 玄關以北牆段。冰箱貼廚房管道牆,讓開帶分界牆上的門迴轉(yd+900)。
+    _sofa_suite(fixtures, f.bx0, cy_s, f.by0, f.yd,
+                tv_x=f.bx1, tv_lo=foy_n, tv_hi=f.yd)
+    _kitchen_fridge(fixtures, f.xb, f.by1, f.yd + 900)
     if elder:
-        # 孝親房(西端格):雙人床頭靠北牆、衣櫃貼東牆(xk),讓開衣櫃夾床心。
-        cx_e = min((f.bx0 + xk) / 2, xk - 800 - 710)
-        fixtures += [
-            FixturePlacement("bed_double", (cx_e, f.by1 - 75), 180),
-            FixturePlacement("wardrobe", (xk - 60, f.by1 - 75 - 750), 90),
-        ]
+        # 孝親房(西端格):床+衣櫃+床頭櫃(空間守門)。
+        _bedroom_set(fixtures, f.bx0, xk, f.by1, double=True)
     else:
         fixtures.append(FixturePlacement(                            # 餐桌(西,餐廳)
             "table4", ((f.bx0 + xk) / 2, (f.yd + f.by1) / 2), 0))
@@ -1786,11 +1853,11 @@ def generate_house_upper(brief: HouseBrief) -> FloorPlanSpec:
     ]
     rooms += _band_rooms(bed_x, kinds, f.yd, f.by1)        # 臥室(+書房)
 
-    # 家具:臥室=床(主臥雙人)+衣櫃;書房=書桌;起居室沙發+方桌;衛浴。
+    # 家具:臥室=床+衣櫃+床頭櫃;書房=書桌+書櫃;起居室成套;衛浴。
     fixtures = _band_fixtures(f, bed_x, kinds)
     cy_s = (f.by0 + f.yd) / 2
-    fixtures.append(FixturePlacement("sofa3", (f.bx0 + 75, cy_s), 270))
-    fixtures.append(FixturePlacement("table4", ((f.bx0 + f.bx1) / 2, cy_s), 0))
+    _sofa_suite(fixtures, f.bx0, cy_s, f.by0, f.yd,
+                tv_x=f.bx1, tv_lo=f.by0, tv_hi=f.yd)
     fixtures.append(FixturePlacement("toilet", (f.xs - 60, f.by1 - 500), 90))
     fixtures.append(FixturePlacement("basin", (f.xs - 60, f.by1 - 1300), 90))
 

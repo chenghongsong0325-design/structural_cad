@@ -15,6 +15,8 @@
     bed_single(單人床) bed_double(雙人床)
     table4(方桌+四椅) sofa3(三人沙發) wardrobe(衣櫃)
     shoe_cabinet(鞋櫃) desk(書桌+椅) car(汽車,原點=車心)
+    coffee_table(茶几,原點=中心) armchair(單人沙發) tv_cabinet(電視櫃)
+    nightstand(床頭櫃) fridge(冰箱) bookshelf(書櫃)
 
 流理台(Counter):長度隨廚房而變,不做成固定圖塊,改用參數式繪製——
 start→end 為靠牆邊,檯面往行進方向「左手側」伸出 depth;L 型 = 兩段
@@ -130,6 +132,58 @@ def _build_desk(blk) -> None:
                        close=True, dxfattribs={"layer": "0"})           # 椅子(半塞桌下)
 
 
+def _build_coffee_table(blk) -> None:
+    """茶几 1200×600(原點=中心):外框 + 內縮桌面線(客廳沙發前)。"""
+    blk.add_lwpolyline([(-600, -300), (600, -300), (600, 300), (-600, 300)],
+                       close=True, dxfattribs={"layer": "0"})
+    blk.add_lwpolyline([(-520, -220), (520, -220), (520, 220), (-520, 220)],
+                       close=True, dxfattribs={"layer": "0"})
+
+
+def _build_armchair(blk) -> None:
+    """單人沙發 900×850(背貼原點側):背 + 坐墊 + 兩扶手(縮小版 sofa3)。"""
+    blk.add_lwpolyline([(-450, 0), (450, 0), (450, 200), (-450, 200)],
+                       close=True, dxfattribs={"layer": "0"})           # 背
+    blk.add_lwpolyline([(-300, 200), (300, 200), (300, 750), (-300, 750)],
+                       close=True, dxfattribs={"layer": "0"})           # 坐墊
+    for sx in (-1, 1):
+        blk.add_lwpolyline(
+            [(sx * 300, 0), (sx * 450, 0), (sx * 450, 850), (sx * 300, 850)],
+            close=True, dxfattribs={"layer": "0"})                      # 扶手
+
+
+def _build_tv_cabinet(blk) -> None:
+    """電視櫃 1600×450(背貼牆):櫃體 + 前緣電視(薄矩形+中心點)。"""
+    blk.add_lwpolyline([(-800, 0), (800, 0), (800, 450), (-800, 450)],
+                       close=True, dxfattribs={"layer": "0"})
+    blk.add_lwpolyline([(-550, 300), (550, 300), (550, 430), (-550, 430)],
+                       close=True, dxfattribs={"layer": "0"})           # 電視
+    blk.add_circle((0, 365), radius=25, dxfattribs={"layer": "0"})
+
+
+def _build_nightstand(blk) -> None:
+    """床頭櫃 450×400(背貼牆)+ 檯燈圓(臥室床邊)。"""
+    blk.add_lwpolyline([(-225, 0), (225, 0), (225, 400), (-225, 400)],
+                       close=True, dxfattribs={"layer": "0"})
+    blk.add_circle((0, 200), radius=90, dxfattribs={"layer": "0"})      # 檯燈
+
+
+def _build_fridge(blk) -> None:
+    """冰箱 700×700(背貼牆):外框 + 對角線 + 前緣門縫線(平面慣用符號)。"""
+    blk.add_lwpolyline([(-350, 0), (350, 0), (350, 700), (-350, 700)],
+                       close=True, dxfattribs={"layer": "0"})
+    blk.add_line((-350, 0), (350, 700), dxfattribs={"layer": "0"})      # 對角線記號
+    blk.add_line((0, 560), (0, 700), dxfattribs={"layer": "0"})         # 門縫
+
+
+def _build_bookshelf(blk) -> None:
+    """書櫃 1200×350(背貼牆):外框 + 兩道隔板(書房用)。"""
+    blk.add_lwpolyline([(-600, 0), (600, 0), (600, 350), (-600, 350)],
+                       close=True, dxfattribs={"layer": "0"})
+    for x in (-200, 200):
+        blk.add_line((x, 0), (x, 350), dxfattribs={"layer": "0"})
+
+
 def _build_car(blk) -> None:
     """汽車 1800×4600(原點=車心):車身外框(切角)+ 車艙 + 前擋線。
 
@@ -156,10 +210,16 @@ FIXTURE_BUILDERS = {
     "shoe_cabinet": _build_shoe_cabinet,
     "desk": _build_desk,
     "car": _build_car,
+    "coffee_table": _build_coffee_table,
+    "armchair": _build_armchair,
+    "tv_cabinet": _build_tv_cabinet,
+    "nightstand": _build_nightstand,
+    "fridge": _build_fridge,
+    "bookshelf": _build_bookshelf,
 }
 
-# 原點在圖塊中心(不靠牆)的家具:方桌、汽車。其餘原點在貼牆邊中點、朝 +Y。
-_CENTER_ORIGIN = {"table4", "car"}
+# 原點在圖塊中心(不靠牆)的家具:方桌、汽車、茶几。其餘原點在貼牆邊中點、朝 +Y。
+_CENTER_ORIGIN = {"table4", "car", "coffee_table"}
 
 # 各圖塊的佔地外框(寬w × 深d,局部座標;與 builder 幾何一致)。
 # table4 原點在中心(±780),其餘原點在貼牆邊中點、朝 +Y 伸出 d。
@@ -175,6 +235,12 @@ FIXTURE_SIZES = {
     "shoe_cabinet": (1200, 350),
     "desk": (1200, 700),         # 桌 550 + 椅子外緣(部分塞桌下)
     "car": (1800, 4600),         # 小客車;原點=車心(_CENTER_ORIGIN)
+    "coffee_table": (1200, 600),  # 茶几;原點=中心(_CENTER_ORIGIN)
+    "armchair": (900, 850),
+    "tv_cabinet": (1600, 450),
+    "nightstand": (450, 400),
+    "fridge": (700, 700),
+    "bookshelf": (1200, 350),
 }
 
 
@@ -245,13 +311,15 @@ def place_fixture(msp, placement: FixturePlacement, layers: dict[str, str]):
 class Counter:
     """一段流理台:start→end 為靠牆邊,檯面往行進方向「左手側」伸出 depth。
 
-    L 型 = 兩段 Counter 相接(共用轉角點)。sink=True 在段中點畫水槽圓。
+    L 型 = 兩段 Counter 相接(共用轉角點)。sink=True 在段中點畫水槽圓;
+    stove=True 在段 30% 處畫四口爐(2×2 圓圈,平面慣用符號)。
     """
 
     start: Point
     end: Point
     depth: float = 600
     sink: bool = False
+    stove: bool = False
 
     @property
     def length(self) -> float:
@@ -276,6 +344,14 @@ def draw_counter(msp, counter: Counter, layers: dict[str, str]) -> None:
     if counter.sink:
         mx, my = (x1 + x2) / 2 + nx * d / 2, (y1 + y2) / 2 + ny * d / 2
         msp.add_circle((mx, my), radius=180, dxfattribs={"layer": layers["OTHER"]})
+    if counter.stove:
+        # 四口爐:2×2 圓圈,中心在段長 30% 處(避開中點的水槽)。
+        cx = x1 + ux * length * 0.3 + nx * d / 2
+        cy = y1 + uy * length * 0.3 + ny * d / 2
+        for da in (-190, 190):
+            for db in (-140, 140):
+                msp.add_circle((cx + ux * da + nx * db, cy + uy * da + ny * db),
+                               radius=110, dxfattribs={"layer": layers["OTHER"]})
 
 
 # =============================================================================
