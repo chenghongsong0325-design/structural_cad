@@ -71,8 +71,8 @@ def test_draw_stair_riser_count_and_layers(doc_and_layers) -> None:
     draw_stair(msp, _demo_stair(), layers)
 
     lines = [e for e in msp.query("LINE")]
-    # 踏步線 10 + 箭桿 1 + 箭頭兩撇 2 = 13。
-    assert len(lines) == 13
+    # 踏步線 10 + 箭桿 1 + 箭頭兩撇 2 + 中央扶手兩線 2 = 15。
+    assert len(lines) == 15
     for ln in lines:
         assert ln.dxf.layer == layers["HANDRAIL"]
 
@@ -114,9 +114,32 @@ def test_draw_stair_break_line_polyline(doc_and_layers) -> None:
     draw_stair(msp, _demo_stair(), layers)
 
     polys = list(msp.query("LWPOLYLINE"))
-    assert len(polys) == 1                       # 折斷線
-    assert polys[0].dxf.layer == layers["HANDRAIL"]
-    assert len(polys[0]) == 6                    # 斜線 + 鋸齒共 6 點
+    # 折斷線(6 點)+ 中央扶手立柱 4 個小方塊(各 4 點)。
+    break_lines = [p for p in polys if len(p) == 6]
+    posts = [p for p in polys if len(p) == 4]
+    assert len(break_lines) == 1                  # 折斷線
+    assert break_lines[0].dxf.layer == layers["HANDRAIL"]
+    assert len(posts) == 4                        # 兩扶手線 × 上下端 = 4 立柱
+    for p in posts:
+        assert p.dxf.layer == layers["HANDRAIL"]
+
+
+def test_draw_stair_center_handrail(doc_and_layers) -> None:
+    """中央扶手:兩條縱向平行線(對稱於中心 t=600),長度 = 第一階到梯段頂。"""
+    doc, layers = doc_and_layers
+    msp = doc.modelspace()
+    draw_stair(msp, _demo_stair(), layers)   # width=1200 → 中心 x=600;flight=2600
+
+    # 扶手線 = 縱向(北向:x 固定、y 變動),x 在中心 600 ± 60。
+    rails = [e for e in msp.query("LINE")
+             if abs(e.dxf.start.x - e.dxf.end.x) < 1e-6
+             and abs(e.dxf.start.x - 600) == pytest.approx(60)]
+    assert len(rails) == 2
+    for r in rails:
+        assert r.dxf.layer == layers["HANDRAIL"]
+        lo, hi = sorted((r.dxf.start.y, r.dxf.end.y))
+        assert lo == pytest.approx(260)          # 第一階(tread)
+        assert hi == pytest.approx(2600)         # 梯段頂(flight_length)
 
 
 def test_draw_stair_label_text(doc_and_layers) -> None:
