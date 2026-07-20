@@ -1566,9 +1566,9 @@ def _house_upper_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
 
     fixtures = _band_fixtures(f, bed_x, kinds)
     cy_s = (f.by0 + yd) / 2
-    # 起居室成套(同客廳擺法:沙發+茶几+單椅+電視櫃,守門)。
-    _sofa_suite(fixtures, f.bx0, cy_s, f.by0, yd,
-                tv_x=f.bx1, tv_lo=f.by0, tv_hi=yd)
+    # 起居室沙發+方桌(不成套,使用者定調:成套只留 1F 客廳)。
+    fixtures.append(FixturePlacement("sofa3", (f.bx0 + 75, cy_s), 270))
+    fixtures.append(FixturePlacement("table4", ((f.bx0 + f.bx1) / 2, cy_s), 0))
     fixtures.append(FixturePlacement("toilet", (f.xs - 60, f.by1 - 500), 90))
     fixtures.append(FixturePlacement("basin", (f.xs - 60, f.by1 - 1300), 90))
 
@@ -1826,11 +1826,12 @@ def generate_house_upper(brief: HouseBrief) -> FloorPlanSpec:
     ]
     rooms += _band_rooms(bed_x, kinds, f.yd, f.by1)        # 臥室(+書房)
 
-    # 家具:臥室=床+衣櫃+床頭櫃;書房=書桌+書櫃;起居室成套;衛浴。
+    # 家具:臥室=床+衣櫃;書房=書桌;起居室沙發+方桌(不成套,使用者定調:
+    # 成套只留 1F 客廳);衛浴。
     fixtures = _band_fixtures(f, bed_x, kinds)
     cy_s = (f.by0 + f.yd) / 2
-    _sofa_suite(fixtures, f.bx0, cy_s, f.by0, f.yd,
-                tv_x=f.bx1, tv_lo=f.by0, tv_hi=f.yd)
+    fixtures.append(FixturePlacement("sofa3", (f.bx0 + 75, cy_s), 270))
+    fixtures.append(FixturePlacement("table4", ((f.bx0 + f.bx1) / 2, cy_s), 0))
     fixtures.append(FixturePlacement("toilet", (f.xs - 60, f.by1 - 500), 90))
     fixtures.append(FixturePlacement("basin", (f.xs - 60, f.by1 - 1300), 90))
 
