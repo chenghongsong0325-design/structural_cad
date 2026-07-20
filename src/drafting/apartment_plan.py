@@ -152,6 +152,10 @@ class FloorPlanSpec:
     #    False = 只有上/右兩邊的單層軸距(gridlines.draw_grid_dimensions)。
     dim_chains: bool = False
 
+    # ── 圖面表格(E4):True 時畫「面積計算表+門窗表」——有圖框貼內框右側,
+    #    無圖框放地界線右側(讓開右邊的尺寸鏈)。
+    schedules: bool = False
+
     # ── 樓梯(B1)/ 電梯與陽台(B3)/ 設備家具(B4)──────────────────────────
     stairs: list = field(default_factory=list)      # Stair / UStair
     elevators: list = field(default_factory=list)   # Elevator(牆自動併聯集)
@@ -354,6 +358,22 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
         else:
             pos = (max(xs) + 2500, max(ys))
         place_north_arrow(msp, pos, layers)
+
+    # (10) 圖面表格(E4):面積計算表 + 門窗表,同一直行由上往下疊。
+    #      有圖框:貼內框右側(北向箭頭下方、標題欄上方);
+    #      無圖框:地界線右側,讓開右邊的尺寸鏈(三層 2800)與北向箭頭。
+    if spec.schedules:
+        from src.drafting.schedule import (
+            TABLE_W, draw_area_table, draw_opening_table)
+        if spec.sheet:
+            ox, oy = spec.sheet_origin or _auto_sheet_origin(spec)
+            tx = ox + A3_WIDTH - spec.sheet_margin - TABLE_W - 400
+            ty = oy + A3_HEIGHT - spec.sheet_margin - 4600
+        else:
+            tx = max(xs) + 5500
+            ty = max(ys)
+        h = draw_area_table(msp, spec, layers, origin=(tx, ty))
+        draw_opening_table(msp, spec, layers, origin=(tx, ty - h - 800))
 
 
 # ---------------------------------------------------------------------------

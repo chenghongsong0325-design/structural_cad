@@ -110,6 +110,57 @@ button.ghost:disabled { opacity: .55; cursor: wait; }
 .download { color: var(--accent); font-size: 14px; text-decoration: none; }
 .download:hover { text-decoration: underline; }
 
+/* 關鍵數字(建蔽/容積/造價)——E4 */
+.metrics {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  margin-top: 8px;
+}
+.metric {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.metric b { color: var(--text); font-size: 14px; margin-right: 4px; }
+
+/* 多輪修改列——E4 */
+.modify-bar { display: flex; gap: 10px; margin-top: 12px; }
+.modify-bar input {
+  flex: 1;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 14px;
+  font-family: inherit;
+}
+.modify-bar input:focus { outline: 1px solid var(--accent); }
+
+/* 歷史方案面板——E4 */
+.history {
+  margin-top: 12px;
+  display: flex; flex-direction: column; gap: 6px;
+  max-height: 300px; overflow-y: auto;
+  color: var(--muted); font-size: 14px;
+}
+.history-item {
+  display: flex; flex-direction: column; gap: 2px;
+  text-align: left;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.history-item:hover { border-color: var(--accent); }
+.history-item .h-text { font-size: 14px; }
+.history-item .h-meta { font-size: 12px; color: var(--muted); }
+
 .tabs { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
 .tab {
   background: var(--panel);

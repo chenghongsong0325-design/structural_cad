@@ -18,13 +18,18 @@
 from __future__ import annotations
 
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
 import ezdxf
 from ezdxf.addons.drawing import Frontend, RenderContext
-from ezdxf.addons.drawing.config import BackgroundPolicy, Configuration
+from ezdxf.addons.drawing.config import (
+    BackgroundPolicy,
+    ColorPolicy,
+    Configuration,
+)
 from ezdxf.addons.drawing.layout import Page
 from ezdxf.addons.drawing.svg import SVGBackend
 
@@ -67,7 +72,8 @@ def build_sheets(building: BuildingSpec) -> list[Sheet]:
     sheets: list[Sheet] = []
     for fl in building.floors:
         doc, layers = _new_doc()
-        draw_floor_plan(doc.modelspace(), fl.spec, layers)   # DXF:含圖框
+        # DXF:含圖框 + 圖面表格(面積計算表/門窗表,E4)。
+        draw_floor_plan(doc.modelspace(), replace(fl.spec, schedules=True), layers)
         # 預覽:同一份平面圖但拿掉 A3 圖框/標題欄 → 平面本身填滿畫面看得更清楚。
         pdoc, players = _new_doc()
         draw_floor_plan(pdoc.modelspace(),
@@ -110,6 +116,24 @@ _SVG_CONFIG = Configuration(
 _PREVIEW_FONT = "msjh.ttc"
 
 
+@contextmanager
+def _preview_font(doc):
+    """暫時把 STRUCT 樣式字型換成 msjh.ttc(向量轉換用),離開時還原。
+
+    kaiu.ttf 在「字形→向量路徑」轉換時複雜筆畫中文會破碎(SVG 與 PDF 的
+    渲染路徑相同),msjh.ttc 乾淨;DXF 下載檔不受影響(try/finally 還原)。
+    """
+    struct_style = doc.styles.get("STRUCT")
+    original_font = struct_style.dxf.font if struct_style is not None else None
+    if struct_style is not None:
+        struct_style.dxf.font = _PREVIEW_FONT
+    try:
+        yield
+    finally:
+        if struct_style is not None:
+            struct_style.dxf.font = original_font
+
+
 def doc_to_svg(doc) -> str:
     """ezdxf 文件 → SVG 字串(黑底、線粗放大,像 AutoCAD 那樣清楚可讀)。
 
@@ -119,18 +143,54 @@ def doc_to_svg(doc) -> str:
     doc——字型覆寫用完就還原,不管呼叫順序(先存檔或先轉 SVG)都不會讓下載
     的 DXF 意外變成 msjh.ttc。
     """
-    struct_style = doc.styles.get("STRUCT")
-    original_font = struct_style.dxf.font if struct_style is not None else None
-    if struct_style is not None:
-        struct_style.dxf.font = _PREVIEW_FONT
-    try:
+    with _preview_font(doc):
         backend = SVGBackend()
         Frontend(RenderContext(doc), backend, config=_SVG_CONFIG).draw_layout(
             doc.modelspace(), finalize=True)
         return backend.get_string(Page(0, 0))
-    finally:
-        if struct_style is not None:
-            struct_style.dxf.font = original_font
+
+
+# PDF 出圖設定:白底黑線(印表機/正式交件慣例——紙是白的,線要黑才清楚),
+# 線粗適度放大(A3 頁面上跟瀏覽器同樣有「細線縮到看不見」的問題,取 20 倍
+# 折衷:牆線清楚、尺寸線不糊)。
+_PDF_CONFIG = Configuration(
+    lineweight_scaling=20,
+    background_policy=BackgroundPolicy.WHITE,
+    color_policy=ColorPolicy.BLACK,
+)
+
+_A3_INCHES = (420 / 25.4, 297 / 25.4)      # A3 橫式(matplotlib 用英吋)
+
+
+def docs_to_pdf(docs: list, path) -> None:
+    """多份 ezdxf 文件 → 一本 A3 橫式 PDF 圖冊(一份一頁,白底黑線可直接列印)。
+
+    用下載版 doc(平面圖含圖框/標題欄/表格)——PDF 就是「印出來的正式圖」。
+    網頁端「點了才做」:從已存檔的 DXF 重新讀回來渲染(見 app.py /pdf 端點),
+    生成當下不用等 PDF。
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+    from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
+
+    with PdfPages(path) as pdf:
+        for doc in docs:
+            fig = plt.figure(figsize=_A3_INCHES)
+            ax = fig.add_axes([0, 0, 1, 1])
+            ax.set_axis_off()
+            with _preview_font(doc):
+                Frontend(RenderContext(doc), MatplotlibBackend(ax),
+                         config=_PDF_CONFIG).draw_layout(
+                    doc.modelspace(), finalize=True)
+            pdf.savefig(fig, facecolor="white")
+            plt.close(fig)
+
+
+def sheets_to_pdf(sheets: list[Sheet], path) -> None:
+    """整套 Sheet → PDF 圖冊(docs_to_pdf 的便利包裝)。"""
+    docs_to_pdf([s.doc for s in sheets], path)
 
 
 def sheet_svg(sheet: Sheet) -> str:

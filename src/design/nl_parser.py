@@ -155,6 +155,17 @@ SYSTEM_PROMPT = """\
 - 沒提到的欄位一律 null,不要瞎猜數值。
 """
 
+# 多輪修改(E4):輸入是「目前需求 JSON + 修改指令」,以目前需求為底、只改
+# 指令提到的欄位。跟首次解析同一張 schema——保證改完仍是合法需求。
+MODIFY_PROMPT = SYSTEM_PROMPT + """
+修改模式:輸入含「目前需求(JSON)」與「修改指令」兩段。
+- 以目前需求為基礎,只更動修改指令明確提到的欄位;其餘欄位照抄原值
+  (包括原本就是 null 的欄位,除非指令提到)。
+- 「取消/不要 X」→ 該欄位設回 null 或 false(例:「不要書房」→
+  want_study=null;「不要地下室」→ basements=null)。
+- 輸出「完整」的更新後 JSON(所有欄位都要有,不是只輸出改動的欄位)。
+"""
+
 
 # ---------------------------------------------------------------------------
 # 資料轉換(純函式,不碰網路)
@@ -267,6 +278,39 @@ def parse_building_brief(text: str, client: Optional[object] = None,
     return _building_from_data(_call_llm(text, client), seed=seed)
 
 
+# ---------------------------------------------------------------------------
+# 兩段式入口(E4 多輪修改用):解析 → 原始 dict;dict → BuildingBrief。
+# 網頁把原始 dict 存下來,下一輪「修改指令」以它為底合併——這樣「三房改
+# 四房」只動房數,基地/樓層/方位…全部保留。
+# ---------------------------------------------------------------------------
+def parse_brief_data(text: str, client: Optional[object] = None) -> dict:
+    """中文需求描述 → 原始解析 dict(BRIEF_SCHEMA 格式,尚未轉 Brief)。"""
+    if not text or not text.strip():
+        raise ValueError("需求描述是空的")
+    if client is None:
+        from google import genai
+        client = genai.Client()
+    return _call_llm(text, client)
+
+
+def parse_modification_data(instruction: str, base: dict,
+                            client: Optional[object] = None) -> dict:
+    """修改指令 + 上一輪的需求 dict → 更新後的需求 dict(合併由 LLM 做)。"""
+    if not instruction or not instruction.strip():
+        raise ValueError("修改指令是空的")
+    if client is None:
+        from google import genai
+        client = genai.Client()
+    text = (f"目前需求(JSON):{json.dumps(base, ensure_ascii=False)}\n"
+            f"修改指令:{instruction}")
+    return _call_llm(text, client, system=MODIFY_PROMPT)
+
+
+def building_brief_from_data(data: dict, seed: int = 0) -> "BuildingBrief":
+    """解析 dict → BuildingBrief(公開版 _building_from_data,網頁用)。"""
+    return _building_from_data(data, seed=seed)
+
+
 # 暫時性錯誤的重試(Gemini 伺服器過載/限流時,等一下再試通常就過了):
 # 使用者實際遇過「503 UNAVAILABLE: This model is currently experiencing high
 # demand」——那不是需求描述有問題,不該讓使用者自己按重來。只重試「等一下
@@ -282,7 +326,7 @@ def _is_transient(exc: Exception) -> bool:
     return any(m in msg for m in _RETRY_MARKERS)
 
 
-def _call_llm(text: str, client: object) -> dict:
+def _call_llm(text: str, client: object, system: str = SYSTEM_PROMPT) -> dict:
     """呼叫 Gemini 解析需求;伺服器暫時過載會自動重試(遞增等待)。"""
     last: Optional[Exception] = None
     for attempt in range(len(_RETRY_DELAYS) + 1):
@@ -291,7 +335,7 @@ def _call_llm(text: str, client: object) -> dict:
                 model=MODEL,
                 contents=text,
                 config={
-                    "system_instruction": SYSTEM_PROMPT,
+                    "system_instruction": system,
                     "response_mime_type": "application/json",
                     "response_schema": BRIEF_SCHEMA,
                 },

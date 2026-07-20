@@ -170,3 +170,21 @@ def test_elevation_bad_side_rejected():
     doc, layers = _doc_layers()
     with pytest.raises(ValueError):
         draw_elevation(doc.modelspace(), _corridor(), layers, side="up")
+
+
+def test_section_draws_stair_flights():
+    """剖面有樓梯(E4):相鄰兩層間各一段階梯折線(HANDRAIL 層)。
+
+    透天 B1F~3F 四層 → 3 段梯(B1F→1F、1F→2F、2F→3F);每段是多點折線
+    (踏步鋸齒 > 4 點),另有一條梯板底斜線(LINE)。
+    """
+    b = _house(basements=1, floors=3)
+    doc, layers = _doc_layers()
+    draw_section(doc.modelspace(), b, layers, axis="x")
+    rail = layers["HANDRAIL"]
+    flights = [e for e in doc.modelspace().query("LWPOLYLINE")
+               if e.dxf.layer == rail and len(e) > 4]
+    soffits = [e for e in doc.modelspace().query("LINE")
+               if e.dxf.layer == rail]
+    assert len(flights) == 3
+    assert len(soffits) == 3

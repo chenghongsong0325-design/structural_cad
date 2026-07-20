@@ -119,6 +119,35 @@ def _level_mark(msp, u, e, label, layer_text, origin=(0.0, 0.0)) -> None:
           origin=origin)
 
 
+def _stair_flight(msp, stair, axis: str, e0: float, e1: float,
+                  layer: str, origin: Point) -> None:
+    """一段樓梯的剖面示意:階梯折線(踏步)+ 底下平行的梯板斜線。
+
+    stair 鴨子型別吃 Stair(單跑,steps)或 UStair(折返,steps_per_flight×2);
+    u 範圍 = 樓梯符號在剖切方向上的投影(origin + width/length 依方向)。
+    """
+    ox, oy = stair.origin
+    along_x = stair.direction in ("east", "west")   # 行進方向沿 X?
+    if axis == "x":
+        u0 = ox
+        u1 = ox + (stair.length if along_x else stair.width)
+    else:
+        u0 = oy
+        u1 = oy + (stair.width if along_x else stair.length)
+
+    n = getattr(stair, "steps", None) or getattr(stair, "steps_per_flight", 8) * 2
+    du, dv = (u1 - u0) / n, (e1 - e0) / n
+    pts = [(u0, e0)]
+    for i in range(n):                    # 一階 = 先上(級高)再前進(級深)
+        pts.append((u0 + i * du, e0 + (i + 1) * dv))
+        pts.append((u0 + (i + 1) * du, e0 + (i + 1) * dv))
+    ou, ov = origin
+    msp.add_lwpolyline([(u + ou, v + ov) for u, v in pts],
+                       dxfattribs={"layer": layer})
+    # 梯板底斜線(平行於爬升方向,往下移一個樓板厚)。
+    _line(msp, u0, e0 - SLAB_THICKNESS, u1, e1 - SLAB_THICKNESS, layer, origin)
+
+
 # ---------------------------------------------------------------------------
 # 剖面圖
 # ---------------------------------------------------------------------------
@@ -155,6 +184,15 @@ def draw_section(msp, building, layers: dict[str, str], *,
     for f in lv:
         _rect(msp, lo, f.elevation - SLAB_THICKNESS, hi, f.elevation, wall_layer, origin)
     _rect(msp, lo, roof - SLAB_THICKNESS, hi, roof, wall_layer, origin)
+
+    # (2.5) 樓梯梯段(示意):相鄰兩層之間,沿剖切方向在樓梯間範圍畫階梯折線
+    #       + 平行的梯板底斜線。與整張「示意剖面」同一精度等級——表達梯段
+    #       上下貫通,不是精確剖切(方向垂直於剖切面的梯段也以側投影示意)。
+    rail_layer = layers["HANDRAIL"]
+    for lower, upper in zip(lv, lv[1:]):
+        for st in getattr(lower.spec, "stairs", []):
+            _stair_flight(msp, st, axis, lower.elevation, upper.elevation,
+                          rail_layer, origin)
 
     # (3) 屋頂女兒牆(兩端)。
     _rect(msp, lo, roof, lo + PARAPET_THICKNESS, roof + PARAPET_HEIGHT, wall_layer, origin)
@@ -265,5 +303,7 @@ def draw_elevation(msp, building, layers: dict[str, str], *,
 # 3. 地盤線 GL 取 1FL 標高;未做土壤剖面線、回填、地梁、筏基等。
 # 4. 立面只畫指定一面外牆的門窗開口(矩形),未畫窗框分割、落水管、雨遮、
 #    外牆材質分格線;地下層不畫(在地面下)。
-# 5. 樓梯在剖面尚未畫(折線梯段),電梯井亦未剖出——之後可加。
+# 5. 樓梯已入剖面(E4):相鄰兩層間畫階梯折線+梯板底斜線(HANDRAIL 層),
+#    以樓梯符號在剖切方向的投影當範圍——是「示意」:行進方向垂直於剖切面
+#    的梯段也用側投影畫(真實剖面該畫剖到的平台/梯段虛實線);電梯井未剖出。
 # =============================================================================

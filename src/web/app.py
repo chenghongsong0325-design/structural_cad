@@ -25,12 +25,14 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import random
 import re
 import sys
 import uuid
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -49,20 +51,30 @@ from src.design.layout_generator import (
     house_design_note,
     max_house_bedrooms,
 )
-from src.design.nl_parser import parse_building_brief
-from src.web.render import build_sheets, sheet_svg
+from src.design.metrics import building_metrics
+from src.design.nl_parser import (
+    building_brief_from_data,
+    parse_brief_data,
+    parse_modification_data,
+)
+from src.web.render import build_sheets, docs_to_pdf, sheet_svg
 
 JOBS_DIR = _PROJECT_ROOT / "output" / "web"          # 每次生成一個子資料夾
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 _JOB_ID_RE = re.compile(r"[0-9a-f]{12}")
-_FILENAME_RE = re.compile(r"[A-Za-z0-9_]+\.(dxf|zip)")   # 白名單:擋路徑跳脫
+_FILENAME_RE = re.compile(r"[A-Za-z0-9_]+\.(dxf|zip|pdf)")   # 白名單:擋路徑跳脫
+
+HISTORY_LIMIT = 20            # /api/history 最多回幾筆(新→舊)
 
 
 class GenerateRequest(BaseModel):
     text: str
     code: str = ""
     seed: Optional[int] = None      # 設計變體(E2):None → 隨機抽一個(每次不同)
+    # 多輪修改(E4):帶上一輪的需求 dict(回應裡的 brief_data)→ text 視為
+    # 「修改指令」,以 base 為底合併;不帶 = 全新需求。
+    base: Optional[dict] = None
 
 
 def _has_api_key() -> bool:
@@ -178,11 +190,17 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
                 503, "伺服器沒設定 GEMINI_API_KEY,無法解析需求描述")
 
         # 設計變體種子(E2):沒帶就隨機抽一個 → 每次「重新設計」換方案。
+        # 多輪修改預設沿用上一輪 seed(前端會帶),格局才不會整個重骰。
         seed = req.seed if req.seed is not None else random.randrange(1_000_000)
 
-        # 1) 解析需求(LLM)——語意錯誤 422;網路/額度問題 502
+        # 1) 解析需求(LLM)——語意錯誤 422;網路/額度問題 502。
+        #    多輪修改(帶 base):text 是修改指令,以 base 為底合併(E4)。
         try:
-            brief = parse_building_brief(req.text, client=client, seed=seed)
+            if req.base is not None:
+                data = parse_modification_data(req.text, req.base, client=client)
+            else:
+                data = parse_brief_data(req.text, client=client)
+            brief = building_brief_from_data(data, seed=seed)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         except Exception as exc:
@@ -196,7 +214,7 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
-        # 3) 存檔(DXF + 打包 zip)+ 組回應(SVG 直接內嵌 JSON)
+        # 3) 存檔(DXF + 打包 zip + PDF 圖冊)+ 組回應(SVG 直接內嵌 JSON)
         job_id = uuid.uuid4().hex[:12]
         job_dir = JOBS_DIR / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -215,15 +233,75 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             for s in sheets:
                 zf.write(job_dir / s.filename, s.filename)
 
-        return {
+        result = {
             "job_id": job_id,
             "seed": seed,
             "summary": _summary(brief, building),
             "design_note": house_design_note(brief.typical),
+            "metrics": building_metrics(building),       # 關鍵數字(E4)
+            "brief_data": data,                          # 多輪修改的底(E4)
             "suggestions": _suggestions(brief, building),
             "sheets": out_sheets,
             "zip": f"/api/jobs/{job_id}/all_dxf.zip",
+            "pdf": f"/api/jobs/{job_id}/pdf",            # 點了才產生(懶生成)
         }
+
+        # 4) 歷史方案(E4):整包回應存 result.json(重新載入用)、
+        #    摘要存 meta.json(列表用;files = PDF 懶生成的頁序)。
+        (job_dir / "result.json").write_text(
+            json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        (job_dir / "meta.json").write_text(json.dumps({
+            "job_id": job_id,
+            "text": req.text,
+            "seed": seed,
+            "summary": result["summary"],
+            "created": datetime.now(timezone.utc).isoformat(),
+            "files": [s.filename for s in sheets],
+        }, ensure_ascii=False), encoding="utf-8")
+        return result
+
+    @app.get("/api/jobs/{job_id}/pdf")
+    def job_pdf(job_id: str) -> FileResponse:
+        """A3 PDF 圖冊——第一次點才從已存的 DXF 渲染(之後直接用快取檔)。"""
+        if not _JOB_ID_RE.fullmatch(job_id):
+            raise HTTPException(404, "找不到方案")
+        job_dir = JOBS_DIR / job_id
+        pdf_path = job_dir / "plans.pdf"
+        if not pdf_path.is_file():
+            meta_path = job_dir / "meta.json"
+            if not meta_path.is_file():
+                raise HTTPException(404, "方案不存在(可能已清除,請重新生成)")
+            import ezdxf
+            files = json.loads(meta_path.read_text(encoding="utf-8"))["files"]
+            docs = [ezdxf.readfile(job_dir / f) for f in files
+                    if (job_dir / f).is_file()]
+            if not docs:
+                raise HTTPException(404, "圖檔不存在(可能已清除,請重新生成)")
+            docs_to_pdf(docs, pdf_path)
+        return FileResponse(pdf_path, filename="plans.pdf")
+
+    @app.get("/api/history")
+    def history() -> list[dict]:
+        """最近的生成紀錄(新→舊,最多 HISTORY_LIMIT 筆)。"""
+        metas = []
+        if JOBS_DIR.is_dir():
+            for meta_file in JOBS_DIR.glob("*/meta.json"):
+                try:
+                    metas.append(json.loads(meta_file.read_text(encoding="utf-8")))
+                except (OSError, json.JSONDecodeError):
+                    continue                     # 壞檔跳過,列表不因一筆爛掉
+        metas.sort(key=lambda m: m.get("created", ""), reverse=True)
+        return metas[:HISTORY_LIMIT]
+
+    @app.get("/api/jobs/{job_id}/result")
+    def job_result(job_id: str) -> dict:
+        """重新載入一筆歷史方案(整包回應,含 SVG/連結/數字)。"""
+        if not _JOB_ID_RE.fullmatch(job_id):
+            raise HTTPException(404, "找不到方案")
+        path = JOBS_DIR / job_id / "result.json"
+        if not path.is_file():
+            raise HTTPException(404, "方案不存在(可能已清除,請重新生成)")
+        return json.loads(path.read_text(encoding="utf-8"))
 
     @app.get("/api/jobs/{job_id}/{filename}")
     def download(job_id: str, filename: str) -> FileResponse:

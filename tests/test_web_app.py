@@ -181,3 +181,89 @@ def test_index_page_served() -> None:
     r = c.get("/")
     assert r.status_code == 200
     assert "自動建築平面圖生成器" in r.text
+
+
+# ---------------------------------------------------------------------------
+# 5) E4:關鍵數字 / PDF 圖冊 / 歷史方案 / 多輪修改
+# ---------------------------------------------------------------------------
+def test_generate_returns_metrics_and_brief_data() -> None:
+    """回應要帶關鍵數字(建蔽/容積/造價)與 brief_data(多輪修改的底)。"""
+    c = _client(_payload(site_width_m=19, site_depth_m=13,
+                         floors_above=3, basements=1))
+    data = c.post("/api/generate",
+                  json={"text": "透天三層,地下一層", "seed": 5}).json()
+    m = data["metrics"]
+    assert m["site_area_m2"] == pytest.approx(247, abs=0.5)
+    assert 0 < m["coverage_pct"] <= 100
+    assert m["far_pct"] > m["coverage_pct"]      # 三層 → 容積率 > 建蔽率
+    assert m["est_cost_wan"] > 0
+    assert data["brief_data"]["brief_type"] == "house"
+
+
+def test_pdf_booklet_lazy_generated() -> None:
+    """PDF 圖冊:第一次 GET 才渲染(從已存 DXF),回傳真 PDF。"""
+    c = _client(_payload())
+    data = c.post("/api/generate", json={"text": "基地16×14米,三房"}).json()
+    r = c.get(data["pdf"])
+    assert r.status_code == 200
+    assert r.content[:5] == b"%PDF-"
+    # 第二次直接用快取檔,一樣拿得到。
+    assert c.get(data["pdf"]).status_code == 200
+
+
+def test_history_lists_and_reloads() -> None:
+    """歷史列表包含剛生成的 job;result 端點能整包載回(含 SVG)。"""
+    c = _client(_payload())
+    data = c.post("/api/generate",
+                  json={"text": "基地16×14米,三房"}).json()
+    hist = c.get("/api/history").json()
+    assert any(h["job_id"] == data["job_id"] for h in hist)
+    mine = next(h for h in hist if h["job_id"] == data["job_id"])
+    assert mine["text"] == "基地16×14米,三房"
+
+    r = c.get(f"/api/jobs/{data['job_id']}/result")
+    assert r.status_code == 200
+    loaded = r.json()
+    assert loaded["summary"] == data["summary"]
+    assert "<svg" in loaded["sheets"][0]["svg"]
+
+
+def test_history_reload_missing_job_404() -> None:
+    c = _client(_payload())
+    assert c.get("/api/jobs/aaaabbbbcccc/result").status_code == 404
+    assert c.get("/api/jobs/aaaabbbbcccc/pdf").status_code == 404
+
+
+class _RecordingModels:
+    """假 Gemini:記下收到的 contents/system,回固定 payload(修改模式驗證用)。"""
+
+    def __init__(self, payload: dict, log: list):
+        self.payload = payload
+        self.log = log
+
+    def generate_content(self, **kwargs):
+        self.log.append(kwargs)
+        return _FakeResponse(text=json.dumps(self.payload))
+
+
+def test_modify_uses_base_and_keeps_seed() -> None:
+    """多輪修改:帶 base → LLM 收到「目前需求 JSON+修改指令」;seed 沿用。"""
+    log: list = []
+    modified = _payload(bedrooms=2)          # LLM 合併後:三房 → 二房
+    app = create_app(client_factory=lambda: type(
+        "C", (), {"models": _RecordingModels(modified, log)})())
+    c = TestClient(app)
+
+    base = _payload()                        # 上一輪的 brief_data(三房)
+    r = c.post("/api/generate", json={
+        "text": "改二房", "base": base, "seed": 7})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["seed"] == 7                             # seed 沿用不重骰
+    assert "2 房" in data["summary"]                     # 用了修改後的需求
+    assert data["brief_data"]["bedrooms"] == 2           # 新的底給下一輪
+
+    sent = log[-1]
+    assert "修改指令:改二房" in sent["contents"]         # 指令有送到
+    assert "site_width_m" in sent["contents"]            # 原需求 JSON 也在
+    assert "修改模式" in sent["config"]["system_instruction"]
