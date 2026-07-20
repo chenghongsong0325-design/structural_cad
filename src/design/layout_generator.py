@@ -647,14 +647,21 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
     if has_ensuite:
         fixtures.append(FixturePlacement("toilet", (bx0 + 75, yd + 550), 270))
         fixtures.append(FixturePlacement("basin", (bx0 + 75, yd + 1450), 270))
-    # 廚房:L 型流理台(東牆段 + 北段,水槽在北段;北段東端讓開轉角、
+    # 廚房:L 型流理台(東牆段+北段,水槽北段、爐具東段;北段東端讓開轉角、
     # 西端讓開廚房門迴轉——門在走道端牆或服務核西牆,皆以 x_he 為準)。
     north_end = x_he + 1000
     if (bx1 - 675) - north_end >= 600:
-        fixtures.append(Counter(start=(bx1 - 75, yb + 60), end=(bx1 - 75, yd - 60)))
+        fixtures.append(Counter(start=(bx1 - 75, yb + 60), end=(bx1 - 75, yd - 60),
+                                stove=True))
         fixtures.append(Counter(start=(bx1 - 675, yd - 60), end=(north_end, yd - 60), sink=True))
-    else:                                   # 北段太短 → 一字型,水槽改東段
-        fixtures.append(Counter(start=(bx1 - 75, yb + 60), end=(bx1 - 75, yd - 60), sink=True))
+    else:                                   # 北段太短 → 一字型,水槽爐具同段
+        fixtures.append(Counter(start=(bx1 - 75, yb + 60), end=(bx1 - 75, yd - 60),
+                                sink=True, stove=True))
+    # 冰箱:貼浴廚分界牆(yb)北側近西端——讓開廚房門迴轉(門位 kitchen_cy)
+    # 與東牆流理台;小廚房擠不下就略過(不硬加)。
+    if (yb + 760 <= kitchen_cy - 550
+            and sx + 850 <= bx1 - 675 - 100):
+        fixtures.append(FixturePlacement("fridge", (sx + 500, yb + 60), 0))
 
     spec = FloorPlanSpec(
         site_boundary=[(0, 0), (brief.site_width, 0),
@@ -1126,6 +1133,15 @@ def _sofa_suite(fixtures: list, x_w: float, cy: float,
             fixtures.append(FixturePlacement("tv_cabinet", (tv_x - 60, tcy), 90))
 
 
+def _kitchen_fridge(fixtures: list, xb: float, ytop: float,
+                    door_y_max: float) -> None:
+    """冰箱(700×700)貼廚房管道牆(xb),在北牆流理台下方——冰箱底緣要離
+    「南側門的迴轉範圍上緣」(door_y_max)≥100 才放(小廚房塞不下就略過)。"""
+    cy = ytop - 675 - 100 - 350                    # 流理台(深 600+牆 75)下方
+    if cy - 350 >= door_y_max + 100:
+        fixtures.append(FixturePlacement("fridge", (xb - 60, cy), 90))
+
+
 def _house_frame(brief: HouseBrief) -> SimpleNamespace:
     """透天多樓層的「不變骨架」(D2):外殼、南北兩帶、東端[濕區|樓梯間]、軸網。
 
@@ -1470,17 +1486,18 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
                               code=ROOM_CODES["storage"]))
 
     # 家具:客廳成套(沙發+茶几+單椅+電視櫃,守門);餐桌在天井帶東段
-    # (偏南,讓開北側各室門的迴轉)。
+    # (偏南,讓開北側各室門的迴轉);冰箱貼廚房管道牆讓開 yn 門迴轉。
     cy_s = (f.by0 + yd) / 2
     fixtures: list = [
         FixturePlacement("shoe_cabinet", (f.bx1 - 75, (f.by0 + foy_n) / 2), 90),
         Counter(start=(f.xb - 75, f.by1 - 75), end=(xk + 60, f.by1 - 75),
-                sink=True),
+                sink=True, stove=True),
         FixturePlacement("toilet", (f.xs - 60, f.by1 - 500), 90),
         FixturePlacement("basin", (f.xs - 60, f.by1 - 1300), 90),
     ]
     _sofa_suite(fixtures, f.bx0, cy_s, f.by0, yd,
                 tv_x=f.bx1, tv_lo=foy_n, tv_hi=yd)
+    _kitchen_fridge(fixtures, f.xb, f.by1, yn + 900)
     if elder:                                  # 孝親房(西端格):床+衣櫃+床頭櫃
         _bedroom_set(fixtures, div_x[0], div_x[1], f.by1, double=True)
     elif has_study:                            # 自動書房:書桌+書櫃(守門)
@@ -1746,17 +1763,18 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
     fixtures: list = [
         FixturePlacement("shoe_cabinet",                             # 鞋櫃貼玄關東牆
                          (f.bx1 - 75, (f.by0 + foy_n) / 2), 90),
-        # 廚房(東,靠管道牆):一字型流理台沿北牆(水槽靠窗,實務慣例)。
+        # 廚房(東,靠管道牆):一字型流理台沿北牆(水槽靠窗、爐具偏東)。
         Counter(start=(f.xb - 75, f.by1 - 75), end=(xk + 60, f.by1 - 75),
-                sink=True),
+                sink=True, stove=True),
         # 衛浴:馬桶+洗手台靠東牆北半(讓開南側門的迴轉)。
         FixturePlacement("toilet", (f.xs - 60, f.by1 - 500), 90),
         FixturePlacement("basin", (f.xs - 60, f.by1 - 1300), 90),
     ]
     # 客廳成套:沙發+茶几(+單椅×2+電視櫃,放得下才加);電視櫃貼東外牆的
-    # 玄關以北牆段。
+    # 玄關以北牆段。冰箱貼廚房管道牆,讓開帶分界牆上的門迴轉(yd+900)。
     _sofa_suite(fixtures, f.bx0, cy_s, f.by0, f.yd,
                 tv_x=f.bx1, tv_lo=foy_n, tv_hi=f.yd)
+    _kitchen_fridge(fixtures, f.xb, f.by1, f.yd + 900)
     if elder:
         # 孝親房(西端格):床+衣櫃+床頭櫃(空間守門)。
         _bedroom_set(fixtures, f.bx0, xk, f.by1, double=True)
@@ -2035,7 +2053,8 @@ def _mirror_spec(spec: FloorPlanSpec, mx: bool, my: bool) -> FloorPlanSpec:
             a, b = tp(fx.start), tp(fx.end)
             if mirrored:
                 a, b = b, a
-            fixtures.append(Counter(start=a, end=b, depth=fx.depth, sink=fx.sink))
+            fixtures.append(Counter(start=a, end=b, depth=fx.depth,
+                                    sink=fx.sink, stove=fx.stove))
         else:
             fixtures.append(FixturePlacement(
                 name=fx.name, insert=tp(fx.insert),
