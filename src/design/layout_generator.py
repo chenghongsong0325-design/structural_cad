@@ -984,9 +984,9 @@ class HouseVariant:
         else:
             master = "主臥略大"
         bay = {-1: "大跨少柱", 0: "標準柱距", 1: "密柱短跨"}[self.bay_pref]
+        # my 不再抽選(客廳固定朝南),朝向不放進說明——說固定的事是噪音。
         return " · ".join([
             f"樓梯{'西' if self.mx else '東'}側",
-            f"廚房臥室朝{'南' if self.my else '北'}",
             "開放式廚房" if self.kitchen_open else "獨立廚房",
             master, bay,
         ])
@@ -997,11 +997,20 @@ _BAY_CHOICES = (-1, 0, 1)                  # 柱網跨數偏好抽選
 
 
 def _house_variant(brief: HouseBrief) -> HouseVariant:
-    """brief.seed → 一組設計選擇(deterministic;同 seed 同結果)。"""
+    """brief.seed → 一組設計選擇(deterministic;同 seed 同結果)。
+
+    ⚠️ 南北鏡射(my)已從抽選池拿掉(建築師檢視 2026-07-20):朝向不是
+    風格是物理——隨機上下翻會把客廳/大門翻到背陽的北面、讓廚衛佔住南面
+    最好的陽光,那不是「另一個方案」,是把採光邏輯翻反的方案。客廳/起居
+    固定朝南;要翻只能來自使用者明確的方位約束(master_corner/kitchen_side,
+    單層 C2 路徑)。
+    """
     rng = random.Random(brief.seed)
+    mx = rng.random() < 0.5
+    rng.random()      # 佔位:舊 my 抽籤(保留抽籤順位,同 seed 其他選項不變)
     return HouseVariant(
-        mx=rng.random() < 0.5,
-        my=rng.random() < 0.5,
+        mx=mx,
+        my=False,     # 客廳/起居固定朝南(見 docstring)
         kitchen_open=rng.random() < 0.5,
         master_ratio=rng.choice(_MASTER_CHOICES),
         bay_pref=rng.choice(_BAY_CHOICES),
@@ -1026,6 +1035,27 @@ def _jitter(rng: random.Random, center: float, lo: float, hi: float,
         return center
     reach = (hi - lo) * span / 2
     return _clamp(center + rng.uniform(-reach, reach), lo, hi)
+
+
+# 同一道牆上兩扇窗之間的最小淨距(牆墩寬)。窄於這個值的牆墩既難施工
+# (磚砌不起來、RC 也要特別配筋)、立面也醜——實務兩窗要嘛拉開、要嘛併成
+# 一扇寬窗。建築師檢視(2026-07-20)在生成圖上抓到 21cm 牆墩,故加此保護。
+MIN_PIER_WIDTH = 600
+
+
+def _paired_windows(rng: random.Random, lo: float, hi: float,
+                    c1: float, c2: float, blocked: list,
+                    what1: str, what2: str) -> tuple:
+    """同一道牆上的兩扇窗:各在自己半段內抖動,中線兩側各讓 MIN_PIER_WIDTH/2
+    → 兩窗淨距永遠 ≥ MIN_PIER_WIDTH,抖動再怎麼抽都不會擠出畸零牆墩。
+
+    回傳 ((pos1, w1), (pos2, w2))。c1/c2 是期望中心(會被夾回各自半段)。
+    """
+    mid = (lo + hi) / 2
+    hi1, lo2 = mid - MIN_PIER_WIDTH / 2, mid + MIN_PIER_WIDTH / 2
+    win1 = _slot(_jitter(rng, c1, lo, hi1), [1800, 1500], lo, hi1, blocked, what1)
+    win2 = _slot(_jitter(rng, c2, lo2, hi), [1800, 1500], lo2, hi, blocked, what2)
+    return win1, win2
 
 
 def _frame_slot_kinds(brief: HouseBrief) -> list[str]:
@@ -1364,12 +1394,11 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
     rng = _win_rng(brief, "1F")
     yd, yn, ypn, xp, xk = f.yd, f.yn, f.ypn, f.xp, f.xk
 
-    # 南帶開口(同兩帶式):大門(玄關段)+ 客廳南窗×2(位置隨 seed 抖動)。
+    # 南帶開口(同兩帶式):大門(玄關段)+ 客廳南窗×2(半段抖動,牆墩保護)。
     entry, ew = _slot((xf + f.bx1) / 2, [ENTRY_DOOR_WIDTH], xf, f.bx1, f.blocked, "大門")
-    wl1, wl1w = _slot(_jitter(rng, f.bx0 + f.W * 0.20, f.bx0, xf),
-                      [1800, 1500], f.bx0, xf, f.blocked, "客廳南窗1")
-    wl2, wl2w = _slot(_jitter(rng, f.bx0 + f.W * 0.55, f.bx0, xf),
-                      [1800, 1500], f.bx0, xf, f.blocked, "客廳南窗2")
+    (wl1, wl1w), (wl2, wl2w) = _paired_windows(
+        rng, f.bx0, xf, f.bx0 + f.W * 0.20, f.bx0 + f.W * 0.55,
+        f.blocked, "客廳南窗1", "客廳南窗2")
     # 北帶開口:廚房/衛浴北窗(書房北窗在分間後決定,見下)。
     wk, wkw = _slot(_jitter(rng, (xk + f.xb) / 2, xk, f.xb),
                     [1200, 900], xk, f.xb, f.blocked, "廚房北窗")
@@ -1420,7 +1449,9 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
         doors.append(DoorPlacement(5, len(band_open),
                                    Door(hinge="left", swing="out")))
         band_open.append(Opening(dk - f.bx0, dkw, "door"))
-    db, dbw = _slot((f.xb + f.xs) / 2, [750], f.xb, f.xs, f.blocked, "衛浴門")
+    # 衛浴門貼樓梯間側(不放正中):正中的門正對餐桌/沙發視線——衛生空間
+    # 的門要躲開公共空間的正面(建築師檢視 2026-07-20)。675 = 門半寬+牆邊留距。
+    db, dbw = _slot(f.xs - 675, [750], f.xb, f.xs, f.blocked, "衛浴門")
     doors.append(DoorPlacement(5, len(band_open), Door(hinge="left", swing="out")))
     band_open.append(Opening(db - f.bx0, dbw, "door"))
     dst, dstw = _slot((f.xs + f.bx1) / 2, [DOOR_WIDTH], f.xs, f.bx1,
@@ -1514,6 +1545,9 @@ def _house_public_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
         FixturePlacement("toilet", (f.xs - 60, f.by1 - 500), 90),
         FixturePlacement("basin", (f.xs - 60, f.by1 - 1300), 90),
     ]
+    if f.by1 - yn >= 3600:                     # 全深衛浴 → 浴缸貼管道牆
+        fixtures.append(FixturePlacement(
+            "bathtub", (f.xb + 60, (yn + f.by1) / 2), 270))
     _sofa_suite(fixtures, f.bx0, cy_s, f.by0, yd,
                 tv_x=f.bx1, tv_lo=foy_n, tv_hi=yd)
     _kitchen_fridge(fixtures, f.xb, f.by1, yn + 900)
@@ -1546,7 +1580,9 @@ def _house_upper_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
     yd, yn, ypn, xp = f.yd, f.yn, f.ypn, f.xp
 
     band_open, doors, win_open, windows = _band_slot_openings(f, bed_x, kinds, rng)
-    db, dbw = _slot((f.xb + f.xs) / 2, [750], f.xb, f.xs, f.blocked, "衛浴門")
+    # 衛浴門貼樓梯間側(不放正中):正中的門正對餐桌/沙發視線——衛生空間
+    # 的門要躲開公共空間的正面(建築師檢視 2026-07-20)。675 = 門半寬+牆邊留距。
+    db, dbw = _slot(f.xs - 675, [750], f.xb, f.xs, f.blocked, "衛浴門")
     doors.append(DoorPlacement(4, len(band_open), Door(hinge="left", swing="out")))
     band_open.append(Opening(db - f.bx0, dbw, "door"))
     dst, dstw = _slot((f.xs + f.bx1) / 2, [DOOR_WIDTH], f.xs, f.bx1,
@@ -1556,10 +1592,9 @@ def _house_upper_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
     wb_, wbw = _slot((f.xb + f.xs) / 2, [800, 600], f.xb, f.xs, f.blocked, "衛浴北窗")
     windows.append(WindowPlacement(1, len(win_open)))
     win_open.append(Opening(wb_ - f.bx0, wbw, "window"))
-    wl1, wl1w = _slot(_jitter(rng, f.bx0 + f.W * 0.30, f.bx0, f.bx1),
-                      [1800, 1500], f.bx0, f.bx1, f.blocked, "起居南窗1")
-    wl2, wl2w = _slot(_jitter(rng, f.bx0 + f.W * 0.70, f.bx0, f.bx1),
-                      [1800, 1500], f.bx0, f.bx1, f.blocked, "起居南窗2")
+    (wl1, wl1w), (wl2, wl2w) = _paired_windows(
+        rng, f.bx0, f.bx1, f.bx0 + f.W * 0.30, f.bx0 + f.W * 0.70,
+        f.blocked, "起居南窗1", "起居南窗2")
     dpz, dpw = _slot((xp + f.xb) / 2, [PASSAGE_WIDTH, 1200],
                      xp + 150, f.bx1 - 150, f.blocked, "起居通道")
 
@@ -1607,6 +1642,9 @@ def _house_upper_patio(brief: HouseBrief, f: SimpleNamespace) -> FloorPlanSpec:
     fixtures.append(FixturePlacement("table4", ((f.bx0 + f.bx1) / 2, cy_s), 0))
     fixtures.append(FixturePlacement("toilet", (f.xs - 60, f.by1 - 500), 90))
     fixtures.append(FixturePlacement("basin", (f.xs - 60, f.by1 - 1300), 90))
+    if f.by1 - yn >= 3600:                     # 全深衛浴 → 浴缸貼管道牆
+        fixtures.append(FixturePlacement(
+            "bathtub", (f.xb + 60, (yn + f.by1) / 2), 270))
 
     spec = FloorPlanSpec(walls=walls, rooms=rooms, doors=doors, windows=windows,
                          fixtures=fixtures,
@@ -1663,18 +1701,20 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
     # 牆 xb,與衛浴共用給排水立管。
     inner = sorted(g for g in f.west_lines if g < xk - 1)
 
-    # 開口位置(絕對 x;皆自動躲柱)。窗的期望位置隨 seed 在跨內抖動。
+    # 開口位置(絕對 x;皆自動躲柱)。窗的期望位置隨 seed 在跨內抖動;
+    # 客廳雙窗用 _paired_windows(各佔半段)保證窗間牆墩 ≥ MIN_PIER_WIDTH。
     entry, ew = _slot((xf + f.bx1) / 2, [ENTRY_DOOR_WIDTH], xf, f.bx1, f.blocked, "大門")
-    wl1, wl1w = _slot(_jitter(rng, f.bx0 + f.W * 0.20, f.bx0, xf),
-                      [1800, 1500], f.bx0, xf, f.blocked, "客廳南窗1")
-    wl2, wl2w = _slot(_jitter(rng, f.bx0 + f.W * 0.55, f.bx0, xf),
-                      [1800, 1500], f.bx0, xf, f.blocked, "客廳南窗2")
+    (wl1, wl1w), (wl2, wl2w) = _paired_windows(
+        rng, f.bx0, xf, f.bx0 + f.W * 0.20, f.bx0 + f.W * 0.55,
+        f.blocked, "客廳南窗1", "客廳南窗2")
     wd, wdw = _slot(_jitter(rng, (f.bx0 + xk) / 2, f.bx0, xk),
                     [1500, 1200], f.bx0, xk, f.blocked, "餐廳北窗")
     wkit, wkw = _slot(_jitter(rng, (xk + f.xb) / 2, xk, f.xb),
                       [1200, 900], xk, f.xb, f.blocked, "廚房北窗")
     wb, wbw = _slot((f.xb + f.xs) / 2, [800, 600], f.xb, f.xs, f.blocked, "衛浴北窗")
-    db, dbw = _slot((f.xb + f.xs) / 2, [750], f.xb, f.xs, f.blocked, "衛浴門")
+    # 衛浴門貼樓梯間側(不放正中):正中的門正對餐桌/沙發視線——衛生空間
+    # 的門要躲開公共空間的正面(建築師檢視 2026-07-20)。675 = 門半寬+牆邊留距。
+    db, dbw = _slot(f.xs - 675, [750], f.xb, f.xs, f.blocked, "衛浴門")
     dst, dstw = _slot((f.xs + f.bx1) / 2, [DOOR_WIDTH], f.xs, f.bx1, f.blocked, "樓梯間門")
 
     south = Wall((f.bx0, f.by0), (f.bx1, f.by0), EXT,       # 0 南外牆
@@ -1789,6 +1829,11 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
         FixturePlacement("toilet", (f.xs - 60, f.by1 - 500), 90),
         FixturePlacement("basin", (f.xs - 60, f.by1 - 1300), 90),
     ]
+    # 全深衛浴(≥3.6m)空間夠 → 配浴缸貼管道牆(給排水最短;建築師檢視:
+    # 9m² 衛浴只擺馬桶+洗手台太空,不像有人設計過)。
+    if f.by1 - f.yd >= 3600:
+        fixtures.append(FixturePlacement(
+            "bathtub", (f.xb + 60, (f.yd + f.by1) / 2), 270))
     # 客廳成套:沙發+茶几(+單椅×2+電視櫃,放得下才加);電視櫃貼東外牆的
     # 玄關以北牆段。冰箱貼廚房管道牆,讓開帶分界牆上的門迴轉(yd+900)。
     _sofa_suite(fixtures, f.bx0, cy_s, f.by0, f.yd,
@@ -1823,7 +1868,9 @@ def generate_house_upper(brief: HouseBrief) -> FloorPlanSpec:
     rng = _win_rng(brief, "2F")                             # 開窗位置抖動(E2)
 
     band_open, doors, win_open, windows = _band_slot_openings(f, bed_x, kinds, rng)
-    db, dbw = _slot((f.xb + f.xs) / 2, [750], f.xb, f.xs, f.blocked, "衛浴門")
+    # 衛浴門貼樓梯間側(不放正中):正中的門正對餐桌/沙發視線——衛生空間
+    # 的門要躲開公共空間的正面(建築師檢視 2026-07-20)。675 = 門半寬+牆邊留距。
+    db, dbw = _slot(f.xs - 675, [750], f.xb, f.xs, f.blocked, "衛浴門")
     doors.append(DoorPlacement(4, len(band_open), Door(hinge="left", swing="out")))
     band_open.append(Opening(db - f.bx0, dbw, "door"))
     dst, dstw = _slot((f.xs + f.bx1) / 2, [DOOR_WIDTH], f.xs, f.bx1, f.blocked, "樓梯間門")
@@ -1832,10 +1879,9 @@ def generate_house_upper(brief: HouseBrief) -> FloorPlanSpec:
     wb_, wbw = _slot((f.xb + f.xs) / 2, [800, 600], f.xb, f.xs, f.blocked, "衛浴北窗")
     windows.append(WindowPlacement(1, len(win_open)))
     win_open.append(Opening(wb_ - f.bx0, wbw, "window"))
-    wl1, wl1w = _slot(_jitter(rng, f.bx0 + f.W * 0.30, f.bx0, f.bx1),
-                      [1800, 1500], f.bx0, f.bx1, f.blocked, "起居南窗1")
-    wl2, wl2w = _slot(_jitter(rng, f.bx0 + f.W * 0.70, f.bx0, f.bx1),
-                      [1800, 1500], f.bx0, f.bx1, f.blocked, "起居南窗2")
+    (wl1, wl1w), (wl2, wl2w) = _paired_windows(
+        rng, f.bx0, f.bx1, f.bx0 + f.W * 0.30, f.bx0 + f.W * 0.70,
+        f.blocked, "起居南窗1", "起居南窗2")
 
     walls = [
         Wall((f.bx0, f.by0), (f.bx1, f.by0), EXT,           # 0 南外牆(起居窗)
@@ -1871,6 +1917,9 @@ def generate_house_upper(brief: HouseBrief) -> FloorPlanSpec:
     fixtures.append(FixturePlacement("table4", ((f.bx0 + f.bx1) / 2, cy_s), 0))
     fixtures.append(FixturePlacement("toilet", (f.xs - 60, f.by1 - 500), 90))
     fixtures.append(FixturePlacement("basin", (f.xs - 60, f.by1 - 1300), 90))
+    if f.by1 - f.yd >= 3600:                   # 全深衛浴 → 浴缸貼管道牆
+        fixtures.append(FixturePlacement(
+            "bathtub", (f.xb + 60, (f.yd + f.by1) / 2), 270))
 
     spec = FloorPlanSpec(walls=walls, rooms=rooms, doors=doors, windows=windows,
                          fixtures=fixtures,

@@ -354,13 +354,14 @@ def test_variant_different_seeds_differ():
 
 
 def test_variant_covers_stair_band_kitchen():
-    """8 個 seed 應涵蓋樓梯東西、服務帶南北、開放/獨立廚房各兩種。"""
+    """8 個 seed 應涵蓋樓梯東西、開放/獨立廚房各兩種;南北向不再抽
+    (採光原則:客廳/起居固定朝南,隨機上下翻會把客廳翻到背陽面)。"""
     from src.design.layout_generator import HouseBrief as HB
     from src.design.layout_generator import _house_variant
     vs = [_house_variant(HB(site_width=19000, site_depth=13000, seed=s))
           for s in range(8)]
     assert {v.mx for v in vs} == {True, False}          # 樓梯東/西都有
-    assert {v.my for v in vs} == {True, False}          # 服務帶南/北都有
+    assert all(not v.my for v in vs)                    # 一律朝南,不上下翻
     assert {v.kitchen_open for v in vs} == {True, False}  # 開放/獨立都有
 
 
@@ -470,3 +471,50 @@ def test_check_alignment_on_handmade_spec():
         FloorLevel(2, 3200, copy.deepcopy(base)),
     ])
     assert check_column_alignment(b) == []
+
+
+# ---------------------------------------------------------------------------
+# 建築師檢視修正(2026-07-20:朝向/牆墩/衛浴門/浴缸)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("seed", range(10))
+def test_window_pier_never_slivers(seed):
+    """同一道外牆上任兩窗的淨距 ≥ MIN_PIER_WIDTH——抖動再怎麼抽,
+    都不得出現「兩窗只隔 21cm 畸零牆墩」(使用者截圖抓到的缺陷)。"""
+    from src.design.layout_generator import (
+        MIN_PIER_WIDTH, generate_house_public, generate_house_upper)
+    brief = HouseBrief(site_width=19000, site_depth=13000,
+                       bedrooms=3, seed=seed)
+    for spec in (generate_house_public(brief), generate_house_upper(brief)):
+        for wall in spec.walls:
+            wins = sorted(op.span for op in wall.openings
+                          if op.kind == "window")
+            for (_, end1), (start2, _) in zip(wins, wins[1:]):
+                assert start2 - end1 >= MIN_PIER_WIDTH - 1e-6, (
+                    f"seed={seed} 兩窗淨距僅 {start2 - end1:.0f}mm")
+
+
+def test_bath_door_hugs_stair_side():
+    """衛浴門要貼樓梯間側(躲開餐桌/沙發的正面視線),不放濕區正中。"""
+    from src.design.layout_generator import (
+        _house_frame, generate_house_public)
+    brief = HouseBrief(site_width=19000, site_depth=13000, bedrooms=3, seed=5)
+    f = _house_frame(brief)
+    spec = generate_house_public(brief)          # seed 5 不鏡射(標準朝向)
+    divider = spec.walls[4]                      # 帶分界牆(衛浴門所在)
+    bath_doors = [op for op in divider.openings
+                  if op.kind == "door"
+                  and f.xb < divider.start[0] + op.position < f.xs]
+    assert len(bath_doors) == 1
+    center = divider.start[0] + bath_doors[0].position
+    assert center > (f.xb + f.xs) / 2            # 在濕區的東半(靠樓梯間)
+
+
+def test_full_depth_bath_gets_bathtub():
+    """全深衛浴(≥3.6m)要配浴缸(貼管道牆),1F 與樓上臥室層皆然。"""
+    from src.design.layout_generator import (
+        generate_house_public, generate_house_upper)
+    brief = HouseBrief(site_width=19000, site_depth=13000, bedrooms=3, seed=5)
+    for spec in (generate_house_public(brief), generate_house_upper(brief)):
+        tubs = [fx for fx in spec.fixtures
+                if getattr(fx, "name", "") == "bathtub"]
+        assert len(tubs) == 1
