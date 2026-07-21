@@ -216,22 +216,33 @@ def test_house_columns_hidden_in_wall_junctions(site, seed):
                 f"{spec.floor_label} 軸線 x={a} 上沒有豎牆(柱會凸在房間裡)"
 
 
-def test_house_width_capped_on_wide_site():
-    """建築寬度隨房數收斂:30×12m 基地做 2 房,建築不該攤滿 26m 可建寬,
-    要封頂(房間全到上限的寬度)且置中,臥室寬不得爆表。"""
-    from src.design.layout_generator import (
-        MAX_BEDROOM_WIDTH, generate_house_upper)
+def test_house_width_converges_when_rooms_reach_max_area():
+    """建築寬度隨「房間面積吃飽」收斂:30×12m 基地做 2 房,建築不該攤滿 26m
+    可建寬——房間各有 max_area,全員到頂後建築就不再長大,多的地留成側院。
+
+    (F3 之前這裡是靠寫死的 MAX_BEDROOM_WIDTH 封頂,基地再大房間也一格不動;
+    現在改由面積程式決定,房間會長大、長到 max_area 才停。)"""
+    from src.design.layout_generator import generate_house_upper
+    from src.design.metrics import _polygon_area_m2
+    from src.design.room_program import AREA_TOLERANCE, ROOM_PROGRAM
+
     spec = generate_house_upper(
         HouseBrief(site_width=30000, site_depth=12000, bedrooms=2))
     ox = spec.grid_origin[0]
     width = sum(spec.x_spacings)
-    assert width < 15000                        # 收斂了,不是 26000
+    assert width < 16000                        # 收斂了,不是 26000
     assert ox > 2000 + 1000                     # 退縮線再往內縮(置中留側院)
     assert abs((ox - 2000) - (26000 - width - (ox - 2000))) < 1   # 兩側院等寬
+
+    # 房間面積不得超過程式上限(容許 ±10%:柱網吸附會把牆挪開)。
     beds = [r for r in spec.rooms if r.kind == "bedroom"]
-    assert beds and all(
-        (max(p[0] for p in r.points) - min(p[0] for p in r.points))
-        <= MAX_BEDROOM_WIDTH + 1 for r in beds)
+    assert len(beds) == 2
+    areas = sorted((_polygon_area_m2(r.points) for r in beds), reverse=True)
+    for area, key in zip(areas, ("master_bedroom", "bedroom")):
+        cap = ROOM_PROGRAM[key].max_area
+        assert area <= cap * (1 + AREA_TOLERANCE), f"{key} {area:.1f}m² > {cap}m²"
+        # 這麼大的基地,房間應該真的長到接近上限(不是卡在舊的固定寬)。
+        assert area >= cap * 0.9, f"{key} 只有 {area:.1f}m²,沒吃到 {cap}m²"
 
 
 def test_house_depth_capped_on_deep_site():

@@ -316,16 +316,23 @@ def test_no_orphan_column_at_bedroom_door() -> None:
     assert spec.grid_origin[0] + spec.x_spacings[0] == pytest.approx(wall_x)
 
 
-def test_grid_stays_regular_when_snap_would_skew() -> None:
-    """挪軸線會讓跨距失衡(max/min >1.6)就不挪——柱網規則性優先。
+def test_grid_regular_and_every_axis_on_a_wall() -> None:
+    """22×15 四房:柱網要「同時」規則且零孤柱——每條中間軸線都坐在隔牆上。
 
-    22×15 四房:第二中線 x=14000 最近的隔牆在 15862,挪過去跨距比會到 2.0
-    → 維持原位(留一根孤柱列,但柱網規則)。"""
+    這裡本來只能二選一:等分起手法碰到「牆每 4.1m 一道、跨距想要 5.5m」時
+    對不上,只能留一根孤柱列(柱凸在房間邊)換取跨距規則。_plan_x_grid 加了
+    「反過來從隔牆裡挑軸線」之後兩者可以兼得(F3),故本測試改成兩項都驗。
+    """
     spec = generate_floor_plan(HouseBrief(site_width=22000, site_depth=15000, bedrooms=4))
     xs = spec.x_spacings
-    assert max(xs) / min(xs) <= 1.6
-    # 第二條中間軸線仍在等分位置(rel 12000 = 5586+6414)。
-    assert xs[0] + xs[1] == pytest.approx(12000.0)
+    assert 3000 <= min(xs) and max(xs) <= 9000
+    assert max(xs) / min(xs) <= 1.6                    # 跨距規則
+    axes, wall_xs = [spec.grid_origin[0]], {
+        w.start[0] for w in spec.walls if w.start[0] == w.end[0]}
+    for s in xs:
+        axes.append(axes[-1] + s)
+    for a in axes[1:-1]:                               # 零孤柱:柱都藏進豎牆
+        assert any(abs(a - wx) < 1 for wx in wall_xs), f"軸線 x={a} 上沒有豎牆"
 
 
 def test_bay_spans_economic() -> None:
