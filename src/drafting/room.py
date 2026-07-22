@@ -303,15 +303,21 @@ def draw_room_tag(
     text_height: float = 250,
     offset: Point = (0.0, 900.0),
 ) -> None:
-    """房間類型帶框標籤(真實建案畫法):「代碼 名稱」放在方框裡,框與字同掛一層。
+    """房間類型帶框標籤(真實建案畫法):**只放代碼**在方框裡,框與字同掛一層。
 
-    預設放在放置點上方(offset=(0,900)),避開 draw_room_label 的名稱/面積兩行。
+    預設放在放置點上方(offset=(0,900)),搭配 draw_room_label 的名稱/面積兩行,
+    整組讀起來是「[X05] / 主臥室 / 27.0㎡」。
+
+    ⚠️ 這裡刻意**不附房名**:房名已由 draw_room_label 畫在正下方,標籤再寫一次
+    會讓圖面出現「X15 家庭廳」與「家庭廳」上下兩行、看起來像重複標註。方框內
+    是代碼、框外是房名,分工才清楚。
+
     框寬用字數估算:全形字寬 ≈ 字高、半形 ≈ 0.55 字高,左右各留 0.5 字高邊距。
     room.code 為空時不畫(直接 return)。
     """
     if not room.code:
         return
-    text = f"{room.code} {room.name}"
+    text = room.code
     cx, cy = room.label_point
     px, py = cx + offset[0], cy + offset[1]
 

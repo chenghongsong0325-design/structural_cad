@@ -38,7 +38,10 @@ def test_room_tag_frame_and_text(doc_and_layers) -> None:
     texts = list(msp.query("TEXT"))
     assert len(polys) == 1 and polys[0].closed
     assert len(texts) == 1
-    assert texts[0].dxf.text == "X05 臥室"
+    # 標籤只放代碼——房名由 draw_room_label 畫在下方,標籤再寫一次會變成
+    # 「X05 臥室」與「臥室」上下兩行的重複標註。
+    assert texts[0].dxf.text == "X05"
+    assert room.name not in texts[0].dxf.text
     assert polys[0].dxf.layer == layers["A-TEXT"]   # 別名 → TEXT
     assert texts[0].dxf.layer == layers["A-TEXT"]
 
@@ -143,7 +146,9 @@ def test_floor_plan_b5_integration(doc_and_layers) -> None:
     assert len(list(msp.query("HATCH"))) == 0   # 預設不填牆
     texts = {t.dxf.text for t in msp.query("TEXT")}
     assert "2F" in texts                       # 樓層標示
-    assert "X05 主臥室" in texts               # 房型帶框標籤
+    assert "X05" in texts                      # 房型帶框標籤(只放代碼)
+    assert "主臥室" in texts                    # 房名由 draw_room_label 畫
+    assert "X05 主臥室" not in texts            # 兩者不得合併成重複標註
     inserts = {i.dxf.name for i in msp.query("INSERT")}
     assert NORTH_ARROW_BLOCK in inserts        # 北向箭頭
 
