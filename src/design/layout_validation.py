@@ -41,13 +41,14 @@ from src.design.connectivity import (
     reachable_from,
     room_polys,
 )
+from src.design.report import JsonReport
 
 # 房間重疊容差(mm²)——與 validate_spec 的房間重疊判準一致。
 OVERLAP_TOL = 1.0
 
 
 @dataclass
-class LayoutIssue:
+class LayoutIssue(JsonReport):
     """一則檢查結果。severity:"error"(格局不成立)/ "warn"(可疑,待人判斷)。"""
 
     check: str
@@ -57,9 +58,13 @@ class LayoutIssue:
     def __str__(self) -> str:                       # 方便 print
         return f"[{self.severity}] {self.check}:{self.message}"
 
+    def to_dict(self) -> dict:
+        return {"check": self.check, "severity": self.severity,
+                "message": self.message}
+
 
 @dataclass
-class LayoutReport:
+class LayoutReport(JsonReport):
     """一次格局健檢的結果(唯讀產物)。"""
 
     issues: list[LayoutIssue] = field(default_factory=list)
@@ -79,6 +84,17 @@ class LayoutReport:
     def ok(self) -> bool:
         """沒有 error 就算通過(warn 只是提醒)。"""
         return not self.errors
+
+    def to_dict(self) -> dict:
+        return {
+            "ok": self.ok,
+            "rooms": self.rooms,
+            "doors": self.doors,
+            "corridors": self.corridors,
+            "error_count": len(self.errors),
+            "warning_count": len(self.warnings),
+            "issues": [i.to_dict() for i in self.issues],
+        }
 
     def summary(self) -> str:
         head = (f"LayoutReport:房間 {self.rooms} · 門 {self.doors} · "

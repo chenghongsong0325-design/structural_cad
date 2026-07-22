@@ -16,10 +16,11 @@ from src.design.collision.geometry import collect_active
 from src.design.collision.obstacle import COLUMN, WALL
 from src.design.collision.priority import priority_of
 from src.design.collision.resolver import try_drop, try_move
+from src.design.report import JsonReport
 
 
 @dataclass
-class ResolveReport:
+class ResolveReport(JsonReport):
     """一次修復的結果(給測試/日後 benchmark 統計;生成流程本身不看)。"""
 
     moved: list = field(default_factory=list)
@@ -33,6 +34,16 @@ class ResolveReport:
     @property
     def changed(self) -> bool:
         return bool(self.moved or self.dropped)
+
+    def to_dict(self) -> dict:
+        return {
+            "changed": self.changed,
+            "moved": list(self.moved),
+            "dropped": list(self.dropped),
+            "unresolved": list(self.unresolved),
+            "column_hits": list(self.column_hits),
+            "unresolved_column": list(self.unresolved_column),
+        }
 
 
 class CollisionEngine:

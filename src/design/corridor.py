@@ -28,6 +28,7 @@ from src.design.connectivity import (
     room_polys,
     shared_edge,
 )
+from src.design.report import JsonReport
 
 # 走道淨寬下限(mm)。低於此值視為 Bottleneck。
 # 實測 34 案 100 層(19 層有走道):走道寬 min 1200 · median 3500 · max 6500,
@@ -39,7 +40,7 @@ MIN_OPENING_WIDTH = 750.0
 
 
 @dataclass
-class CorridorInfo:
+class CorridorInfo(JsonReport):
     """一段走道的量測結果。"""
 
     name: str
@@ -59,9 +60,22 @@ class CorridorInfo:
     def is_narrow(self) -> bool:
         return self.width < MIN_CORRIDOR_WIDTH
 
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "index": self.index,
+            "width": round(self.width, 1),
+            "length": round(self.length, 1),
+            "area_m2": self.area_m2,
+            "degree": self.degree,
+            "serves": list(self.serves),
+            "is_dead_end": self.is_dead_end,
+            "is_narrow": self.is_narrow,
+        }
+
 
 @dataclass
-class CorridorReport:
+class CorridorReport(JsonReport):
     """動線分析結果(唯讀產物)。"""
 
     corridors: list = field(default_factory=list)        # list[CorridorInfo]
@@ -91,6 +105,24 @@ class CorridorReport:
     def ok(self) -> bool:
         """沒有盡端走道、沒有瓶頸、沒有走不到的房間。"""
         return not (self.dead_ends or self.bottlenecks or self.unreachable)
+
+    def to_dict(self) -> dict:
+        return {
+            "ok": self.ok,
+            "entrance": self.entrance,
+            "has_corridor": self.has_corridor,
+            "min_width": (round(self.min_width, 1)
+                          if self.min_width is not None else None),
+            "average_distance": round(self.average_distance, 1),
+            "corridors": [c.to_dict() for c in self.corridors],
+            "bottlenecks": list(self.bottlenecks),
+            "dead_ends": list(self.dead_ends),
+            "walking_distance": dict(self.walking_distance),
+            "longest_room": self.longest_room,
+            "longest_distance": round(self.longest_distance, 1),
+            "longest_path": list(self.longest_path),
+            "unreachable": list(self.unreachable),
+        }
 
     def summary(self) -> str:
         w = f"{self.min_width:.0f}mm" if self.min_width is not None else "—"

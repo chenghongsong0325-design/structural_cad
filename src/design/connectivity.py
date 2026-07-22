@@ -33,6 +33,8 @@ from shapely.geometry import Point as SPoint
 from shapely.geometry import Polygon
 from shapely.ops import substring, unary_union
 
+from src.design.report import JsonReport
+
 # 兩房要算「相鄰」,共用邊界至少這麼長(mm);更短的只是角碰角。
 MIN_SHARE = 100.0
 # 沒有牆遮蔽的共用邊界要有這麼寬才算「走得過去」(mm)。
@@ -168,9 +170,23 @@ class DoorNode:
     def is_orphan(self) -> bool:
         return not self.rooms                        # 不貼任何房間
 
+    @property
+    def role(self) -> str:
+        return ("interior" if self.is_interior else
+                "exterior" if self.is_exterior else "orphan")
+
+    def to_dict(self) -> dict:
+        return {
+            "wall_index": self.wall_index,
+            "opening_index": self.opening_index,
+            "point": [float(self.point[0]), float(self.point[1])],
+            "rooms": list(self.rooms),
+            "role": self.role,
+        }
+
 
 @dataclass
-class ConnectivityGraphs:
+class ConnectivityGraphs(JsonReport):
     """四張圖。房間一律以 spec.rooms 的 index 表示。"""
 
     names: list[str] = field(default_factory=list)
@@ -191,6 +207,27 @@ class ConnectivityGraphs:
             if i in members:
                 return s
         return None
+
+    def to_dict(self) -> dict:
+        """圖一律序列化成 **edge list**,不用 int 當 key。
+
+        (int-key dict 被 json.dumps 悄悄轉成字串 key,是這個 repo 明列的
+        序列化陷阱;set 也必須先轉 sorted list。)"""
+        return {
+            "rooms": [{"index": i, "name": n, "kind": k}
+                      for i, (n, k) in enumerate(zip(self.names, self.kinds))],
+            "entry": self.entry,
+            "adjacency": [[i, j] for i in sorted(self.adjacency)
+                          for j in sorted(self.adjacency[i]) if i < j],
+            "room_edges": [{"a": i, "b": j, "link": link}
+                           for i in sorted(self.room_graph)
+                           for j, link in sorted(self.room_graph[i].items())
+                           if i < j],
+            "doors": [d.to_dict() for d in self.doors],
+            "spaces": [sorted(members) for members in self.spaces],
+            "space_edges": [[s, t] for s in sorted(self.space_graph)
+                            for t in sorted(self.space_graph[s]) if s < t],
+        }
 
 
 def build_graphs(spec) -> ConnectivityGraphs:
@@ -256,7 +293,7 @@ def build_graphs(spec) -> ConnectivityGraphs:
 # ConnectivityReport
 # ---------------------------------------------------------------------------
 @dataclass
-class ConnectivityReport:
+class ConnectivityReport(JsonReport):
     """連通性分析結果(唯讀產物)。"""
 
     graphs: ConnectivityGraphs
@@ -274,6 +311,19 @@ class ConnectivityReport:
         return not (self.dead_rooms or self.unreachable
                     or self.disconnected_areas or self.orphan_doors
                     or self.entrance is None)
+
+    def to_dict(self) -> dict:
+        return {
+            "ok": self.ok,
+            "entrance": self.entrance,
+            "reachable": list(self.reachable),
+            "dead_rooms": list(self.dead_rooms),
+            "unreachable": list(self.unreachable),
+            "unreachable_spaces": [list(s) for s in self.unreachable_spaces],
+            "disconnected_areas": [list(a) for a in self.disconnected_areas],
+            "orphan_doors": list(self.orphan_doors),
+            "graphs": self.graphs.to_dict(),
+        }
 
     def summary(self) -> str:
         g = self.graphs
