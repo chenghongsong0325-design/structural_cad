@@ -5,6 +5,68 @@
 
 ---
 
+## [v0.6.0] — 2026-07-22
+
+Furniture Collision Engine:把碰撞從「validate 抓到就整份失敗」變成
+「有系統地偵測 → 主動修復」,validate 退為安全網。
+
+### Added(新增)
+- **Collision Engine**:`src/design/collision/` — 獨立模組,抽象核心是
+  `Obstacle`(牆/柱/門迴轉/樓梯/天井/家具皆可包成障礙),新增障礙 = 加一個
+  provider,detector/resolver 不必改。
+  - `obstacle.py` 資料模型 · `geometry.py` provider · `detector.py` 偵測 ·
+    `priority.py` 優先序 · `resolver.py` 修復原語 · `engine.py` 編排。
+- **Furniture Collision**(Phase 1):家具×家具、家具×門迴轉。偵測範圍與
+  `validate_spec` 現有檢核逐字一致 → 接進流程對合格案例零改動。
+- **Wall Collision**(Phase 2):以 Room Polygon(牆中心線)為 barrier,
+  用「突出所屬房間面積 > `WALL_TOLERANCE_MM`(5000mm²)」判穿牆——家具貼牆
+  合法、穿牆才抓。`fixture_collision_footprint` 讓桌椅組(table4)用收緊
+  footprint,與牆演算法分離。
+- **Void Collision**(Phase 3-1):天井/挑空為硬障礙(`area > OVERLAP_TOL`)。
+  補上破口:形心落在天井的家具原本 `room=None`,連穿牆都驗不到。
+- **Stair Collision**(Phase 3-2):梯段為硬障礙,88 座樓梯納入保護。
+- **Column Detection**(Phase 3-3):`COLUMN_TOLERANCE_MM = 300`(單位為
+  **穿入深度 mm**)。新增 `column_contacts()` 報表,列出所有家具×柱接觸
+  (含合法貼柱)與是否超標。
+- **Column Resolver**(Phase 4):`try_move()` 新增避柱守衛;柱碰撞**只移動、
+  不丟棄**,修不動則保留家具並標記 `ResolveReport.unresolved_column`。
+- 測試:`tests/test_collision.py`(29 個)。
+
+### Changed(變更)
+- `layout_generator` 僅接線兩處 `resolve_collisions()`
+  (`_validate_or_raise` 與 `generate_floor_plan`),**生成邏輯零改動**。
+- `detector` 抽出 `HARD_KINDS`(天井/樓梯)共用一條硬障礙判定,避免重複邏輯。
+
+### Fixed(修正)
+- **B03(18×13m 透天兩層)餐桌穿牆**:原本穿過實心牆伸進儲藏室約 600mm,
+  現自動東移 300mm 修回餐廚。
+
+### Measurement(量測依據)
+- 柱容差不是猜的:34 案 941 件家具實測,283 件(30%)貼牆合法壓柱,
+  最深 175mm(理論上限 = 柱半 250 − 內牆半厚 60 = 190mm)→ 取 300 留裕度。
+  容差若設 150mm 會誤判那 283 件合法家具。
+- 樓梯接線前先量測:100 層中 88 層有樓梯,誤判 **0** 件才接線。
+
+### Benchmark
+- 34/34 生成成功;通過 20 · 警告 14 · **失敗 0**(四階段前後逐字相同)。
+- **Regression = 0**;**DXF 100%**(100/100)、**PNG 100%**(100/100)。
+- 生成後對每層再跑一次 `resolve()` 皆為 **no-op(100/100)**。
+- 殘留碰撞:牆 0 · 天井 0 · 樓梯 0 · 柱 0;`unresolved_column` 0。
+
+### Tests
+- 501 個測試全數通過(v0.5 為 472)。
+
+### Known Limitations
+- **Column Resolver 目前不會被觸發**:真實圖面的柱全藏在牆內,伸進室內
+  最多 250mm < 容差 300mm。它是為未來**獨立柱**(開放空間落柱/中島腳)預留。
+- **Elevator / Shaft 未納入**:Shaft 在本 repo 是「管道牆」= 牆,已被 Phase 2
+  覆蓋;Elevator 有 `spec.elevators` 資料但無 provider,且不在 benchmark 範圍。
+- `engine` 的「換對方讓開」後備路徑因 `blockers2` 未排除 WALL,自 Phase 2 起
+  實質為死碼(不影響現行行為)。
+- `geometry.py` 有一行重複的 `VOID` import(dead code)。
+
+---
+
 ## [v0.5-beta] — 2026-07-21
 
 Dynamic Layout Engine:房間自適應 + 客廳溢位 + 巡檢台。
