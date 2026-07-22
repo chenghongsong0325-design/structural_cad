@@ -85,6 +85,7 @@ from src.design.room_program import (
     select_overflow_program,
     solve_band,
 )
+from src.design.collision import resolve_collisions
 
 Point = tuple[float, float]
 
@@ -1053,6 +1054,10 @@ def generate_corridor_basement(brief: CorridorBrief) -> FloorPlanSpec:
 # 透天多樓層(D2 層別分化):B1F 車庫層 / 1F 公共層 / 2F+ 臥室層
 # ---------------------------------------------------------------------------
 def _validate_or_raise(spec: FloorPlanSpec, what: str) -> None:
+    # Collision Engine(v0.6):validate 之前跑一次家具碰撞修復——有碰撞才動
+    # (移動/丟裝飾),沒碰撞完全不動;修不動的留給 validate 報錯(安全網)。
+    # 放在這個共用閘門 → 涵蓋透天各層(經 _finish_house)與集合住宅地下室。
+    resolve_collisions(spec)
     problems = validate_spec(spec)
     if problems:
         raise ValueError(f"{what} 未通過檢核:\n  - " + "\n  - ".join(problems))
@@ -1065,6 +1070,9 @@ def _finish_house(spec: FloorPlanSpec, f: SimpleNamespace,
     骨架與房間都在「標準朝向」(樓梯東、服務帶北)畫好,最後一次鏡射翻成
     這個 seed 抽到的朝向。各層用同一 brief(同 mx/my)→ 翻法一致、柱位仍
     上下對齊。檢核跑在鏡射後的最終結果上。
+
+    Collision Engine(v0.6)在 _validate_or_raise 內、validate 之前跑,故此處
+    只要把鏡射定案的 spec 交給它即可。
     """
     if f.v.mx or f.v.my:
         spec = _mirror_spec(spec, f.v.mx, f.v.my)
@@ -2747,6 +2755,10 @@ def generate_floor_plan(brief: Brief) -> FloorPlanSpec:
     else:
         raise TypeError(f"未知需求型別:{type(brief).__name__}")
 
+    # Collision Engine(v0.6):單層住宅 / 集合住宅標準層的碰撞修復——透天各層
+    # 走 _finish_house→_validate_or_raise,這條(generate_floor_plan)直接呼叫
+    # validate_spec,故在此補上同一個 resolve(有碰撞才動,沒碰撞不動)。
+    resolve_collisions(spec)
     problems = validate_spec(spec)
     if problems:
         raise ValueError("產生的設計未通過檢核:\n  - " + "\n  - ".join(problems))

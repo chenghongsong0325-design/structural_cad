@@ -253,6 +253,13 @@ FIXTURE_SIZES = {
     "bar_stool": (400, 400),      # 吧檯椅;原點=中心(_CENTER_ORIGIN)
 }
 
+# 碰撞判定用的佔地尺寸(v0.6 Phase 2)——多數同 FIXTURE_SIZES;桌椅組(table4)
+# 的「四面拉開椅子」不作為「穿牆」依據:椅子可推進桌下、靠牆那側本就不拉開,
+# 故碰撞用「桌體 + 少量餘裕」(900×900),避免正常靠牆餐桌的椅子區被誤判穿牆。
+# 這是 fixture 資料修正,與 wall collision 演算法分離(FIXTURE_SIZES 不動,畫圖與
+# 家具×家具碰撞仍用完整 footprint)。
+COLLISION_SIZES = {**FIXTURE_SIZES, "table4": (900, 900)}
+
 
 def _block_name(name: str) -> str:
     return f"FX_{name.upper()}"
@@ -282,17 +289,32 @@ class FixturePlacement:
     rotation: float = 0.0
 
 
-def fixture_footprint(placement: FixturePlacement) -> list[Point]:
-    """設備的佔地矩形(世界座標四角點,含旋轉)——碰撞檢核用(C1.5c)。"""
-    w, d = FIXTURE_SIZES[placement.name]
-    if placement.name in _CENTER_ORIGIN:          # 原點=圖塊中心(方桌/汽車)
+def _footprint_points(name: str, insert: Point, rotation: float,
+                      sizes: dict) -> list[Point]:
+    """佔地矩形四角(世界座標,含旋轉);sizes 決定用畫圖尺寸或碰撞尺寸。"""
+    w, d = sizes[name]
+    if name in _CENTER_ORIGIN:                    # 原點=圖塊中心(方桌/汽車)
         local = [(-w / 2, -d / 2), (w / 2, -d / 2), (w / 2, d / 2), (-w / 2, d / 2)]
     else:                                          # 原點=貼牆邊中點,朝 +Y
         local = [(-w / 2, 0), (w / 2, 0), (w / 2, d), (-w / 2, d)]
-    a = math.radians(placement.rotation)
+    a = math.radians(rotation)
     ca, sa = math.cos(a), math.sin(a)
-    ix, iy = placement.insert
+    ix, iy = insert
     return [(ix + x * ca - y * sa, iy + x * sa + y * ca) for x, y in local]
+
+
+def fixture_footprint(placement: FixturePlacement) -> list[Point]:
+    """設備的佔地矩形(世界座標四角點,含旋轉)——畫圖用完整尺寸 FIXTURE_SIZES,
+    家具×家具碰撞與 validate 沿用此函式(行為不變)。"""
+    return _footprint_points(placement.name, placement.insert,
+                             placement.rotation, FIXTURE_SIZES)
+
+
+def fixture_collision_footprint(placement: FixturePlacement) -> list[Point]:
+    """碰撞判定用的佔地矩形——同 fixture_footprint,但用 COLLISION_SIZES
+    (桌椅組收緊)。v0.6 Phase 2 的牆碰撞(穿牆判定)用這個。"""
+    return _footprint_points(placement.name, placement.insert,
+                             placement.rotation, COLLISION_SIZES)
 
 
 def counter_footprint(counter: Counter) -> list[Point]:
