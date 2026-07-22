@@ -1,115 +1,145 @@
-# structural_cad — 結構 CAD 繪圖專案
+# structural_cad — 自動住宅平面圖生成
 
-用 Python + [ezdxf](https://ezdxf.mozman.at/) 產生結構工程 DXF 圖檔的專案。
-這是路線圖 **Phase 0 / P0** 的成果:一支「Hello CAD」程式,建立 3 個圖層、畫線、加文字、存成 DXF。
+用 Python + [ezdxf](https://ezdxf.mozman.at/) 把**一句中文需求**變成**可施工的
+DXF 平面圖**:規則式格局生成 → 家具碰撞修復 → 檢核 → 出圖,並附一整套
+**格局分析與品質量化**工具。
+
+```
+「透天三層,基地 19×13 米,三房,地下一層車庫」
+        ↓
+  平面圖 / 剖面 / 立面 + 圖框標題欄 + 門窗家具 → DXF / PDF
+```
+
+**目前版本:v0.7**(617 tests · Benchmark 34/34 · 20 pass / 14 warn / 0 fail)
 
 ---
 
-## 資料夾結構
-
-```
-structural_cad/
-├── README.md              # 本說明
-├── requirements.txt       # 套件清單
-├── .gitignore
-├── config/                # (未來)繪圖標準設定檔:圖層/文字/標註/圖框
-├── src/
-│   ├── standards/         # (未來)讀取並套用繪圖標準
-│   ├── model/             # (未來)語意建築模型:柱/梁/版/配筋
-│   ├── drafting/          # 製圖引擎
-│   │   └── hello_cad.py   # ← 本階段的主程式
-│   └── tools/             # (未來)給 AI 呼叫的工具層 / MCP
-├── scripts/
-│   └── preview.py         # 把 DXF 渲染成 PNG 預覽
-├── tests/                 # (未來)單元測試
-└── output/                # 產出的 DXF 與預覽圖
-```
-
-> 空的 `standards / model / tools / tests` 資料夾是**刻意先留位**的,對應路線圖後面的階段。這種「一開始就把關注點分開」的結構,能讓專案長大時不會亂。
-
----
-
-## 環境建置(在你自己的電腦上執行)
-
-需要先安裝 Python 3.10 以上。以下指令請在專案根目錄 `structural_cad/` 下執行。
-
-### Windows (PowerShell)
+## 快速開始
 
 ```powershell
-# 1) 建立虛擬環境(把這個專案的套件跟系統隔離,不會互相污染)
 python -m venv .venv
-
-# 2) 啟用虛擬環境(啟用後,命令列前面會出現 (.venv))
-.venv\Scripts\Activate.ps1
-
-# 3) 安裝套件
+.venv\Scripts\Activate.ps1          # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
-
-# 4) 初始化 Git 版本控管
-git init
-git add .
-git commit -m "Phase 0: Hello CAD"
 ```
 
-### macOS / Linux
+### 產生一張圖
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-git init
-git add .
-git commit -m "Phase 0: Hello CAD"
+```python
+from src.design.layout_generator import HouseBrief, generate_floor_plan
+from src.drafting.apartment_plan import draw_floor_plan
+from src.web.render import _new_doc
+
+spec = generate_floor_plan(HouseBrief(site_width=16000, site_depth=14000,
+                                      bedrooms=3))
+doc, layers = _new_doc()
+draw_floor_plan(doc.modelspace(), spec, layers)
+doc.saveas("output/house.dxf")
 ```
 
----
-
-## 執行
-
-```bash
-# 產生 DXF(輸出到 output/hello_cad.dxf)
-python src/drafting/hello_cad.py
-
-# (選用)渲染成 PNG 預覽,不用開 AutoCAD 也能先看
-python scripts/preview.py
-```
-
----
-
-## 網頁版(E1):瀏覽器輸入一句話,直接看圖、下載 DXF
+### 網頁版(輸入一句話就出圖)
 
 ```powershell
-# 1) 設定 Gemini API 金鑰(https://aistudio.google.com 申請;只在這個視窗有效)
-$env:GEMINI_API_KEY = "你的金鑰"
-
-# 2) 啟動伺服器
+$env:GEMINI_API_KEY = "你的金鑰"     # https://aistudio.google.com 申請
 uvicorn src.web.app:app --reload
-
-# 3) 瀏覽器開 http://localhost:8000
-#    輸入例:「透天三層,基地19×13米,三房,地下一層車庫」→ 生成
-#    每層樓一個頁籤(含剖面/立面),滾輪縮放、拖曳平移,可下載 DXF
+# 瀏覽器開 http://localhost:8000
 ```
 
-生成的檔案存在 `output/web/`(每次生成一個資料夾),整個刪掉也不影響程式。
+每層樓一個頁籤(含剖面/立面),可縮放平移、下載 DXF。
+產出存在 `output/web/`,整個刪掉也不影響程式。
 
-### 放上網路(Render.com 免費方案)
+---
 
-1. 把 repo 推上 GitHub(私有 repo 也可以)。
-2. 到 [render.com](https://render.com) 註冊 → **New +** → **Blueprint** → 選這個 repo
-   (它會自動讀 `render.yaml` 和 `Dockerfile`)。
-3. 在服務的 **Environment** 頁填兩個環境變數:
-   - `GEMINI_API_KEY`:你的 Gemini 金鑰(**不要**寫進程式碼或 git)。
-   - `ACCESS_CODE`:自訂通行碼——設了之後,網頁上要輸入通行碼才能生成,
-     防止陌生人亂按、消耗你的 API 額度。
-4. 部署完成會得到一個 `https://xxx.onrender.com` 網址,任何人開網址就能用。
+## 專案結構
+
+```
+src/
+├── design/                     格局引擎
+│   ├── room_program.py         面積程式(min/preferred/max + 形狀約束)
+│   ├── layout_generator.py     ★ 規則式生成 + validate_spec 守門
+│   ├── building_generator.py   多樓層堆疊、柱位對齊
+│   ├── collision/              v0.6 家具碰撞引擎(偵測 → 主動修復)
+│   ├── connectivity.py         v0.7 連通圖(四張圖,分析層的單一來源)
+│   ├── layout_validation.py    v0.7 格局健檢
+│   ├── corridor.py             v0.7 動線分析
+│   ├── scoring.py              v0.7 七面向評分
+│   ├── constraints.py          v0.7 設計常規規則
+│   ├── optimizer.py            v0.7 單步微調(唯一會改格局的分析層)
+│   ├── report.py               v0.7 Report 序列化基底
+│   ├── benchmark.py            34 案巡檢台
+│   └── optimization_benchmark.py  Before → Optimize → After
+├── drafting/                   製圖引擎(牆/門窗/樓梯/尺寸/圖框/家具 → DXF)
+└── web/                        FastAPI 網頁版
+docs/                           架構、路線圖、開發原則、各版 release notes
+tests/                          617 個測試
+output/                         產出(已 gitignore)
+```
+
+---
+
+## 格局分析工具
+
+生成之後,可以問「這張圖好不好」:
+
+```python
+from src.design.layout_validation import validate_layout   # 格局健檢
+from src.design.connectivity import analyze_connectivity   # 連通性
+from src.design.corridor import analyze_corridors          # 動線
+from src.design.scoring import score_layout                # 七面向評分
+from src.design.constraints import check_constraints       # 設計常規
+
+print(score_layout(spec).summary())
+# LayoutScore:97.0 / 100(等級 A)
+#   connectivity   100.0 ×2.0  9/9 間走得到
+#   circulation    100.0 ×1.5  最遠 11.6m / 對角 15.6m (繞路比 0.74)
+#   privacy         80.0 ×1.0  4/5 間不直開公共空間(外露:浴廁)
+#   ...
+```
+
+每個 Report 都有 `.summary()`(給人看)與 `.to_dict()` / `.to_json()`(給程式吃)。
+
+完整說明:**[docs/LAYOUT_ENGINE.md](docs/LAYOUT_ENGINE.md)**
+
+---
+
+## 巡檢與品質
+
+```bash
+python -m pytest -q                                    # 617 個測試
+python -m src.design.benchmark                         # 34 案巡檢 → report.html
+python -m src.design.optimization_benchmark --limit 8  # Before → After 比較
+```
+
+Benchmark 會輸出 `output/benchmark/report.html`(自包含,含縮圖),
+逐案列出房間比例、動線、家具、DXF 檢核結果。
+
+---
+
+## 部署(Render.com 免費方案)
+
+1. repo 推上 GitHub。
+2. [render.com](https://render.com) → **New +** → **Blueprint** → 選這個 repo
+   (自動讀 `render.yaml` + `Dockerfile`)。
+3. 在 **Environment** 填:
+   - `GEMINI_API_KEY` — Gemini 金鑰(**不要**寫進程式碼或 git)
+   - `ACCESS_CODE` — 自訂通行碼,防止陌生人消耗 API 額度
 
 > 免費方案 15 分鐘沒人用會休眠,下次打開要等約 30 秒喚醒,屬正常現象。
 
 ---
 
-## 如何確認 DXF 能被 AutoCAD 正常開啟
+## 文件
 
-1. 直接在 AutoCAD(或 DWG TrueView、BricsCAD、免費的 LibreCAD)開啟 `output/hello_cad.dxf`。
-2. 打開「圖層」面板,應看到 `軸線 / 梁 / 文字` 三個圖層,顏色與線型各不相同。
-3. 若中文顯示為問號或方框,把「文字」圖層用到的文字型指定為支援中文的字型(如「標楷體」「新細明體」或 `.shx` 中文字型)即可。
-4. 若虛線/中心線看起來像實線,在命令列輸入 `LTSCALE`,調整全域線型比例。
+| 文件 | 內容 |
+|---|---|
+| [docs/LAYOUT_ENGINE.md](docs/LAYOUT_ENGINE.md) | **格局引擎**:分析堆疊、各層 API、評分公式、規則清單 |
+| [docs/ARCHITECTURE_V0.7.md](docs/ARCHITECTURE_V0.7.md) | 架構快照:分層、誰可以寫 spec、品質基準、已知限制 |
+| [docs/DEVELOPMENT_GUIDE.md](docs/DEVELOPMENT_GUIDE.md) | 開發原則(九步流程、工程紀律) |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | 路線圖 |
+| [CHANGELOG.md](CHANGELOG.md) | 版本變更紀錄 |
+
+---
+
+## DXF 開啟提示
+
+- 中文顯示成問號/方框 → 把文字圖層的字型改成支援中文的字型(標楷體等)。
+- 虛線看起來像實線 → 命令列輸入 `LTSCALE` 調整全域線型比例。

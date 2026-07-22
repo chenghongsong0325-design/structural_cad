@@ -5,6 +5,71 @@
 
 ---
 
+## [v0.7.0] — 2026-07-22
+
+Layout Analysis Stack:圖生出來之後,能回答「這張圖好不好」。
+
+### Added(新增)
+- **Layout Validation**:`layout_validation.py` — 多邊形封閉/房間重疊/孤立房/
+  門是否連通/走道是否中斷,產出 `LayoutReport`。
+- **Connectivity Graph**:`connectivity.py` — Adjacency / Room / Space / Door
+  四張圖 + `ConnectivityReport`(Dead Room、Unreachable、Disconnected Area、
+  Orphan Door)。**分析層連通判定的單一來源**。
+- **Corridor Analyzer**:`corridor.py` — 走道寬/瓶頸/盡端/步行距離(Dijkstra)/
+  最長路徑。
+- **Layout Scoring**:`scoring.py` — 七面向加權評分(connectivity / circulation /
+  privacy / lighting / utilization / furniture / collision),權重可調。
+- **Constraint Engine**:`constraints.py` — 五條可登錄的設計常規規則,
+  條件不成立自動列入 skipped。
+- **Layout Optimizer**:`optimizer.py` — 單步微調(門位置 / 分界推移 / 房間旋轉),
+  propose → verify → accept,安全閘門把關。
+- **Optimization Benchmark**:`optimization_benchmark.py` — Before → Optimize →
+  After,輸出 JSON + 前後 DXF/PNG。
+- **Report 契約**:`report.py` 的 `JsonReport` — 所有 Report 統一提供
+  `to_dict()` / `to_json()`。
+- 文件:`docs/LAYOUT_ENGINE.md`、`docs/ARCHITECTURE_V0.7.md`;README 全面改寫
+  (原本仍停留在 Phase 0「Hello CAD」)。
+- 測試:layout_validation / connectivity / corridor / scoring / constraints /
+  optimizer / optimization_benchmark / report 序列化 / **API 契約**。
+
+### Changed(變更)
+- `layout_validation` 的連通判定改為委派 `connectivity`(單一來源),移除其重複的
+  `wall_cover` / `shared_edge` / `door_points` / `entry_index` 實作。
+- 既有四個 Report(`ResolveReport` / `LayoutReport` / `ConnectivityReport` /
+  `CorridorReport`)補上 `to_dict()` / `to_json()`;圖一律以 **edge list** 序列化,
+  避免 int-key dict 被 json 悄悄轉成字串。
+- `DEVELOPMENT_GUIDE.md` 新增「工程紀律」與「環境雷區」。
+
+### Fixed(修正)
+- 連通模型漏看「有洞口、無 DoorPlacement」的開放連通口(開放式餐廚、
+  客廳↔家庭廳),曾造成 34 案 **253 次孤立房誤報** → 修正後 0。
+- Privacy 誤把「家庭廳」當公共空間,懲罰透天臥室層的正常設計
+  (實測 bedroom→family 75 次),中位數 0 分 → 修正後 60。
+- 「臥室避免鄰近公共空間」觸發率 88%(臥室與客廳共牆在小宅無可避免)
+  → 只保留廚房/餐廳,降到 21%。
+- Optimizer 候選只認 4 點矩形房,漏掉 L 形走道/客餐廳;最窄房邊防護誤用絕對
+  門檻造成全部候選連坐否決 → 兩者修正後才真正能作用。
+
+### Benchmark
+- 34/34 生成成功;通過 20 · 警告 14 · **失敗 0**(v0.7 全程逐字不變)。
+- **Regression = 0**;DXF 100% / PNG 100%;二次 `resolve()` 100/100 層 no-op。
+- LayoutReport 乾淨樓層 100/100;ConnectivityReport 通過 100/100。
+- Optimization Benchmark(8 層 × 最多 3 步):改善 5 · **退步 0** · 平均 +0.015。
+
+### Tests
+- **617 個測試全數通過**(v0.6 為 501)。
+
+### Known Limitations
+- Optimizer 增益極小(+0.01 分),且三種微調**修不掉 constraint error**
+  (實測掃過 690/839 個門位置)——生成器輸出已接近局部最佳。
+- `room_rotation` 在軸對齊鋪滿平面上必然被否決,為日後自由平面預留。
+- L 形走道寬度被最小外接矩形高估(只會漏報,不會誤報)。
+- 6 個樓層存在 `bathroom_not_facing_dining`(衛浴直開餐廳)——分析層只回報,
+  修正屬 Generator 範疇,尚未處理。
+- 詳見 [docs/releases/v0.7.0.md](docs/releases/v0.7.0.md)。
+
+---
+
 ## [v0.6.0] — 2026-07-22
 
 Furniture Collision Engine:把碰撞從「validate 抓到就整份失敗」變成
