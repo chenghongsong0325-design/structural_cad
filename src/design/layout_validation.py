@@ -31,23 +31,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from shapely.geometry import LineString
-from shapely.geometry import Point as SPoint
-from shapely.geometry import Polygon
-from shapely.ops import substring, unary_union
+from shapely.ops import unary_union
+
+from src.design.connectivity import (
+    ON_BOUNDARY_TOL,
+    UNREACHABLE_EXEMPT,
+    build_graphs,
+    door_points,
+    reachable_from,
+    room_polys,
+)
 
 # 房間重疊容差(mm²)——與 validate_spec 的房間重疊判準一致。
 OVERLAP_TOL = 1.0
-# 兩房要算「相鄰」,共用邊界至少這麼長(mm);更短的只是角碰角。
-MIN_SHARE = 100.0
-# 沒有牆遮蔽的共用邊界要有這麼寬才算「走得過去」(mm)。門寬約 800~900。
-MIN_PASSAGE = 700.0
-# 牆中心線緩衝(mm):房間邊界與牆中心線共線,用細緩衝判斷該段有沒有牆。
-WALL_EPS = 2.0
-# 判斷點是否落在某條邊界上的距離門檻(mm)。
-ON_BOUNDARY_TOL = 1.0
-# 不要求「必須走得到」的房型:天井/挑空是室外空井,不是動線終點。
-UNREACHABLE_EXEMPT = {"patio"}
 
 
 @dataclass
@@ -95,100 +91,6 @@ class LayoutReport:
 # ---------------------------------------------------------------------------
 # 幾何輔助(全部唯讀)
 # ---------------------------------------------------------------------------
-def _room_polys(spec) -> list[Polygon]:
-    """房間多邊形;頂點不足以構成面時回**空多邊形**(不丟例外——退化的房間
-    要由 check_polygons 報成問題,而不是讓整個驗證器爆掉)。"""
-    out = []
-    for r in spec.rooms:
-        try:
-            out.append(Polygon(r.points))
-        except (ValueError, TypeError):
-            out.append(Polygon())
-    return out
-
-
-def _wall_cover(spec):
-    """牆對「通行」的遮蔽範圍(細緩衝聯集)——判斷某段共用邊界走不走得過去。
-
-    ⚠️ 關鍵:牆會擋人,但 **kind=="door" 的洞口要扣掉**——那是通道,不論它
-    有沒有掛門扇(開放式餐廚、客廳與家庭廳的連通口都是「有洞口、無 Door
-    Placement」,只看 spec.doors 會誤判成不連通)。窗不能走,故不扣。"""
-    segs = []
-    for w in spec.walls:
-        if w.start == w.end:
-            continue
-        line = LineString([w.start, w.end])
-        length = line.length
-        gaps = sorted(
-            (max(0.0, op.position - op.width / 2),
-             min(length, op.position + op.width / 2))
-            for op in w.openings if op.kind == "door")
-        pos = 0.0
-        for a, b in gaps:                            # 逐段留下「有牆」的部分
-            if a > pos:
-                segs.append(substring(line, pos, a))
-            pos = max(pos, b)
-        if pos < length:
-            segs.append(substring(line, pos, length))
-    buf = [s.buffer(WALL_EPS) for s in segs if s.length > 0]
-    return unary_union(buf) if buf else None
-
-
-def _door_points(spec) -> list:
-    """每扇門在牆中心線上的中心點(世界座標)。"""
-    pts = []
-    for dp in spec.doors:
-        w = spec.walls[dp.wall_index]
-        op = w.openings[dp.opening_index]
-        pts.append(SPoint(w.point_at(op.position)))
-    return pts
-
-
-def _shared_edge(a: Polygon, b: Polygon):
-    """兩房共用的邊界(線);沒有共用邊回 None。"""
-    if not a.intersects(b):
-        return None
-    shared = a.exterior.intersection(b.exterior)
-    if shared.is_empty or shared.length < MIN_SHARE:
-        return None
-    return shared
-
-
-def _connections(spec, polys, cover, door_pts) -> dict[int, set[int]]:
-    """房間連通圖:door(門)或 open(無牆的共用邊界夠寬)都算連通。"""
-    graph: dict[int, set[int]] = {i: set() for i in range(len(polys))}
-    for i in range(len(polys)):
-        for j in range(i + 1, len(polys)):
-            shared = _shared_edge(polys[i], polys[j])
-            if shared is None:
-                continue
-            linked = any(p.distance(shared) < ON_BOUNDARY_TOL for p in door_pts)
-            if not linked:
-                gap = shared.difference(cover) if cover is not None else shared
-                linked = (not gap.is_empty) and gap.length >= MIN_PASSAGE
-            if linked:
-                graph[i].add(j)
-                graph[j].add(i)
-    return graph
-
-
-def _entry_index(spec, polys, door_pts) -> int | None:
-    """入口房:優先玄關,其次客廳,再其次「貼著最多門」的房間。"""
-    for want in ("foyer", "living"):
-        for i, r in enumerate(spec.rooms):
-            if r.kind == want:
-                return i
-    best, best_n = None, 0
-    for i, poly in enumerate(polys):
-        if poly.is_empty:
-            continue
-        n = sum(1 for p in door_pts
-                if poly.exterior.distance(p) < ON_BOUNDARY_TOL)
-        if n > best_n:
-            best, best_n = i, n
-    return best
-
-
 # ---------------------------------------------------------------------------
 # LayoutValidator
 # ---------------------------------------------------------------------------
@@ -197,9 +99,8 @@ class LayoutValidator:
 
     def __init__(self, spec):
         self.spec = spec
-        self.polys = _room_polys(spec)
-        self.cover = _wall_cover(spec)
-        self.door_pts = _door_points(spec)
+        self.polys = room_polys(spec)
+        self.door_pts = door_points(spec)
 
     # ── 1. Room Polygon 是否封閉 ──────────────────────────────────────────
     def check_polygons(self) -> list[LayoutIssue]:
@@ -234,23 +135,18 @@ class LayoutValidator:
 
     # ── 3. 是否存在孤立 Room ──────────────────────────────────────────────
     def check_isolated(self) -> list[LayoutIssue]:
+        """連通性判定委派給 Connectivity Graph(單一來源,不在此重複實作)。"""
         if not self.polys:
             return []
-        graph = _connections(self.spec, self.polys, self.cover, self.door_pts)
-        entry = _entry_index(self.spec, self.polys, self.door_pts)
-        if entry is None:
+        graphs = build_graphs(self.spec)
+        if graphs.entry is None:
             return [LayoutIssue("isolated", "warn", "找不到入口房間,略過連通判定")]
-        seen, stack = {entry}, [entry]
-        while stack:                                # BFS/DFS 走訪
-            for nxt in graph[stack.pop()]:
-                if nxt not in seen:
-                    seen.add(nxt)
-                    stack.append(nxt)
+        seen = reachable_from(graphs, graphs.entry)
         out = []
         for i, r in enumerate(self.spec.rooms):
             if i in seen or r.kind in UNREACHABLE_EXEMPT:
                 continue
-            why = "沒有任何門或開口相連" if not graph[i] else "與入口不連通"
+            why = "沒有任何門或開口相連" if not graphs.room_graph[i] else "與入口不連通"
             out.append(LayoutIssue("isolated", "error", f"{r.name} 走不到({why})"))
         return out
 
