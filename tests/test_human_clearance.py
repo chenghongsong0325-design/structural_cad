@@ -34,7 +34,8 @@ from src.design.layout_generator import HouseBrief, generate_floor_plan
 from src.drafting.fixtures import Counter, FixturePlacement
 
 ALL_KEYS = ("wall_distance", "window_distance", "walkway", "symmetry",
-            "room_usability", "constraint", "pair_constraint", "human_clearance")
+            "room_usability", "constraint", "pair_constraint", "human_clearance",
+            "room_semantic")
 
 LISTED_TYPES = ("bed", "wardrobe", "desk", "chair", "sofa", "dining_table",
                 "toilet", "shower", "sink", "washer", "fridge",
@@ -279,7 +280,7 @@ def test_human_is_soft_not_a_hard_gate():
     heavy = PlacementWeights(wall_distance=0.0, window_distance=0.0,
                              walkway=0.0, symmetry=0.0, room_usability=0.0,
                              constraint=0.0, pair_constraint=0.0,
-                             human_clearance=1000.0)
+                             human_clearance=1000.0, room_semantic=0.0)
     for kind, name in (("bedroom", "wardrobe"), ("living", "sofa3")):
         res = opt.place(name, _room(spec, kind), weights=heavy)
         assert res.found
@@ -304,7 +305,7 @@ def test_human_weight_dominates_ranking():
     only = PlacementWeights(wall_distance=0.0, window_distance=0.0,
                             walkway=0.0, symmetry=0.0, room_usability=0.0,
                             constraint=0.0, pair_constraint=0.0,
-                            human_clearance=1.0)
+                            human_clearance=1.0, room_semantic=0.0)
     best_human = -1.0
     for placement in opt.candidates("wardrobe", room):
         c = opt._score(placement, room, room_poly, None)

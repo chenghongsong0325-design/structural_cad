@@ -31,7 +31,7 @@ from src.drafting.fixtures import FixturePlacement, fixture_footprint
 
 SOFT_CRITERIA = ("wall_distance", "window_distance", "walkway",
                  "symmetry", "room_usability", "constraint", "pair_constraint",
-                 "human_clearance")
+                 "human_clearance", "room_semantic")
 
 
 def _spec():
@@ -114,7 +114,8 @@ def test_best_has_the_highest_total():
                                              window_distance=0.0, walkway=0.0,
                                              symmetry=0.0, room_usability=0.0,
                                              constraint=0.0, pair_constraint=0.0,
-                                             human_clearance=0.0))
+                                             human_clearance=0.0,
+                                             room_semantic=0.0))
     assert abs(res.best.total - best_wall) < 1e-6
 
 

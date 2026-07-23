@@ -38,6 +38,7 @@ from src.design.collision.furniture_pair_constraint import (
     PairTarget,
 )
 from src.design.collision.human_clearance import HumanClearanceEvaluator
+from src.design.semantic.room_semantic import RoomSemanticEvaluator
 from src.design.collision.geometry import (
     WINDOW_CLEARANCE_MM,
     door_swing_obstacles,
@@ -48,6 +49,7 @@ from src.drafting.fixtures import (
     FIXTURE_SIZES,
     Counter,
     FixturePlacement,
+    counter_footprint,
     fixture_footprint,
 )
 from src.drafting.fixtures import _CENTER_ORIGIN as CENTER_ORIGIN
@@ -67,9 +69,10 @@ class PlacementWeights(JsonReport):
     constraint(Phase 6-4-1)= evaluate_constraint 的**單件**家具偏好(靠牆 /
     朝向 / 前方淨空);pair_constraint(Phase 6-4-2)= 家具**之間**的關聯偏好
     (沙發面向電視、床頭櫃貼床、書桌靠窗…);human_clearance(Phase 6-5)= 人體
-    活動空間(開門 / 拉椅 / 上下床 / 通行的活動區夠不夠、有沒有被佔)。三者都是
-    **軟分數**,違反只扣分、不淘汰候選——合法與否仍全由 collision 硬閘門決定。
-    權重欄名與 score key 一致(比照 wall_distance)。
+    活動空間(開門 / 拉椅 / 上下床 / 通行的活動區夠不夠、有沒有被佔);
+    room_semantic(Phase 6-6)= 房間功能語意(這房間該有的家具有沒有、有沒有
+    不該出現的)。這些都是**軟分數**,違反只扣分、不淘汰候選——合法與否仍全由
+    collision 硬閘門決定。權重欄名與 score key 一致(比照 wall_distance)。
     """
 
     wall_distance: float = 1.5
@@ -80,6 +83,7 @@ class PlacementWeights(JsonReport):
     constraint: float = 0.20
     pair_constraint: float = 0.15
     human_clearance: float = 0.20
+    room_semantic: float = 0.15
 
     def as_map(self) -> dict:
         return {"wall_distance": self.wall_distance,
@@ -88,7 +92,8 @@ class PlacementWeights(JsonReport):
                 "room_usability": self.room_usability,
                 "constraint": self.constraint,
                 "pair_constraint": self.pair_constraint,
-                "human_clearance": self.human_clearance}
+                "human_clearance": self.human_clearance,
+                "room_semantic": self.room_semantic}
 
     def to_dict(self) -> dict:
         return {k: float(v) for k, v in self.as_map().items()}
@@ -133,6 +138,7 @@ class PlacementResult(JsonReport):
     constraint_score: float = 0.0
     pair_constraint_score: float = 0.0
     human_clearance_score: float = 0.0
+    room_semantic_score: float = 0.0
 
     @property
     def found(self) -> bool:
@@ -147,6 +153,7 @@ class PlacementResult(JsonReport):
             "constraint_score": round(self.constraint_score, 1),
             "pair_constraint_score": round(self.pair_constraint_score, 1),
             "human_clearance_score": round(self.human_clearance_score, 1),
+            "room_semantic_score": round(self.room_semantic_score, 1),
             "best": self.best.to_dict() if self.best else None,
         }
 
@@ -189,6 +196,9 @@ class FurniturePlacementOptimizer:
         self.pair_targets = self._build_pair_targets(spec)
         # 人體活動空間(Phase 6-5):既有家具當「佔用者」。
         self.human_evaluator = HumanClearanceEvaluator()
+        # 房間功能語意(Phase 6-6):看整房家具清單(候選 + 該房既有)。
+        self.semantic_evaluator = RoomSemanticEvaluator()
+        self._room_fixtures: dict[int, list] = {}
 
     @staticmethod
     def _build_pair_targets(spec) -> list:
@@ -319,6 +329,40 @@ class FurniturePlacementOptimizer:
         return self.human_evaluator.evaluate_human_clearance(
             placement, room, placed).score
 
+    def _existing_in_room(self, room) -> list:
+        """該房間裡既有的家具(形心落在房內);每個房間算一次後快取。"""
+        key = id(room)
+        cached = self._room_fixtures.get(key)
+        if cached is None:
+            rp = Polygon(room.points)
+            cached = []
+            for f in self.spec.fixtures:
+                if isinstance(f, Counter):
+                    c = Polygon(counter_footprint(f)).centroid
+                elif isinstance(f, FixturePlacement):
+                    c = Polygon(fixture_footprint(f)).centroid
+                else:
+                    continue
+                if rp.contains(c):
+                    cached.append(f)
+            self._room_fixtures[key] = cached
+        return cached
+
+    def _score_semantic(self, placement, room, ignore) -> float:
+        """房間功能語意(Phase 6-6)→ 0~100 軟分數。
+
+        ⚠️ **軟分數,不是硬閘門**:房間該有/不該有的家具只影響分數;合法與否仍全
+        由 collision 決定。用「該房既有家具(略過 ignore)+ 這個候選」當整房清單評。"""
+        skip = set()
+        if ignore is not None:
+            items = ignore if isinstance(ignore, (list, tuple, set)) else [ignore]
+            skip = {id(x) for x in items}
+        placements = [f for f in self._existing_in_room(room)
+                      if id(f) not in skip and f is not placement]
+        placements.append(placement)
+        return self.semantic_evaluator.evaluate_room_semantics(
+            room, placements).score
+
     def _score_usability(self, poly, room_poly) -> float:
         """留下的可用地坪:家具越靠房間外緣、中央越開闊 = 越好用。
 
@@ -349,6 +393,7 @@ class FurniturePlacementOptimizer:
             "constraint": self._score_constraint(placement, room),
             "pair_constraint": self._score_pair(placement, room, ignore),
             "human_clearance": self._score_human(placement, room, ignore),
+            "room_semantic": self._score_semantic(placement, room, ignore),
         }
         return cand
 
@@ -383,6 +428,7 @@ class FurniturePlacementOptimizer:
             result.constraint_score = best.scores.get("constraint", 0.0)
             result.pair_constraint_score = best.scores.get("pair_constraint", 0.0)
             result.human_clearance_score = best.scores.get("human_clearance", 0.0)
+            result.room_semantic_score = best.scores.get("room_semantic", 0.0)
         return result
 
 
