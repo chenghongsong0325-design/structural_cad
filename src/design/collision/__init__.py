@@ -50,6 +50,13 @@ from src.design.collision.furniture_constraint import (
     get_constraint,
     wall_against,
 )
+from src.design.collision.furniture_pair_constraint import (
+    DEFAULT_PAIR_RULES,
+    FurniturePairEvaluator,
+    FurniturePairRule,
+    PairConstraintResult,
+    PairTarget,
+)
 from src.design.collision.obstacle import Obstacle
 from src.design.collision.placement_optimizer import (
     FurniturePlacementOptimizer,
@@ -67,4 +74,6 @@ __all__ = [
     "PlacementWeights",
     "FurnitureConstraint", "ConstraintResult", "FURNITURE_CONSTRAINTS",
     "get_constraint", "evaluate_constraint", "facing_of", "wall_against",
+    "FurniturePairRule", "FurniturePairEvaluator", "PairConstraintResult",
+    "PairTarget", "DEFAULT_PAIR_RULES",
 ]

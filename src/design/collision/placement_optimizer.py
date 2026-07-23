@@ -33,6 +33,10 @@ from src.design.collision.furniture_engine import (
     TALL_FIXTURES,
     FurnitureCollisionEngine,
 )
+from src.design.collision.furniture_pair_constraint import (
+    FurniturePairEvaluator,
+    PairTarget,
+)
 from src.design.collision.geometry import (
     WINDOW_CLEARANCE_MM,
     door_swing_obstacles,
@@ -41,6 +45,7 @@ from src.design.collision.geometry import (
 from src.design.report import JsonReport
 from src.drafting.fixtures import (
     FIXTURE_SIZES,
+    Counter,
     FixturePlacement,
     fixture_footprint,
 )
@@ -56,11 +61,13 @@ WALKWAY_IDEAL_MM = 1200.0
 
 @dataclass
 class PlacementWeights(JsonReport):
-    """六個軟指標的權重(collision 是硬閘門,不在此列)。
+    """七個軟指標的權重(collision 是硬閘門,不在此列)。
 
-    constraint 是 Phase 6-4-1 併入的第六項:evaluate_constraint 的家具擺放偏好
-    (靠牆 / 朝向 / 前方淨空)。它是**軟分數**,違反只扣分、不淘汰候選——是否
-    合法仍全由 collision 硬閘門決定。權重欄名與 score key 一致(比照 wall_distance)。
+    constraint(Phase 6-4-1)= evaluate_constraint 的**單件**家具偏好(靠牆 /
+    朝向 / 前方淨空);pair_constraint(Phase 6-4-2)= 家具**之間**的關聯偏好
+    (沙發面向電視、床頭櫃貼床、書桌靠窗…)。兩者都是**軟分數**,違反只扣分、
+    不淘汰候選——合法與否仍全由 collision 硬閘門決定。權重欄名與 score key 一致
+    (比照 wall_distance)。
     """
 
     wall_distance: float = 1.5
@@ -69,13 +76,15 @@ class PlacementWeights(JsonReport):
     symmetry: float = 1.0
     room_usability: float = 1.5
     constraint: float = 0.20
+    pair_constraint: float = 0.15
 
     def as_map(self) -> dict:
         return {"wall_distance": self.wall_distance,
                 "window_distance": self.window_distance,
                 "walkway": self.walkway, "symmetry": self.symmetry,
                 "room_usability": self.room_usability,
-                "constraint": self.constraint}
+                "constraint": self.constraint,
+                "pair_constraint": self.pair_constraint}
 
     def to_dict(self) -> dict:
         return {k: float(v) for k, v in self.as_map().items()}
@@ -118,6 +127,7 @@ class PlacementResult(JsonReport):
     candidates: int = 0
     valid_candidates: int = 0
     constraint_score: float = 0.0
+    pair_constraint_score: float = 0.0
 
     @property
     def found(self) -> bool:
@@ -130,6 +140,7 @@ class PlacementResult(JsonReport):
             "candidates": self.candidates,
             "valid_candidates": self.valid_candidates,
             "constraint_score": round(self.constraint_score, 1),
+            "pair_constraint_score": round(self.pair_constraint_score, 1),
             "best": self.best.to_dict() if self.best else None,
         }
 
@@ -167,6 +178,23 @@ class FurniturePlacementOptimizer:
         self.engine = FurnitureCollisionEngine(spec)
         self.doors = door_swing_obstacles(spec)
         self.windows = window_obstacles(spec)
+        # 家具關聯(Phase 6-4-2):既有家具 + 空間目標(窗/廚房/陽台…)算一次。
+        self.pair_evaluator = FurniturePairEvaluator()
+        self.pair_targets = self._build_pair_targets(spec)
+
+    @staticmethod
+    def _build_pair_targets(spec) -> list:
+        """把 spec 的既有家具與空間包成 pair 目標:家具原樣;窗以形心、房間
+        以形心 + 用途類別(kitchen/balcony/…)包成 PairTarget。"""
+        targets: list = [fx for fx in spec.fixtures
+                         if isinstance(fx, (FixturePlacement, Counter))]
+        for o in window_obstacles(spec):
+            c = o.poly.centroid
+            targets.append(PairTarget("window", (c.x, c.y)))
+        for r in spec.rooms:
+            c = Polygon(r.points).centroid
+            targets.append(PairTarget(r.kind, (c.x, c.y)))
+        return targets
 
     # ── 產生候選 ──────────────────────────────────────────────────────────
     def candidates(self, name: str, room) -> list[FixturePlacement]:
@@ -253,6 +281,22 @@ class FurniturePlacementOptimizer:
             score -= 40.0
         return _clamp(score)
 
+    def _score_pair(self, placement, room, ignore) -> float:
+        """家具關聯偏好(Phase 6-4-2)→ 0~100 軟分數。
+
+        ⚠️ **軟分數,不是硬閘門**:違反只扣分;合法與否仍全由 collision 決定。
+
+        用既有家具 + 空間目標(pair_targets)當 placed_furniture,略過 ignore
+        指定的家具(重選自己時不拿自己當關聯對象)。"""
+        skip = set()
+        if ignore is not None:
+            items = ignore if isinstance(ignore, (list, tuple, set)) else [ignore]
+            skip = {id(x) for x in items}
+        placed = [t for t in self.pair_targets
+                  if id(t) not in skip and t is not placement]
+        return self.pair_evaluator.evaluate_pair_constraints(
+            placement, room, placed).score
+
     def _score_usability(self, poly, room_poly) -> float:
         """留下的可用地坪:家具越靠房間外緣、中央越開闊 = 越好用。
 
@@ -281,6 +325,7 @@ class FurniturePlacementOptimizer:
             "symmetry": self._score_symmetry(poly, room, placement.rotation),
             "room_usability": self._score_usability(poly, room_poly),
             "constraint": self._score_constraint(placement, room),
+            "pair_constraint": self._score_pair(placement, room, ignore),
         }
         return cand
 
@@ -313,6 +358,7 @@ class FurniturePlacementOptimizer:
         result.best = best
         if best is not None:
             result.constraint_score = best.scores.get("constraint", 0.0)
+            result.pair_constraint_score = best.scores.get("pair_constraint", 0.0)
         return result
 
 
