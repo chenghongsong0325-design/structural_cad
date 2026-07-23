@@ -22,6 +22,11 @@ from src.design.layout.multi_room_optimizer import (
     MultiRoomResult,
     RoomScore,
 )
+from src.design.layout.auto_layout_engine import (
+    WEIGHT_PROFILES,
+    AutoLayoutEngine,
+    AutoLayoutResult,
+)
 
 __all__ = [
     "LayoutScore",
@@ -34,4 +39,7 @@ __all__ = [
     "MultiRoomResult",
     "RoomScore",
     "ROOM_ORDER",
+    "AutoLayoutEngine",
+    "AutoLayoutResult",
+    "WEIGHT_PROFILES",
 ]
