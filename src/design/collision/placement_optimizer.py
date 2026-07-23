@@ -37,6 +37,7 @@ from src.design.collision.furniture_pair_constraint import (
     FurniturePairEvaluator,
     PairTarget,
 )
+from src.design.collision.human_clearance import HumanClearanceEvaluator
 from src.design.collision.geometry import (
     WINDOW_CLEARANCE_MM,
     door_swing_obstacles,
@@ -65,9 +66,10 @@ class PlacementWeights(JsonReport):
 
     constraint(Phase 6-4-1)= evaluate_constraint 的**單件**家具偏好(靠牆 /
     朝向 / 前方淨空);pair_constraint(Phase 6-4-2)= 家具**之間**的關聯偏好
-    (沙發面向電視、床頭櫃貼床、書桌靠窗…)。兩者都是**軟分數**,違反只扣分、
-    不淘汰候選——合法與否仍全由 collision 硬閘門決定。權重欄名與 score key 一致
-    (比照 wall_distance)。
+    (沙發面向電視、床頭櫃貼床、書桌靠窗…);human_clearance(Phase 6-5)= 人體
+    活動空間(開門 / 拉椅 / 上下床 / 通行的活動區夠不夠、有沒有被佔)。三者都是
+    **軟分數**,違反只扣分、不淘汰候選——合法與否仍全由 collision 硬閘門決定。
+    權重欄名與 score key 一致(比照 wall_distance)。
     """
 
     wall_distance: float = 1.5
@@ -77,6 +79,7 @@ class PlacementWeights(JsonReport):
     room_usability: float = 1.5
     constraint: float = 0.20
     pair_constraint: float = 0.15
+    human_clearance: float = 0.20
 
     def as_map(self) -> dict:
         return {"wall_distance": self.wall_distance,
@@ -84,7 +87,8 @@ class PlacementWeights(JsonReport):
                 "walkway": self.walkway, "symmetry": self.symmetry,
                 "room_usability": self.room_usability,
                 "constraint": self.constraint,
-                "pair_constraint": self.pair_constraint}
+                "pair_constraint": self.pair_constraint,
+                "human_clearance": self.human_clearance}
 
     def to_dict(self) -> dict:
         return {k: float(v) for k, v in self.as_map().items()}
@@ -128,6 +132,7 @@ class PlacementResult(JsonReport):
     valid_candidates: int = 0
     constraint_score: float = 0.0
     pair_constraint_score: float = 0.0
+    human_clearance_score: float = 0.0
 
     @property
     def found(self) -> bool:
@@ -141,6 +146,7 @@ class PlacementResult(JsonReport):
             "valid_candidates": self.valid_candidates,
             "constraint_score": round(self.constraint_score, 1),
             "pair_constraint_score": round(self.pair_constraint_score, 1),
+            "human_clearance_score": round(self.human_clearance_score, 1),
             "best": self.best.to_dict() if self.best else None,
         }
 
@@ -181,6 +187,8 @@ class FurniturePlacementOptimizer:
         # 家具關聯(Phase 6-4-2):既有家具 + 空間目標(窗/廚房/陽台…)算一次。
         self.pair_evaluator = FurniturePairEvaluator()
         self.pair_targets = self._build_pair_targets(spec)
+        # 人體活動空間(Phase 6-5):既有家具當「佔用者」。
+        self.human_evaluator = HumanClearanceEvaluator()
 
     @staticmethod
     def _build_pair_targets(spec) -> list:
@@ -297,6 +305,20 @@ class FurniturePlacementOptimizer:
         return self.pair_evaluator.evaluate_pair_constraints(
             placement, room, placed).score
 
+    def _score_human(self, placement, room, ignore) -> float:
+        """人體活動空間(Phase 6-5)→ 0~100 軟分數。
+
+        ⚠️ **軟分數,不是硬閘門**:活動區缺/被佔只扣分;合法與否仍全由 collision
+        決定。既有家具(spec.fixtures)當佔用者,略過 ignore 指定的那些。"""
+        skip = set()
+        if ignore is not None:
+            items = ignore if isinstance(ignore, (list, tuple, set)) else [ignore]
+            skip = {id(x) for x in items}
+        placed = [f for f in self.spec.fixtures
+                  if id(f) not in skip and f is not placement]
+        return self.human_evaluator.evaluate_human_clearance(
+            placement, room, placed).score
+
     def _score_usability(self, poly, room_poly) -> float:
         """留下的可用地坪:家具越靠房間外緣、中央越開闊 = 越好用。
 
@@ -326,6 +348,7 @@ class FurniturePlacementOptimizer:
             "room_usability": self._score_usability(poly, room_poly),
             "constraint": self._score_constraint(placement, room),
             "pair_constraint": self._score_pair(placement, room, ignore),
+            "human_clearance": self._score_human(placement, room, ignore),
         }
         return cand
 
@@ -359,6 +382,7 @@ class FurniturePlacementOptimizer:
         if best is not None:
             result.constraint_score = best.scores.get("constraint", 0.0)
             result.pair_constraint_score = best.scores.get("pair_constraint", 0.0)
+            result.human_clearance_score = best.scores.get("human_clearance", 0.0)
         return result
 
 

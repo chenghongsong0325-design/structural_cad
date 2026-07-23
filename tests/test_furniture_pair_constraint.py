@@ -45,7 +45,7 @@ from src.design.layout_generator import HouseBrief, generate_floor_plan
 from src.drafting.fixtures import FixturePlacement
 
 ALL_KEYS = ("wall_distance", "window_distance", "walkway", "symmetry",
-            "room_usability", "constraint", "pair_constraint")
+            "room_usability", "constraint", "pair_constraint", "human_clearance")
 
 
 class _Room:
@@ -338,7 +338,8 @@ def test_pair_is_soft_not_a_hard_gate():
     eng = FurnitureCollisionEngine(spec)
     heavy = PlacementWeights(wall_distance=0.0, window_distance=0.0,
                              walkway=0.0, symmetry=0.0, room_usability=0.0,
-                             constraint=0.0, pair_constraint=1000.0)
+                             constraint=0.0, pair_constraint=1000.0,
+                             human_clearance=0.0)
     for kind, name in (("living", "sofa3"), ("bedroom", "wardrobe")):
         res = opt.place(name, _room(spec, kind), weights=heavy)
         assert res.found
@@ -367,7 +368,8 @@ def test_pair_weight_dominates_ranking():
     room_poly = Polygon(living.points)
     only = PlacementWeights(wall_distance=0.0, window_distance=0.0,
                             walkway=0.0, symmetry=0.0, room_usability=0.0,
-                            constraint=0.0, pair_constraint=1.0)
+                            constraint=0.0, pair_constraint=1.0,
+                            human_clearance=0.0)
     best_pair = -1.0
     for placement in opt.candidates("sofa3", living):
         c = opt._score(placement, living, room_poly, None)

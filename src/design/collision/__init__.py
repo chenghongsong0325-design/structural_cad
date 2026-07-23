@@ -57,6 +57,12 @@ from src.design.collision.furniture_pair_constraint import (
     PairConstraintResult,
     PairTarget,
 )
+from src.design.collision.human_clearance import (
+    HUMAN_CLEARANCE_RULES,
+    HumanClearanceEvaluator,
+    HumanClearanceResult,
+    HumanClearanceRule,
+)
 from src.design.collision.obstacle import Obstacle
 from src.design.collision.placement_optimizer import (
     FurniturePlacementOptimizer,
@@ -76,4 +82,6 @@ __all__ = [
     "get_constraint", "evaluate_constraint", "facing_of", "wall_against",
     "FurniturePairRule", "FurniturePairEvaluator", "PairConstraintResult",
     "PairTarget", "DEFAULT_PAIR_RULES",
+    "HumanClearanceRule", "HumanClearanceEvaluator", "HumanClearanceResult",
+    "HUMAN_CLEARANCE_RULES",
 ]

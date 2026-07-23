@@ -28,7 +28,8 @@ from src.design.layout_generator import HouseBrief, generate_floor_plan
 from src.drafting.fixtures import FixturePlacement
 
 ALL_KEYS = ("wall_distance", "window_distance", "walkway",
-            "symmetry", "room_usability", "constraint", "pair_constraint")
+            "symmetry", "room_usability", "constraint", "pair_constraint",
+            "human_clearance")
 
 
 def _spec():
@@ -140,7 +141,8 @@ def test_constraint_weight_dominates_ranking():
     room_poly = Polygon(room.points)
     only = PlacementWeights(wall_distance=0.0, window_distance=0.0,
                             walkway=0.0, symmetry=0.0, room_usability=0.0,
-                            constraint=1.0, pair_constraint=0.0)
+                            constraint=1.0, pair_constraint=0.0,
+                            human_clearance=0.0)
     best_constraint = -1.0
     for placement in opt.candidates("wardrobe", room):
         c = opt._score(placement, room, room_poly, None)
