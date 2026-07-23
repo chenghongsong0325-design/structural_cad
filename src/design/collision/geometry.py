@@ -21,8 +21,12 @@ from src.design.collision.obstacle import (
     STAIR,
     VOID,
     WALL,
+    WINDOW,
     Obstacle,
 )
+
+# 窗前淨空深度(mm):窗台前這段距離內不該有高家具擋光/擋景。
+WINDOW_CLEARANCE_MM = 300.0
 from src.drafting.fixtures import (
     Counter,
     FixturePlacement,
@@ -150,6 +154,45 @@ def void_obstacles(spec) -> list[Obstacle]:
     room=None、連穿牆都驗不到;加入 VOID 後這種家具才會被抓出來。"""
     return [Obstacle(poly=Polygon(r.points), kind=VOID, ref=r, tag=r.name)
             for r in spec.rooms if r.kind == "patio"]
+
+
+def window_obstacles(spec, depth: float = WINDOW_CLEARANCE_MM) -> list[Obstacle]:
+    """窗前淨空區 → static Obstacle(kind=WINDOW),v0.7 Phase 6-1。
+
+    每扇窗在**室內側**拉一塊 (窗寬 × depth) 的矩形。室內側靠「往法線方向探
+    100mm 看落在哪個房間」判定,不必假設牆的內外方向。
+
+    ⚠️ **只給 FurnitureCollisionEngine 用,不在 collect_active 裡**:實測把窗前
+    淨空當成通用硬障礙會擋掉 369~449 件家具——床頭靠窗、沙發靠窗、流理台在窗下
+    (水槽對窗)都是**正確**擺法。真正該擋的只有「高家具擋窗」,那個判斷在
+    furniture_engine 以 TALL_FIXTURES 篩選,不在這裡。"""
+    polys = _room_polys(spec)
+    out: list[Obstacle] = []
+    for w in spec.walls:
+        ux, uy = w.unit_vector
+        nx, ny = w.normal_vector
+        for op in w.openings:
+            if op.kind != "window":
+                continue
+            cx, cy = w.point_at(op.position)
+            side = 0
+            for s in (1, -1):                       # 哪一側是室內
+                probe = SPoint(cx + nx * 100 * s, cy + ny * 100 * s)
+                if any(p.contains(probe) for p in polys if not p.is_empty):
+                    side = s
+                    break
+            if side == 0:
+                continue                            # 兩側都不是房間(外牆對戶外)
+            half = op.width / 2
+            dx, dy = nx * depth * side, ny * depth * side
+            out.append(Obstacle(
+                poly=Polygon([
+                    (cx - ux * half, cy - uy * half),
+                    (cx + ux * half, cy + uy * half),
+                    (cx + ux * half + dx, cy + uy * half + dy),
+                    (cx - ux * half + dx, cy - uy * half + dy)]),
+                kind=WINDOW, ref=op, tag="窗前淨空"))
+    return out
 
 
 def stair_obstacles(spec) -> list[Obstacle]:

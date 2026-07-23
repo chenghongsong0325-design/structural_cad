@@ -36,10 +36,16 @@ from src.design.collision.engine import (
     ResolveReport,
     resolve_collisions,
 )
+from src.design.collision.furniture_engine import (
+    TALL_FIXTURES,
+    CollisionResult,
+    FurnitureCollisionEngine,
+)
 from src.design.collision.obstacle import Obstacle
 
 __all__ = [
     "Obstacle", "Collision", "find_collisions", "collision_problems",
     "column_contacts",
     "CollisionEngine", "ResolveReport", "resolve_collisions",
+    "FurnitureCollisionEngine", "CollisionResult", "TALL_FIXTURES",
 ]
