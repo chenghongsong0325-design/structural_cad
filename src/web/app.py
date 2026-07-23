@@ -51,6 +51,7 @@ from src.design.layout_generator import (
     house_design_note,
     max_house_bedrooms,
 )
+from src.design.layout.auto_layout_engine import AutoLayoutEngine
 from src.design.metrics import building_metrics
 from src.design.nl_parser import (
     building_brief_from_data,
@@ -75,6 +76,13 @@ class GenerateRequest(BaseModel):
     # 多輪修改(E4):帶上一輪的需求 dict(回應裡的 brief_data)→ text 視為
     # 「修改指令」,以 base 為底合併;不帶 = 全新需求。
     base: Optional[dict] = None
+
+
+class OptimizeRequest(BaseModel):
+    """家具自動配置 + 評分(Phase 6-9)—— 對已生成的方案重算最佳家具擺位。"""
+
+    job_id: str
+    code: str = ""
 
 
 def _has_api_key() -> bool:
@@ -259,6 +267,73 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             "files": [s.filename for s in sheets],
         }, ensure_ascii=False), encoding="utf-8")
         return result
+
+    @app.post("/api/optimize")
+    def optimize(req: OptimizeRequest) -> dict:
+        """家具自動配置 + 評分(Phase 6-9)。
+
+        拿已生成方案的需求(brief_data + seed)重建同一棟樓,跑 AutoLayoutEngine
+        把每間房的家具重新擺到最佳位,回傳整棟評分(overall/grade/各房)與
+        「最佳化後」的每層 SVG/DXF。**不動原方案的檔案**,最佳化圖另存 opt_ 前綴。
+        """
+        access_code = os.environ.get("ACCESS_CODE")
+        if access_code and req.code != access_code:
+            raise HTTPException(403, "通行碼錯誤")
+
+        if not _JOB_ID_RE.fullmatch(req.job_id):
+            raise HTTPException(404, "找不到方案")
+        job_dir = JOBS_DIR / req.job_id
+        result_path = job_dir / "result.json"
+        if not result_path.is_file():
+            raise HTTPException(404, "方案不存在(可能已清除,請重新生成)")
+
+        saved = json.loads(result_path.read_text(encoding="utf-8"))
+        brief_data = saved.get("brief_data")
+        if not brief_data:
+            raise HTTPException(422, "此方案無法重算(缺需求資料),請重新生成")
+
+        # 用同一份需求 + seed 重建同一棟樓(決定性),再跑家具最佳化。
+        try:
+            brief = building_brief_from_data(
+                brief_data, seed=saved.get("seed", 0))
+            building = generate_building(brief)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+        auto = AutoLayoutEngine().generate(building, name=req.job_id)
+        sheets = build_sheets(auto.spec)
+
+        out_sheets = []
+        for s in sheets:
+            fname = f"opt_{s.filename}"
+            s.doc.saveas(job_dir / fname)
+            out_sheets.append({
+                "label": s.label,
+                "kind": s.kind,
+                "svg": sheet_svg(s),
+                "dxf": f"/api/jobs/{req.job_id}/{fname}",
+            })
+        with zipfile.ZipFile(job_dir / "opt_all_dxf.zip", "w",
+                             zipfile.ZIP_DEFLATED) as zf:
+            for s in sheets:
+                zf.write(job_dir / f"opt_{s.filename}", f"opt_{s.filename}")
+
+        return {
+            "job_id": req.job_id,
+            "overall_score": round(auto.overall_score, 1),
+            "grade": auto.grade,
+            "sub_scores": {k: round(v, 1)
+                           for k, v in auto.layout_score.sub_scores.items()},
+            "floor_scores": auto.floor_scores,
+            "rooms": [{
+                "room": rs.room, "kind": rs.kind,
+                "furniture_count": rs.furniture_count,
+                "replaced": rs.replaced,
+                "semantic": round(rs.semantic, 1),
+            } for rs in auto.placement_results],
+            "sheets": out_sheets,
+            "zip": f"/api/jobs/{req.job_id}/opt_all_dxf.zip",
+        }
 
     @app.get("/api/jobs/{job_id}/pdf")
     def job_pdf(job_id: str) -> FileResponse:

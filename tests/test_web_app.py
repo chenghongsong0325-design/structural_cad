@@ -267,3 +267,44 @@ def test_modify_uses_base_and_keeps_seed() -> None:
     assert "修改指令:改二房" in sent["contents"]         # 指令有送到
     assert "site_width_m" in sent["contents"]            # 原需求 JSON 也在
     assert "修改模式" in sent["config"]["system_instruction"]
+
+
+# ---------------------------------------------------------------------------
+# 5) 家具自動配置 + 評分(Phase 6-9)
+# ---------------------------------------------------------------------------
+def test_optimize_returns_score_and_optimized_sheets() -> None:
+    """先生成一個方案,再對它跑家具最佳化 → 回評分 + 最佳化後 SVG/DXF。"""
+    c = _client(_payload())
+    gen = c.post("/api/generate", json={"text": "基地16×14米,三房"}).json()
+    r = c.post("/api/optimize", json={"job_id": gen["job_id"]})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["grade"] in {"A+", "A", "B", "C", "D"}
+    assert 0.0 <= d["overall_score"] <= 100.0
+    assert len(d["sub_scores"]) == 12                 # 12 個子分數
+    assert d["rooms"]                                  # 各房重擺概況
+    # 最佳化後的圖能顯示、DXF/zip 抓得到,且檔名與原始不同(opt_ 前綴)
+    assert d["sheets"] and "<svg" in d["sheets"][0]["svg"]
+    assert "opt_" in d["sheets"][0]["dxf"]
+    assert c.get(d["sheets"][0]["dxf"]).status_code == 200
+    assert c.get(d["zip"]).status_code == 200
+
+
+def test_optimize_unknown_job_is_404() -> None:
+    c = _client(_payload())
+    r = c.post("/api/optimize", json={"job_id": "deadbeefcafe"})
+    assert r.status_code == 404
+
+
+def test_optimize_bad_job_id_is_404() -> None:
+    """job_id 白名單:亂七八糟的字串(路徑跳脫)一律 404。"""
+    c = _client(_payload())
+    r = c.post("/api/optimize", json={"job_id": "../secrets"})
+    assert r.status_code == 404
+
+
+def test_optimize_wrong_access_code_is_403(monkeypatch) -> None:
+    monkeypatch.setenv("ACCESS_CODE", "1234")
+    c = _client(_payload())
+    r = c.post("/api/optimize", json={"job_id": "deadbeefcafe", "code": "x"})
+    assert r.status_code == 403

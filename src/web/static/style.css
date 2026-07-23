@@ -204,3 +204,65 @@ button.ghost:disabled { opacity: .55; cursor: wait; }
   background: var(--panel);
 }
 .hidden { display: none !important; }
+
+/* ── 家具自動配置評分卡(Phase 6-9)──────────────────────────────── */
+.layout-score {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  margin-top: 12px;
+}
+.score-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.score-head .download { margin-left: auto; }
+.grade {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #2f7fd6;
+  color: #fff;
+  min-width: 54px;
+  text-align: center;
+}
+.grade-Aplus, .grade-A { background: #2f9e6f; }   /* 綠:優 */
+.grade-B { background: #2f7fd6; }                 /* 藍:良 */
+.grade-C { background: #c8912f; }                 /* 琥珀:可 */
+.grade-D { background: #a05252; }                 /* 紅:待改進 */
+.score-num b { font-size: 24px; }
+.score-num span { display: block; color: var(--muted); font-size: 12px; }
+.subs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0 4px;
+}
+.subs .sub {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.subs .sub b { color: var(--text); margin-right: 4px; font-size: 13px; }
+.rooms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+.room-chip {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.room-chip em { color: var(--muted); font-style: normal; margin-left: 6px; }
