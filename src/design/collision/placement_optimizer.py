@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from shapely.geometry import Point as SPoint
 from shapely.geometry import Polygon
 
+from src.design.collision.furniture_constraint import evaluate_constraint
 from src.design.collision.furniture_engine import (
     TALL_FIXTURES,
     FurnitureCollisionEngine,
@@ -55,19 +56,26 @@ WALKWAY_IDEAL_MM = 1200.0
 
 @dataclass
 class PlacementWeights(JsonReport):
-    """五個軟指標的權重(collision 是硬閘門,不在此列)。"""
+    """六個軟指標的權重(collision 是硬閘門,不在此列)。
+
+    constraint 是 Phase 6-4-1 併入的第六項:evaluate_constraint 的家具擺放偏好
+    (靠牆 / 朝向 / 前方淨空)。它是**軟分數**,違反只扣分、不淘汰候選——是否
+    合法仍全由 collision 硬閘門決定。權重欄名與 score key 一致(比照 wall_distance)。
+    """
 
     wall_distance: float = 1.5
     window_distance: float = 1.0
     walkway: float = 1.5
     symmetry: float = 1.0
     room_usability: float = 1.5
+    constraint: float = 0.20
 
     def as_map(self) -> dict:
         return {"wall_distance": self.wall_distance,
                 "window_distance": self.window_distance,
                 "walkway": self.walkway, "symmetry": self.symmetry,
-                "room_usability": self.room_usability}
+                "room_usability": self.room_usability,
+                "constraint": self.constraint}
 
     def to_dict(self) -> dict:
         return {k: float(v) for k, v in self.as_map().items()}
@@ -109,6 +117,7 @@ class PlacementResult(JsonReport):
     best: PlacementCandidate | None = None
     candidates: int = 0
     valid_candidates: int = 0
+    constraint_score: float = 0.0
 
     @property
     def found(self) -> bool:
@@ -120,6 +129,7 @@ class PlacementResult(JsonReport):
             "found": self.found,
             "candidates": self.candidates,
             "valid_candidates": self.valid_candidates,
+            "constraint_score": round(self.constraint_score, 1),
             "best": self.best.to_dict() if self.best else None,
         }
 
@@ -224,6 +234,25 @@ class FurniturePlacementOptimizer:
             off = abs(c.y - mid)
         return _clamp(100.0 * (1.0 - off / half)) if half > 0 else 100.0
 
+    def _score_constraint(self, placement, room) -> float:
+        """家具擺放偏好(Phase 6-4)→ 0~100 軟分數。
+
+        ⚠️ **軟分數,不是硬閘門**:違反偏好只扣分,合法與否仍全由 collision
+        決定(collision 不通過的候選在 _score 早就被淘汰,根本走不到這裡)。
+
+        重用 evaluate_constraint,把它的三個布林(靠牆 / 朝向 / 前方淨空)換算成
+        扣分:滿分 100,背未靠偏好牆 -40、正面朝向不符 -20、前方淨空不足 -40。
+        傳入 self.engine 讓「前方淨空被別的家具佔住」也能被扣分。"""
+        res = evaluate_constraint(placement, room, engine=self.engine)
+        score = 100.0
+        if not res.wall_ok:
+            score -= 40.0
+        if not res.orientation_ok:
+            score -= 20.0
+        if not res.clearance_ok:
+            score -= 40.0
+        return _clamp(score)
+
     def _score_usability(self, poly, room_poly) -> float:
         """留下的可用地坪:家具越靠房間外緣、中央越開闊 = 越好用。
 
@@ -251,6 +280,7 @@ class FurniturePlacementOptimizer:
             "walkway": self._score_walkway(poly),
             "symmetry": self._score_symmetry(poly, room, placement.rotation),
             "room_usability": self._score_usability(poly, room_poly),
+            "constraint": self._score_constraint(placement, room),
         }
         return cand
 
@@ -281,6 +311,8 @@ class FurniturePlacementOptimizer:
             if best is None or cand.total > best.total:
                 best = cand
         result.best = best
+        if best is not None:
+            result.constraint_score = best.scores.get("constraint", 0.0)
         return result
 
 
