@@ -42,10 +42,18 @@ from src.design.collision.furniture_engine import (
     FurnitureCollisionEngine,
 )
 from src.design.collision.obstacle import Obstacle
+from src.design.collision.placement_optimizer import (
+    FurniturePlacementOptimizer,
+    PlacementCandidate,
+    PlacementResult,
+    PlacementWeights,
+)
 
 __all__ = [
     "Obstacle", "Collision", "find_collisions", "collision_problems",
     "column_contacts",
     "CollisionEngine", "ResolveReport", "resolve_collisions",
     "FurnitureCollisionEngine", "CollisionResult", "TALL_FIXTURES",
+    "FurniturePlacementOptimizer", "PlacementResult", "PlacementCandidate",
+    "PlacementWeights",
 ]
