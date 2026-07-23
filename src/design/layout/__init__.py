@@ -16,6 +16,12 @@ from src.design.layout.global_score import (
     LayoutScoreEngine,
     grade_of,
 )
+from src.design.layout.multi_room_optimizer import (
+    ROOM_ORDER,
+    MultiRoomOptimizer,
+    MultiRoomResult,
+    RoomScore,
+)
 
 __all__ = [
     "LayoutScore",
@@ -24,4 +30,8 @@ __all__ = [
     "DEFAULT_LAYOUT_WEIGHTS",
     "SCORE_ITEMS",
     "grade_of",
+    "MultiRoomOptimizer",
+    "MultiRoomResult",
+    "RoomScore",
+    "ROOM_ORDER",
 ]
