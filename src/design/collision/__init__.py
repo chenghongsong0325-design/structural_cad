@@ -41,6 +41,15 @@ from src.design.collision.furniture_engine import (
     CollisionResult,
     FurnitureCollisionEngine,
 )
+from src.design.collision.furniture_constraint import (
+    FURNITURE_CONSTRAINTS,
+    ConstraintResult,
+    FurnitureConstraint,
+    evaluate_constraint,
+    facing_of,
+    get_constraint,
+    wall_against,
+)
 from src.design.collision.obstacle import Obstacle
 from src.design.collision.placement_optimizer import (
     FurniturePlacementOptimizer,
@@ -56,4 +65,6 @@ __all__ = [
     "FurnitureCollisionEngine", "CollisionResult", "TALL_FIXTURES",
     "FurniturePlacementOptimizer", "PlacementResult", "PlacementCandidate",
     "PlacementWeights",
+    "FurnitureConstraint", "ConstraintResult", "FURNITURE_CONSTRAINTS",
+    "get_constraint", "evaluate_constraint", "facing_of", "wall_against",
 ]
