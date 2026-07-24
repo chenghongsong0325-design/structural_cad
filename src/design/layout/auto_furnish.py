@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from shapely.geometry import Polygon
 
+from src.design.collision.furniture_engine import FurnitureCollisionEngine
 from src.design.collision.placement_optimizer import (
     FurniturePlacementOptimizer,
     PlacementWeights,
@@ -54,30 +55,40 @@ def _room_priority(room) -> int:
     return ROOM_ORDER.index(kind) if kind in ROOM_ORDER else len(ROOM_ORDER)
 
 
-def _add_counter(spec, room) -> bool:
-    """沿廚房最長邊貼牆擺一段流理台(檯面往室內側伸)。放得下回 True。"""
-    poly = Polygon(room.points)
-    x0, y0, x1, y1 = poly.bounds
+def _counter_candidates(room):
+    """沿四面牆各產一個流理台候選(檯面往室內側伸;長邊優先)。"""
+    x0, y0, x1, y1 = Polygon(room.points).bounds
     w, d = x1 - x0, y1 - y0
-    if w >= d:                                   # 沿南牆(往北 +y 伸進室內)
-        length = w - 2 * COUNTER_INSET
-        if length < COUNTER_MIN_LEN or d < COUNTER_DEPTH * 1.5:
-            return False
-        start = (x0 + COUNTER_INSET, y0)
-        end = (x1 - COUNTER_INSET, y0)           # 方向 +x → 左手側 = +y(室內)
-    else:                                        # 沿東牆(往西 -x 伸進室內)
-        length = d - 2 * COUNTER_INSET
-        if length < COUNTER_MIN_LEN or w < COUNTER_DEPTH * 1.5:
-            return False
-        start = (x1, y0 + COUNTER_INSET)
-        end = (x1, y1 - COUNTER_INSET)           # 方向 +y → 左手側 = -x(室內)
-    counter = Counter(start=start, end=end, depth=COUNTER_DEPTH,
-                      sink=True, stove=True)
-    # 檯面必須落在房間內才算數(L 形廚房的 bbox 可能超出實際房間)。
-    if not poly.buffer(1.0).contains(Polygon(counter_footprint(counter))):
-        return False
-    spec.fixtures.append(counter)
-    return True
+    ins = COUNTER_INSET
+    # (可用長度, start, end):方向決定「左手側=室內」,見 draw_counter。
+    walls = [
+        (w, (x0 + ins, y0), (x1 - ins, y0)),     # 南牆 → +y 進室內
+        (w, (x1 - ins, y1), (x0 + ins, y1)),     # 北牆 → -y 進室內
+        (d, (x1, y0 + ins), (x1, y1 - ins)),     # 東牆 → -x 進室內
+        (d, (x0, y1 - ins), (x0, y0 + ins)),     # 西牆 → +x 進室內
+    ]
+    walls.sort(key=lambda t: -t[0])              # 長邊優先
+    out = []
+    for span, start, end in walls:
+        if span - 2 * ins >= COUNTER_MIN_LEN:
+            out.append(Counter(start=start, end=end, depth=COUNTER_DEPTH,
+                               sink=True, stove=True))
+    return out
+
+
+def _add_counter(spec, room) -> bool:
+    """沿牆擺一段流理台;由 Phase 6 碰撞引擎把關(不撞牆/門迴轉/既有家具)。
+
+    逐面牆試,取第一個「檯面落在房內 + 通過碰撞查詢」的候選。都不行就不擺。"""
+    poly = Polygon(room.points)
+    engine = FurnitureCollisionEngine(spec)
+    for counter in _counter_candidates(room):
+        if not poly.buffer(1.0).contains(Polygon(counter_footprint(counter))):
+            continue
+        if engine.check(counter).valid:          # 不撞門迴轉/牆/既有家具
+            spec.fixtures.append(counter)
+            return True
+    return False
 
 
 def furnish_spec(spec, *, weights: PlacementWeights | None = None):
