@@ -15,6 +15,7 @@ from src.design.layout.global_score import (
     LayoutScore,
     LayoutScoreEngine,
     grade_of,
+    score_report,
 )
 from src.design.layout.multi_room_optimizer import (
     ROOM_ORDER,
@@ -27,6 +28,15 @@ from src.design.layout.auto_layout_engine import (
     AutoLayoutEngine,
     AutoLayoutResult,
 )
+from src.design.layout.layout_search import (
+    SEED_SPACE,
+    Candidate,
+    LayoutSearchEngine,
+    RandomSearchStrategy,
+    SearchResult,
+    SearchStrategy,
+    seed_candidate,
+)
 
 __all__ = [
     "LayoutScore",
@@ -35,6 +45,7 @@ __all__ = [
     "DEFAULT_LAYOUT_WEIGHTS",
     "SCORE_ITEMS",
     "grade_of",
+    "score_report",
     "MultiRoomOptimizer",
     "MultiRoomResult",
     "RoomScore",
@@ -42,4 +53,11 @@ __all__ = [
     "AutoLayoutEngine",
     "AutoLayoutResult",
     "WEIGHT_PROFILES",
+    "LayoutSearchEngine",
+    "SearchStrategy",
+    "RandomSearchStrategy",
+    "SearchResult",
+    "Candidate",
+    "seed_candidate",
+    "SEED_SPACE",
 ]
