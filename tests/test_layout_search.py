@@ -64,7 +64,7 @@ def test_best_report_uses_phase6_global_score():
     res = LayoutSearchEngine.from_brief(_brief()).search(search_count=3)
     assert set(res.best_report) >= {"overall_score", "grade", "sub_scores",
                                     "rooms"}
-    assert len(res.best_report["sub_scores"]) == 12
+    assert len(res.best_report["sub_scores"]) == 13
     assert abs(res.best_report["overall_score"] - res.best_score) < 1e-6
 
 

@@ -282,7 +282,7 @@ def test_score_returns_grade_and_sub_scores() -> None:
     d = r.json()
     assert d["grade"] in {"A+", "A", "B", "C", "D"}
     assert 0.0 <= d["overall_score"] <= 100.0
-    assert len(d["sub_scores"]) == 12                 # 12 個子分數
+    assert len(d["sub_scores"]) == 13                 # 13 個子分數
     assert d["rooms"] and "furniture" in d["rooms"][0] and "semantic" in d["rooms"][0]
     assert d["floors"]                                 # 逐層分數
     assert "sheets" not in d                           # 不搬家具、不另存圖

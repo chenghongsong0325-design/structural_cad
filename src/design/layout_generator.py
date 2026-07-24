@@ -64,7 +64,7 @@ from src.drafting.apartment_plan import (
     resolve_columns,
 )
 from src.drafting.door_window import Door, Window
-from src.drafting.fixtures import Counter, FixturePlacement
+from src.drafting.fixtures import FIXTURE_SIZES, Counter, FixturePlacement
 from src.drafting.room import Room
 # _t_rotation/_t_swing:B6 已驗證的鏡射語意(家具轉角/門向翻轉),單一來源。
 from src.drafting.unit import UnitSpec, _t_rotation, _t_swing, one_room_unit, place_unit
@@ -94,6 +94,7 @@ MIN_BEDROOM_WIDTH = 2800     # 臥室最小淨寬
 MAX_BEDROOM_WIDTH = 4200     # 臥室最大合理寬(建築寬度收斂用,見 _house_frame)
 MASTER_RATIO = 1.35          # 主臥室寬度加大倍率
 MIN_DINING_WIDTH = 2700      # 餐廳最小寬,低於此併入客廳成「客餐廳」
+DINING_WALK = 650            # 窄餐廳餐桌偏移後,門所在(東)側要保留的走道淨寬
 SERVICE_WIDTH_RANGE = (2600, 3400)   # 服務核(廚房+浴廁)寬度範圍
 BATH_DEPTH_RANGE = (2000, 2800)      # 浴廁進深範圍
 MIN_GALLEY_DEPTH = 1400      # 一字型廚房的最小進深(流理台 600 + 通行 800)
@@ -789,9 +790,17 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
     if (ccx + 300 <= table_w_edge
             and living_cy - 300 >= max(by0 + 1100, fy1 + 100)):
         fixtures.append(FixturePlacement("coffee_table", (ccx, living_cy), 90))
-    # 餐廳(獨立時):餐桌。
+    # 餐廳(獨立時):餐桌。窄餐廳置中會讓兩側各剩 <600mm、把餐廳切成兩塊並擋住
+    # 東牆的門(動線斷,見 room_circulation)——獨立餐廳在此兩帶式格局固定位於南帶
+    # 東段,西鄰客廳、門開在東牆。太窄就把餐桌往客廳(西)側偏移,把足夠走道全留在
+    # 東側(門所在側),讓兩門之間走得通;仍不越西牆、不脫離房間。
     if not merged_dining:
-        fixtures.append(FixturePlacement("table4", ((living_e + sx) / 2, living_cy), 0))
+        thalf = FIXTURE_SIZES["table4"][0] / 2       # 780(桌+椅佔地半寬)
+        tcx = (living_e + sx) / 2
+        if sx - living_e < 2 * (thalf + DINING_WALK):     # 窄到置中兩側皆不足
+            tcx = min(tcx, sx - thalf - DINING_WALK)      # 東(門)側留足走道
+            tcx = max(tcx, living_e + thalf + 60)         # 不越西牆
+        fixtures.append(FixturePlacement("table4", (tcx, living_cy), 0))
     # 浴廁:馬桶+洗手台靠東牆(避開西側門的迴轉)。
     fixtures.append(FixturePlacement("toilet", (bx1 - 75, by0 + bath_d - 500), 90))
     fixtures.append(FixturePlacement("basin", (bx1 - 75, by0 + 600), 90))

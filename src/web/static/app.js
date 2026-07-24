@@ -15,6 +15,7 @@ let lastJobId = null;      // 上次方案的 job_id(家具評分用)
 // 12 個子分數的中文標籤(家具評分卡用)
 const SUB_LABELS = {
   furniture: "家具齊全", collision: "碰撞", walkway: "走道",
+  circulation: "房內動線",
   human_clearance: "人體活動", constraint: "擺放偏好",
   pair_constraint: "家具關聯", room_semantic: "房間機能",
   space_efficiency: "空間效率", furniture_density: "家具密度",

@@ -64,10 +64,10 @@ def test_score_returns_layoutscore_in_range():
 
 
 def test_all_twelve_sub_scores_present_and_in_range():
-    """★ 12 個子分數齊全、都在 0~100。"""
+    """★ 13 個子分數齊全、都在 0~100。"""
     sc = LayoutScoreEngine().score(_spec())
     assert set(sc.sub_scores) == set(SCORE_ITEMS)
-    assert len(SCORE_ITEMS) == 12
+    assert len(SCORE_ITEMS) == 13
     for k, v in sc.sub_scores.items():
         assert 0.0 <= v <= 100.0, f"{k}={v}"
 
@@ -232,7 +232,7 @@ def test_benchmark_csv_columns_count():
     b = LayoutBenchmark()
     b.add(_fake_score("only", 80.0))
     rows = list(csv.reader(io.StringIO(b.to_csv())))
-    assert len(rows[0]) == 4 + len(SCORE_ITEMS)      # rank/name/overall/grade + 12
+    assert len(rows[0]) == 4 + len(SCORE_ITEMS)      # rank/name/overall/grade + 子分數
 
 
 def test_empty_benchmark_is_graceful():

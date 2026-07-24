@@ -114,7 +114,7 @@ def test_phase6_can_score_it():
     """★ Phase 6 Global Score 吃得下 BSP 產生的 spec(0~100,不崩)。"""
     rep = score_report(_spec())
     assert 0.0 <= rep["overall_score"] <= 100.0
-    assert len(rep["sub_scores"]) == 12
+    assert len(rep["sub_scores"]) == 13
 
 
 # ── 隨機 θ 穩健性 / 決定性 ──────────────────────────────────────────────────

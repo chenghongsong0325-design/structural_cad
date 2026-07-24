@@ -64,9 +64,9 @@ from src.drafting.fixtures import (
 
 # 12 個子分數的固定順序(報表欄位、加權都依此)。
 SCORE_ITEMS = (
-    "furniture", "collision", "walkway", "human_clearance", "constraint",
-    "pair_constraint", "room_semantic", "space_efficiency", "furniture_density",
-    "symmetry", "natural_lighting", "window_usage",
+    "furniture", "collision", "walkway", "circulation", "human_clearance",
+    "constraint", "pair_constraint", "room_semantic", "space_efficiency",
+    "furniture_density", "symmetry", "natural_lighting", "window_usage",
 )
 
 # 各子分數在 overall 的權重(啟發式,可由呼叫端覆蓋)。
@@ -74,6 +74,7 @@ DEFAULT_LAYOUT_WEIGHTS: dict[str, float] = {
     "furniture": 1.0,
     "collision": 2.0,
     "walkway": 1.5,
+    "circulation": 1.5,
     "human_clearance": 1.0,
     "constraint": 1.0,
     "pair_constraint": 0.8,
@@ -175,6 +176,7 @@ class LayoutScoreEngine:
             "furniture": self._furniture(ctx),
             "collision": self._collision(ctx),
             "walkway": self._walkway(ctx),
+            "circulation": self._circulation(ctx),
             "human_clearance": self._human(ctx),
             "constraint": self._constraint(ctx),
             "pair_constraint": self._pair(ctx),
@@ -217,6 +219,14 @@ class LayoutScoreEngine:
         if wr.min_width:
             base = min(base, _clamp(100.0 * wr.min_width / 900.0))
         return _clamp(base)
+
+    # 房間內部動線:能不能走到每個門與每件家具(家具擋路 = 扣分)。無報告視為合格。
+    @staticmethod
+    def _circulation(ctx) -> float:
+        rep = ctx.circulation_report
+        if rep is None or not rep.rooms:
+            return 100.0
+        return _clamp(100.0 * (len(rep.rooms) - len(rep.blocked)) / len(rep.rooms))
 
     def _human(self, ctx) -> float:
         ev = HumanClearanceEvaluator()
@@ -374,6 +384,7 @@ class _Context:
             self.pair_targets.append(PairTarget(r.kind, (c.x, c.y)))
         # walkway 報告(某些 spec 可能無法分析 → None)
         self.walkway_report = _safe_walkways(spec)
+        self.circulation_report = _safe_circulation(spec)
 
     def fixtures_in(self, room):
         return [f for f in self.fixtures if self._room_of[id(f)] is room]
@@ -400,6 +411,14 @@ def _safe_walkways(spec):
     from src.design.walkway import analyze_walkways
     try:
         return analyze_walkways(spec)
+    except Exception:                                # pragma: no cover - 防禦
+        return None
+
+
+def _safe_circulation(spec):
+    from src.design.layout.room_circulation import analyze_room_circulation
+    try:
+        return analyze_room_circulation(spec)
     except Exception:                                # pragma: no cover - 防禦
         return None
 
