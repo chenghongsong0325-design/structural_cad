@@ -51,7 +51,7 @@ from src.design.layout_generator import (
     house_design_note,
     max_house_bedrooms,
 )
-from src.design.layout.auto_layout_engine import AutoLayoutEngine
+from src.design.layout.global_score import score_report
 from src.design.metrics import building_metrics
 from src.design.nl_parser import (
     building_brief_from_data,
@@ -78,8 +78,8 @@ class GenerateRequest(BaseModel):
     base: Optional[dict] = None
 
 
-class OptimizeRequest(BaseModel):
-    """家具自動配置 + 評分(Phase 6-9)—— 對已生成的方案重算最佳家具擺位。"""
+class ScoreRequest(BaseModel):
+    """家具配置評分(Phase 6-7)—— 對已生成的方案就地評分(不搬家具)。"""
 
     job_id: str
     code: str = ""
@@ -268,13 +268,16 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
         }, ensure_ascii=False), encoding="utf-8")
         return result
 
-    @app.post("/api/optimize")
-    def optimize(req: OptimizeRequest) -> dict:
-        """家具自動配置 + 評分(Phase 6-9)。
+    @app.post("/api/score")
+    def score(req: ScoreRequest) -> dict:
+        """家具配置評分(Phase 6-7)。
 
-        拿已生成方案的需求(brief_data + seed)重建同一棟樓,跑 AutoLayoutEngine
-        把每間房的家具重新擺到最佳位,回傳整棟評分(overall/grade/各房)與
-        「最佳化後」的每層 SVG/DXF。**不動原方案的檔案**,最佳化圖另存 opt_ 前綴。
+        拿已生成方案的需求(brief_data + seed)重建同一棟樓,對「產生器擺好的
+        佈局」**就地評分**,回傳整棟等第 + 12 項子分數 + 各層/各房檢查。
+
+        ⚠️ **不搬家具、不另存圖**:產生器的家具擺位已是精心設計(實測 A+),
+        重排反而會打散變差,故本端點只讀不動——畫面上的圖維持原樣,只多一張
+        評分卡。
         """
         access_code = os.environ.get("ACCESS_CODE")
         if access_code and req.code != access_code:
@@ -282,17 +285,16 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
 
         if not _JOB_ID_RE.fullmatch(req.job_id):
             raise HTTPException(404, "找不到方案")
-        job_dir = JOBS_DIR / req.job_id
-        result_path = job_dir / "result.json"
+        result_path = JOBS_DIR / req.job_id / "result.json"
         if not result_path.is_file():
             raise HTTPException(404, "方案不存在(可能已清除,請重新生成)")
 
         saved = json.loads(result_path.read_text(encoding="utf-8"))
         brief_data = saved.get("brief_data")
         if not brief_data:
-            raise HTTPException(422, "此方案無法重算(缺需求資料),請重新生成")
+            raise HTTPException(422, "此方案無法評分(缺需求資料),請重新生成")
 
-        # 用同一份需求 + seed 重建同一棟樓(決定性),再跑家具最佳化。
+        # 用同一份需求 + seed 重建同一棟樓(決定性),就地評分。
         try:
             brief = building_brief_from_data(
                 brief_data, seed=saved.get("seed", 0))
@@ -300,40 +302,9 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
-        auto = AutoLayoutEngine().generate(building, name=req.job_id)
-        sheets = build_sheets(auto.spec)
-
-        out_sheets = []
-        for s in sheets:
-            fname = f"opt_{s.filename}"
-            s.doc.saveas(job_dir / fname)
-            out_sheets.append({
-                "label": s.label,
-                "kind": s.kind,
-                "svg": sheet_svg(s),
-                "dxf": f"/api/jobs/{req.job_id}/{fname}",
-            })
-        with zipfile.ZipFile(job_dir / "opt_all_dxf.zip", "w",
-                             zipfile.ZIP_DEFLATED) as zf:
-            for s in sheets:
-                zf.write(job_dir / f"opt_{s.filename}", f"opt_{s.filename}")
-
-        return {
-            "job_id": req.job_id,
-            "overall_score": round(auto.overall_score, 1),
-            "grade": auto.grade,
-            "sub_scores": {k: round(v, 1)
-                           for k, v in auto.layout_score.sub_scores.items()},
-            "floor_scores": auto.floor_scores,
-            "rooms": [{
-                "room": rs.room, "kind": rs.kind,
-                "furniture_count": rs.furniture_count,
-                "replaced": rs.replaced,
-                "semantic": round(rs.semantic, 1),
-            } for rs in auto.placement_results],
-            "sheets": out_sheets,
-            "zip": f"/api/jobs/{req.job_id}/opt_all_dxf.zip",
-        }
+        report = score_report(building, name=req.job_id)
+        report["job_id"] = req.job_id
+        return report
 
     @app.get("/api/jobs/{job_id}/pdf")
     def job_pdf(job_id: str) -> FileResponse:

@@ -27,6 +27,7 @@ from src.design.layout.global_score import (
     LayoutScore,
     LayoutScoreEngine,
     grade_of,
+    score_report,
 )
 from src.design.layout_generator import (
     HouseBrief,
@@ -256,3 +257,40 @@ def test_benchmark_summary_lists_ranking():
     b.add(_fake_score("bot", 61.0))
     s = b.summary()
     assert "top" in s and "bot" in s and "平均" in s
+
+
+# ── score_report:就地評分,不搬家具(Phase 6-7 web 用)──────────────────
+def test_score_report_floor_shape_and_json_native():
+    """★ 單層就地評分:回 overall/grade/sub_scores/floors/rooms,且純原生型別。"""
+    import json as _json
+    rep = score_report(_spec(), name="h")
+    assert set(rep) >= {"name", "overall_score", "grade", "sub_scores",
+                        "floors", "rooms"}
+    assert set(rep["sub_scores"]) == set(SCORE_ITEMS)
+    assert rep["grade"] in {"A+", "A", "B", "C", "D"}
+    assert rep["rooms"] and {"room", "kind", "semantic", "furniture"} <= set(
+        rep["rooms"][0])
+    _json.dumps(rep)                                  # 純原生 → dumps 得出來
+
+
+def test_score_report_does_not_mutate_spec():
+    """★ 就地評分不得搬動任何家具(這正是網站按鈕要的:圖維持原樣)。"""
+    spec = _spec()
+    before = [(getattr(f, "name", "counter"), getattr(f, "insert", None))
+              for f in spec.fixtures]
+    score_report(spec)
+    after = [(getattr(f, "name", "counter"), getattr(f, "insert", None))
+             for f in spec.fixtures]
+    assert before == after
+
+
+def test_score_report_building_has_per_floor():
+    """★ 整棟就地評分:floors 逐層、rooms 以樓層前綴。"""
+    from src.design.building_generator import BuildingBrief, generate_building
+    b = generate_building(BuildingBrief(
+        typical=HouseBrief(site_width=19000, site_depth=13000, bedrooms=3),
+        floors=3, basements=1, differentiated=True))
+    rep = score_report(b, name="t")
+    assert len(rep["floors"]) == len(b.floors)
+    assert all("/" in r["room"] for r in rep["rooms"])
+    assert 0.0 <= rep["overall_score"] <= 100.0

@@ -52,6 +52,7 @@ from src.design.collision.human_clearance import HumanClearanceEvaluator
 from src.design.report import JsonReport
 from src.design.semantic.room_semantic import (
     RoomSemanticEvaluator,
+    canonical_room,
     get_room_rule,
 )
 from src.drafting.fixtures import (
@@ -479,6 +480,83 @@ class LayoutBenchmark(JsonReport):
             lines.append(f"  {i}. {e.name or '(未命名)'} "
                          f"{e.overall_score:.1f} [{e.grade}]")
         return "\n".join(lines)
+
+
+# ── 就地評分報表(不搬家具)────────────────────────────────────────────────
+def _floor_list(spec):
+    """把輸入攤成 [(label, floor_spec)]:BuildingSpec → 各層;FloorPlanSpec → 單層。"""
+    if hasattr(spec, "rooms"):                       # FloorPlanSpec(單層)
+        return [(getattr(spec, "floor_label", "") or "1F", spec)]
+    return [(fl.label, fl.spec) for fl in spec.floors]  # BuildingSpec
+
+
+def _centroid_in(fixture, poly) -> bool:
+    if isinstance(fixture, Counter):
+        c = Polygon(counter_footprint(fixture)).centroid
+    elif isinstance(fixture, FixturePlacement):
+        c = Polygon(fixture_footprint(fixture)).centroid
+    else:
+        return False
+    return poly.contains(c)
+
+
+def score_report(spec, *, name: str = "") -> dict:
+    """把一份平面(FloorPlanSpec)或整棟(BuildingSpec)**就地評分,不搬家具**。
+
+    ⚠️ 與 MultiRoomOptimizer / AutoLayoutEngine 不同:那些會重排家具(對已由
+    產生器擺好的圖反而會打散、變差);本函式**只讀不動**,回傳純評分報表——
+    產生器擺好的漂亮佈局原封不動,只給等第 + 12 項子分數 + 各房機能檢查。
+
+    回傳 JSON-native dict:
+        overall_score / grade / sub_scores / floors[] / rooms[]
+    """
+    engine = LayoutScoreEngine()
+    sem = RoomSemanticEvaluator()
+    floors = _floor_list(spec)
+    multi = len(floors) > 1
+
+    floor_out, gscores, rooms = [], [], []
+    for label, fs in floors:
+        gs = engine.score(fs, name=label)
+        gscores.append(gs)
+        furnishable = 0
+        for r in fs.rooms:
+            if get_room_rule(r.kind) is None:
+                continue
+            furnishable += 1
+            poly = Polygon(r.points)
+            items = [f for f in fs.fixtures if _centroid_in(f, poly)]
+            rr = sem.evaluate_room_semantics(r, items)
+            rooms.append({
+                "room": (f"{label}/{r.name}" if multi else r.name),
+                "kind": canonical_room(r.kind),
+                "semantic": round(rr.score, 1),
+                "furniture": len(items),
+                "missing": list(rr.missing),
+            })
+        floor_out.append({
+            "label": label,
+            "overall": round(gs.overall_score, 1),
+            "grade": gs.grade,
+            "furnished_rooms": furnishable,
+        })
+
+    # 整棟 overall:有家具的樓層平均(避免車庫/機房拉低);sub_scores 各層平均。
+    pool = [f["overall"] for f in floor_out if f["furnished_rooms"] > 0] \
+        or [f["overall"] for f in floor_out]
+    overall = sum(pool) / len(pool) if pool else 0.0
+    n = len(gscores) or 1
+    sub = {k: round(sum(g.sub_scores.get(k, 0.0) for g in gscores) / n, 1)
+           for k in SCORE_ITEMS}
+
+    return {
+        "name": name,
+        "overall_score": round(overall, 1),
+        "grade": grade_of(overall),
+        "sub_scores": sub,
+        "floors": floor_out,
+        "rooms": rooms,
+    }
 
 
 # =============================================================================

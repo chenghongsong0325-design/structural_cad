@@ -10,9 +10,7 @@ let view = { x: 0, y: 0, k: 1 };   // 平移/縮放狀態(切頁籤時重設)
 let lastText = "";      // 上次送出的需求(「重新設計」沿用同一句)
 let lastBriefData = null;  // 上次解析出的需求 dict(多輪修改的底)
 let lastSeed = null;       // 上次方案的 seed(修改時沿用 → 格局不重骰)
-let lastJobId = null;      // 上次方案的 job_id(家具最佳化用)
-let baseSheets = [];       // 原始(生成)圖
-let optSheets = null;      // 最佳化後圖(還沒算 = null)
+let lastJobId = null;      // 上次方案的 job_id(家具評分用)
 
 // 12 個子分數的中文標籤(家具評分卡用)
 const SUB_LABELS = {
@@ -52,28 +50,25 @@ $("modify-text").addEventListener("keydown", (e) => {
   if (e.key === "Enter") modify();
 });
 
-// ── 家具自動配置 + 評分(Phase 6-9)────────────────────────────────
-$("optimize").addEventListener("click", optimizeLayout);
-$("toggle-view").addEventListener("click", () =>
-  setView($("toggle-view").dataset.showing !== "opt"));
+// ── 家具配置評分(Phase 6-7;只評分,不搬家具)──────────────────────
+$("score-btn").addEventListener("click", scoreLayout);
 
-async function optimizeLayout() {
-  if (!lastJobId) { showError("請先生成一個方案,再做家具配置"); return; }
-  const btn = $("optimize");
+async function scoreLayout() {
+  if (!lastJobId) { showError("請先生成一個方案,再做家具評分"); return; }
+  const btn = $("score-btn");
   btn.disabled = true;
-  $("status").textContent = "計算每間房的最佳家具擺位與整棟評分中…(約 5~20 秒)";
+  $("status").textContent = "評估整棟家具配置中…(約 3~10 秒)";
   hideError();
   try {
-    const resp = await fetch("/api/optimize", {
+    const resp = await fetch("/api/score", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ job_id: lastJobId, code: $("code").value }),
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || `伺服器錯誤 (${resp.status})`);
-    optSheets = data.sheets;
     renderLayoutScore(data);
-    setView(true);                        // 直接切到最佳化後的圖
+    $("layout-score").scrollIntoView({ behavior: "smooth", block: "nearest" });
   } catch (err) {
     showError(err.message);
   } finally {
@@ -82,22 +77,7 @@ async function optimizeLayout() {
   }
 }
 
-// 在「原始」與「最佳化」兩套圖之間切換(有算過最佳化才有得切)。
-function setView(showOpt) {
-  const useOpt = showOpt && optSheets;
-  const keepLabel = current >= 0 && sheets[current] ? sheets[current].label : "1F";
-  sheets = useOpt ? optSheets : baseSheets;
-  buildTabs();
-  const keep = sheets.findIndex((s) => s.label === keepLabel);
-  showSheet(keep >= 0 ? keep : 0);
-  const tv = $("toggle-view");
-  tv.classList.toggle("hidden", !optSheets);
-  tv.dataset.showing = useOpt ? "opt" : "base";
-  tv.textContent = useOpt ? "↩ 顯示原始配置" : "✨ 顯示最佳化配置";
-  $("layout-score").classList.toggle("hidden", !optSheets);
-}
-
-// 家具評分卡:總分 + 等第 + 12 項子分數 + 各房重擺概況。
+// 家具評分卡:總分 + 等第 + 12 項子分數 + 各層 + 各房機能檢查。
 function renderLayoutScore(data) {
   const box = $("layout-score");
   const grade = data.grade || "—";
@@ -106,19 +86,27 @@ function renderLayoutScore(data) {
       ? data.sub_scores[k] : 0;
     return `<span class="sub" title="${label}"><b>${Math.round(v)}</b>${label}</span>`;
   }).join("");
-  const rooms = (data.rooms || []).map((r) =>
-    `<span class="room-chip">${r.room}` +
-    `<em>重擺 ${r.replaced}/${r.furniture_count} · 機能 ${Math.round(r.semantic)}</em>` +
-    `</span>`).join("");
+  const floors = (data.floors || []).length > 1
+    ? `<div class="floors">` + data.floors.map((f) =>
+        `<span class="floor-chip">${f.label} <b>${f.overall}</b> [${f.grade}]</span>`
+      ).join("") + `</div>`
+    : "";
+  const rooms = (data.rooms || []).map((r) => {
+    const miss = (r.missing && r.missing.length)
+      ? ` · 缺 ${r.missing.join("、")}` : "";
+    return `<span class="room-chip">${r.room}` +
+      `<em>家具 ${r.furniture} 件 · 機能 ${Math.round(r.semantic)}${miss}</em>` +
+      `</span>`;
+  }).join("");
   box.innerHTML =
     `<div class="score-head">` +
       `<span class="grade grade-${grade.replace("+", "plus")}">${grade}</span>` +
       `<div class="score-num"><b>${data.overall_score}</b><span>整棟家具配置分數</span></div>` +
-      `<a class="download" href="${data.zip}" download>⬇ 最佳化後 DXF (zip)</a>` +
     `</div>` +
+    floors +
     `<div class="subs">${chips}</div>` +
     (rooms ? `<div class="rooms">${rooms}</div>` : "") +
-    `<span class="hint">評分為啟發式輔助,非法規檢討;最佳化只搬動家具,不改牆與房間。</span>`;
+    `<span class="hint">評分為啟發式輔助,非法規檢討;只評估產生器擺好的家具,不搬動、不改牆與房間。</span>`;
   box.classList.remove("hidden");
 }
 
@@ -173,11 +161,8 @@ async function requestPlan(body, btn, textForRedesign) {
 function applyResult(data) {
   const keepLabel = current >= 0 && sheets[current] ? sheets[current].label : "1F";
   sheets = data.sheets;
-  baseSheets = data.sheets;               // 新方案 → 舊的最佳化結果作廢
-  optSheets = null;
   lastJobId = data.job_id || null;
-  $("layout-score").classList.add("hidden");
-  $("toggle-view").classList.add("hidden");
+  $("layout-score").classList.add("hidden");   // 新方案 → 舊評分卡收起
   lastBriefData = data.brief_data || null;
   lastSeed = (data.seed === undefined) ? null : data.seed;
   $("summary").textContent = data.summary;

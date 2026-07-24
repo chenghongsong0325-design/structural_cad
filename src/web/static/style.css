@@ -266,3 +266,12 @@ button.ghost:disabled { opacity: .55; cursor: wait; }
   font-size: 12px;
 }
 .room-chip em { color: var(--muted); font-style: normal; margin-left: 6px; }
+.floors { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 2px; }
+.floor-chip {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 13px;
+}
+.floor-chip b { color: var(--accent); }
