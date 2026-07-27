@@ -135,36 +135,49 @@ def _derive_walls(rooms_mm, build_rect_mm):
 
 
 # ── 主轉換 ──────────────────────────────────────────────────────────────────
+def rooms_to_spec(named_rooms, build_rect_mm, site_w_mm: float,
+                  site_d_mm: float, setback: float) -> FloorPlanSpec:
+    """一組 (kind, name, 角點mm) 房間矩形 → 可畫 DXF 的 FloorPlanSpec(牆/門/窗)。
+
+    共用的「房間 → 牆/門/窗」推導(不重造):牆由房間邊界幾何推得(外框=外牆、
+    共用邊=內牆)、門開向最公共的鄰室、窗開在外框。BSP(bsp_to_spec)與其他「房間
+    矩形」產生器(如窄面寬透天 narrow_house)都接這裡。**不含家具/柱**。"""
+    rooms_mm = []
+    rooms: list[Room] = []
+    for kind, name, pts in named_rooms:
+        rooms_mm.append((kind, Polygon(pts)))
+        rooms.append(Room(name=name, points=pts, kind=kind))
+
+    walls, vlines, hlines = _derive_walls(rooms_mm, build_rect_mm)
+    doors = _place_doors(rooms_mm, walls, vlines, hlines)
+    windows = _place_windows(rooms_mm, walls, vlines, hlines, build_rect_mm)
+
+    return FloorPlanSpec(
+        site_boundary=[(0.0, 0.0), (site_w_mm, 0.0),
+                       (site_w_mm, site_d_mm), (0.0, site_d_mm)],
+        setback=setback,
+        walls=walls, rooms=rooms, doors=doors, windows=windows,
+        column_centers=[],                  # 幾何產生器不放柱
+    )
+
+
 def bsp_to_spec(theta, flags, site_w_mm: float, site_d_mm: float,
                 bedrooms: int) -> FloorPlanSpec:
     """θ(刀位)+ flags → 可畫 DXF 的 FloorPlanSpec(牆/門/窗;7.1a 不含家具/柱)。"""
     site_w_m, site_d_m = site_w_mm / 1000.0, site_d_mm / 1000.0
     rooms_m = assemble(theta, flags, site_w_m, site_d_m, bedrooms)
 
-    # 房間(公尺 → mm)。
-    rooms_mm = []
-    rooms: list[Room] = []
+    # slot → (kind, name, 角點mm)。
+    named_rooms = []
     for slot, poly in rooms_m:
         pts = [(_snap(x * 1000.0), _snap(y * 1000.0))
                for x, y in _largest_poly(poly).exterior.coords[:-1]]
-        rooms_mm.append((slot, Polygon(pts)))
-        rooms.append(Room(name=SLOT_NAME.get(slot, slot), points=pts,
-                          kind=SLOT_KIND.get(slot, slot)))
+        named_rooms.append((SLOT_KIND.get(slot, slot),
+                            SLOT_NAME.get(slot, slot), pts))
 
     bx0, by0, bx1, by1 = (v * 1000.0 for v in building_rect(site_w_m, site_d_m))
-    walls, vlines, hlines = _derive_walls(rooms_mm, (bx0, by0, bx1, by1))
-
-    doors = _place_doors(rooms_mm, walls, vlines, hlines)
-    windows = _place_windows(rooms_mm, walls, vlines, hlines,
-                             (bx0, by0, bx1, by1))
-
-    return FloorPlanSpec(
-        site_boundary=[(0.0, 0.0), (site_w_mm, 0.0),
-                       (site_w_mm, site_d_mm), (0.0, site_d_mm)],
-        setback=(bx0),                      # 退縮 = 西邊建築線到基地(對稱)
-        walls=walls, rooms=rooms, doors=doors, windows=windows,
-        column_centers=[],                  # 7.1a 不放柱
-    )
+    return rooms_to_spec(named_rooms, (bx0, by0, bx1, by1),
+                         site_w_mm, site_d_mm, setback=bx0)
 
 
 # ── 門 / 窗 ──────────────────────────────────────────────────────────────────

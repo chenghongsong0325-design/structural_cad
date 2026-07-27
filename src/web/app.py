@@ -45,7 +45,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src.design.building_generator import BuildingSpec, generate_building
+from src.design.building_generator import (
+    BuildingSpec,
+    generate_building,
+    generate_building_auto,
+)
 from src.design.layout_generator import (
     HouseBrief,
     house_design_note,
@@ -217,7 +221,7 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
 
         # 2) 生成格局 + 出圖——設計檢核不過(基地太小等)一樣回 422 給使用者看
         try:
-            building = generate_building(brief)
+            building = generate_building_auto(brief)
             sheets = build_sheets(building)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
@@ -298,7 +302,7 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
         try:
             brief = building_brief_from_data(
                 brief_data, seed=saved.get("seed", 0))
-            building = generate_building(brief)
+            building = generate_building_auto(brief)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 

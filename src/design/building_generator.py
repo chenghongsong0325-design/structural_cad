@@ -171,6 +171,37 @@ def check_column_alignment(building: BuildingSpec,
 # ---------------------------------------------------------------------------
 # 產生器:標準層 → 疊成一整棟
 # ---------------------------------------------------------------------------
+def _narrow_to_building(named_floors, floor_height: float) -> BuildingSpec:
+    """窄透天各層 [(標示, spec)] → BuildingSpec(1F 樓板標高 0,往上每層 +層高)。"""
+    levels = [FloorLevel(level=i, elevation=(i - 1) * floor_height, spec=spec)
+              for i, (_, spec) in enumerate(named_floors, 1)]
+    return BuildingSpec(floors=levels, floor_height=floor_height)
+
+
+def generate_building_auto(brief: BuildingBrief) -> BuildingSpec:
+    """依建築面寬自動選骨架:**窄面寬單戶透天**(建築寬 3.5~7m)走 narrow_house
+    的前後串聯+中段天井+單樓梯骨架;其餘走既有兩帶式 generate_building。
+
+    ⚠️ 只有單戶透天(HouseBrief)才有窄面寬版;窄透天暫不含地下室(basements 忽略)。
+    這是「建築物 7×12」這類窄基地能生得出來的入口。"""
+    if isinstance(brief.typical, HouseBrief):
+        setback = brief.typical.setback
+        bw = brief.typical.site_width - 2 * setback
+        bd = brief.typical.site_depth - 2 * setback
+        from src.design.layout.narrow_house import (
+            MAX_WIDTH,
+            MIN_DEPTH,
+            MIN_WIDTH,
+            generate_narrow_building,
+        )
+        if MIN_WIDTH <= bw <= MAX_WIDTH and bd >= MIN_DEPTH:
+            floors = generate_narrow_building(
+                bw, bd, floors=max(1, brief.floors),
+                bedrooms=brief.typical.bedrooms)
+            return _narrow_to_building(floors, brief.floor_height)
+    return generate_building(brief)
+
+
 def generate_building(brief: BuildingBrief) -> BuildingSpec:
     """需求 → BuildingSpec(已通過柱網對齊檢核)。
 

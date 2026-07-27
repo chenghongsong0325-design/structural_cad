@@ -55,6 +55,9 @@ MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 # ---------------------------------------------------------------------------
 # 長度一律「米」(中文描述的自然單位),_brief_from_data 再轉 mm。
 # 沒提到的欄位填 null(nullable),由 Python 補預設值(與 dataclass 預設一致)。
+# 建築線退縮(米,四周各退),對齊 HouseBrief.setback=2000mm。「建築物」尺寸反推基地用。
+SETBACK_M = 2.0
+
 BRIEF_SCHEMA = {
     "type": "object",
     "properties": {
@@ -71,6 +74,13 @@ BRIEF_SCHEMA = {
         "site_depth_m": {
             "type": "number", "nullable": True,
             "description": "基地深(米,南北向)。單戶必填;沒講就 null",
+        },
+        "dimension_basis": {
+            "type": "string", "nullable": True,
+            "enum": ["site", "building"],
+            "description": "上面兩個尺寸指的是基地還是建築物本身。"
+                           "「建築物X×Y」「建物」「房子X米寬」「面寬X米」→ building;"
+                           "「基地」「地界」「土地」或沒特別講 → site",
         },
         "bedrooms": {
             "type": "integer", "nullable": True,
@@ -126,8 +136,8 @@ BRIEF_SCHEMA = {
                            "「一個車位」=1。機車位不算。沒提就 null",
         },
     },
-    "required": ["brief_type", "site_width_m", "site_depth_m", "bedrooms",
-                 "units_per_row", "corridor_width_m", "floor_label",
+    "required": ["brief_type", "site_width_m", "site_depth_m", "dimension_basis",
+                 "bedrooms", "units_per_row", "corridor_width_m", "floor_label",
                  "master_corner", "kitchen_side", "floors_above", "basements",
                  "want_study", "want_elder_room", "car_spaces"],
 }
@@ -182,7 +192,12 @@ def _brief_from_data(data: dict) -> Brief:
         if w is None or d is None:
             raise ValueError(
                 "單戶住宅需要基地寬與深(例:「基地 16×14 米」),描述裡找不到")
-        kwargs = dict(site_width=float(w) * 1000, site_depth=float(d) * 1000)
+        w, d = float(w), float(d)
+        # 使用者講的是「建築物」尺寸 → 反推基地(四周各退縮 2m)。產生器一律以基地
+        # 為輸入、退縮後得建築;窄面寬透天正是靠這個讓「建築物 7×12」生得出來。
+        if data.get("dimension_basis") == "building":
+            w, d = w + 2 * SETBACK_M, d + 2 * SETBACK_M
+        kwargs = dict(site_width=w * 1000, site_depth=d * 1000)
         if data.get("bedrooms") is not None:
             kwargs["bedrooms"] = int(data["bedrooms"])
         if data.get("floor_label"):
