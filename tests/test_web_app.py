@@ -146,6 +146,16 @@ def test_ai_design_rejects_non_narrow() -> None:
     assert "窄面寬" in r.json()["detail"]
 
 
+def test_quota_error_is_friendly() -> None:
+    """★ Gemini 額度爆(429/RESOURCE_EXHAUSTED)→ 503 白話訊息,不露原始 JSON。"""
+    from src.web.app import _quota_error
+    e = _quota_error(RuntimeError(
+        "429 RESOURCE_EXHAUSTED. You exceeded your current quota, limit: 20"))
+    assert e is not None and e.status_code == 503
+    assert "額度" in e.detail and "429" not in e.detail   # 白話、不露技術細節
+    assert _quota_error(ValueError("基地太小,放不下")) is None   # 一般錯誤不誤判
+
+
 @pytest.fixture(autouse=True)
 def _no_access_code(monkeypatch):
     """預設不設通行碼(要測通行碼的測試自己 setenv)。"""

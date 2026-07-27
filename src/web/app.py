@@ -97,6 +97,22 @@ def _has_api_key() -> bool:
                 or os.environ.get("GOOGLE_API_KEY"))
 
 
+# Gemini 額度/限流錯誤 → 友善中文(而非把整包 429 RESOURCE_EXHAUSTED JSON 砸給使用者)。
+_QUOTA_MARKERS = ("RESOURCE_EXHAUSTED", "quota", "exceeded your current",
+                  "rate limit", "RATE_LIMIT")
+
+
+def _quota_error(exc) -> Optional[HTTPException]:
+    """LLM 額度/限流類的例外 → 503 + 白話訊息;其他例外回 None(交給預設處理)。"""
+    msg = str(exc)
+    if "429" in msg or any(m in msg for m in _QUOTA_MARKERS):
+        return HTTPException(
+            503, "Gemini 免費額度暫時用完(免費版每日約 20 次;AI 設計師模式一次要 "
+                 "2~3 次)。請稍後再試,或在 Render 儀表板改用付費金鑰;不勾 AI 的"
+                 "一般模式較省用量,可先用。")
+    return None
+
+
 def _summary(brief, building: BuildingSpec) -> str:
     """給前端顯示的一行摘要:解析出了什麼、蓋了幾層、建築配置的取捨。
 
@@ -254,8 +270,8 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         except Exception as exc:
-            raise HTTPException(
-                502, f"需求解析服務暫時無法使用:{exc}") from exc
+            raise (_quota_error(exc)
+                   or HTTPException(502, f"需求解析服務暫時無法使用:{exc}")) from exc
 
         # 2) 生成格局 + 出圖——設計檢核不過(基地太小等)一樣回 422 給使用者看。
         #    AI 設計師模式走混合式收斂管線(design_loop);否則走既有規則產生器。
@@ -271,7 +287,8 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
         except HTTPException:
             raise
         except Exception as exc:                 # AI 模式的二次 LLM 呼叫也可能失敗
-            raise HTTPException(502, f"生成服務暫時無法使用:{exc}") from exc
+            raise (_quota_error(exc)
+                   or HTTPException(502, f"生成服務暫時無法使用:{exc}")) from exc
 
         # 3) 存檔(DXF + 打包 zip + PDF 圖冊)+ 組回應(SVG 直接內嵌 JSON)
         job_id = uuid.uuid4().hex[:12]
