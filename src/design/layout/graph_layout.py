@@ -76,6 +76,13 @@ PATIO_DEPTH = 2000.0     # 天井(採光通風豎井)進深
 COLUMN_SIZE = 400.0      # 結構柱斷面(mm 見方)
 COLUMN_SPAN = 6000.0     # 柱距目標(沿進深,6m 經濟跨度;藏外牆內、上下對齊)
 
+# AI 設計師模式(混合式收斂管線)實測可穩定落實的建築尺寸範圍。與 narrow_house
+# 的規則產生器分開:這個搜尋式引擎比規則版更耐尺寸(5~9m 寬 × ≥8m 深,實測不崩、
+# 採光/柱都乾淨)。>9m 寬需多跨柱(內柱要藏牆內)+ 寬樓層補天井,屬下一階段。
+AI_MIN_WIDTH = 5000.0    # <5m:西側核(樓梯+管道+天井)吃掉寬度,東側住不了
+AI_MAX_WIDTH = 9000.0    # 單跨經濟上限;>9m 跨度過大,待多跨柱(Phase 2)
+AI_MIN_DEPTH = 8000.0    # <8m:前段+核(6.3m)+後室三段擠不下
+
 
 # ── 1) 把建築範圍切成 n 個矩形(遞迴二分,保證鋪滿、不重疊)──────────────────
 def _can_split(c: Rect, min_cell: float) -> bool:
@@ -471,11 +478,23 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
     return spec, satisfied, len(edges), score
 
 
+CIRC_RETRIES = 6         # 某層第一次落實動線卡住 → 換這麼多個切法種子重試找全通的
+
+
+def _floor_blocked(spec) -> bool:
+    """這層有房間走不通(家具擋死門)嗎?"""
+    from src.design.layout.room_circulation import analyze_room_circulation
+    return not analyze_room_circulation(spec).ok
+
+
 def realize_graph_building(graph: dict, building_w: float, building_d: float,
                            setback: float = 2000.0,
                            rng: Optional[random.Random] = None,
                            tries: int = 300, furnish: bool = True):
     """LLM 關係圖 → 整棟:每層落實,核(樓梯+管道間+天井)與結構柱上下對齊。
+
+    某層第一次落實若動線卡住,換幾個切法種子重試、留第一個全通的(找不到才留原本)。
+    第一次一律用傳入的 rng → 一次就全通的樓層(常態)輸出與過去逐位元相同、不回歸。
 
     回 [(label, spec, 滿足邊, 總邊)]。"""
     if rng is None:
@@ -492,9 +511,19 @@ def realize_graph_building(graph: dict, building_w: float, building_d: float,
         edges = [(e["a"], e["b"], e["connection"]) for e in graph["adjacencies"]
                  if e["a"] in ids and e["b"] in ids]
         entry = graph.get("entry") if graph.get("entry") in ids else None
+        stair_label = "下" if f == top else "上"
         spec, sat, tot, _ = _realize_floor_core(
             rooms, edges, entry, env, core, rng, tries, furnish,
-            f"{f}F", "下" if f == top else "上")
+            f"{f}F", stair_label)
+        if furnish and _floor_blocked(spec):          # 動線卡住 → 換切法種子重試
+            for k in range(CIRC_RETRIES):
+                alt = random.Random(f * 1009 + k * 31 + 17)   # 決定性、可重現
+                a_spec, a_sat, a_tot, _ = _realize_floor_core(
+                    rooms, edges, entry, env, core, alt, tries, furnish,
+                    f"{f}F", stair_label)
+                if not _floor_blocked(a_spec):
+                    spec, sat, tot = a_spec, a_sat, a_tot
+                    break
         out.append((f"{f}F", spec, sat, tot))
     return out
 

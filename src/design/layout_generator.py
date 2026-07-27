@@ -187,6 +187,10 @@ class HouseBrief:
                                           # 單層=臥室帶多一格、多樓層=1F 北帶西端)
     car_spaces: int = 0                   # 汽車停車位數(0=不要;需地下車庫,
                                           # 沒地下室時由 _building_from_data 自動補 B1F)
+    dimension_basis: str = "site"         # 使用者講的是「基地」(site)還是「建築物」
+                                          # (building)尺寸;AI 設計師模式據此換算建築
+                                          # 尺寸(基地=共壁不退側院、建築=直接用),
+                                          # 一般路徑不讀此欄(維持原行為)
 
 
 @dataclass

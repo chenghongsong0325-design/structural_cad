@@ -34,7 +34,7 @@ fetch("/api/config").then((r) => r.json()).then((cfg) => {
 $("examples").addEventListener("click", (e) => {
   if (!e.target.classList.contains("chip")) return;
   $("text").value = e.target.textContent.split("(")[0].split("(")[0].trim();
-  if (e.target.dataset.ai) $("ai-design").checked = true;   // 窄透天範例 → 自動勾 AI
+  if (e.target.dataset.ai) $("ai-design").checked = true;   // 透天範例 → 自動勾 AI
   $("text").focus();
 });
 

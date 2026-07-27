@@ -195,9 +195,11 @@ def _brief_from_data(data: dict) -> Brief:
         w, d = float(w), float(d)
         # 使用者講的是「建築物」尺寸 → 反推基地(四周各退縮 2m)。產生器一律以基地
         # 為輸入、退縮後得建築;窄面寬透天正是靠這個讓「建築物 7×12」生得出來。
-        if data.get("dimension_basis") == "building":
+        basis = data.get("dimension_basis") or "site"
+        if basis == "building":
             w, d = w + 2 * SETBACK_M, d + 2 * SETBACK_M
-        kwargs = dict(site_width=w * 1000, site_depth=d * 1000)
+        kwargs = dict(site_width=w * 1000, site_depth=d * 1000,
+                      dimension_basis=basis)   # AI 模式據此換算建築尺寸
         if data.get("bedrooms") is not None:
             kwargs["bedrooms"] = int(data["bedrooms"])
         if data.get("floor_label"):

@@ -136,14 +136,30 @@ def test_generate_ai_design_narrow_townhouse() -> None:
     assert c.get(data["sheets"][0]["dxf"]).status_code == 200
 
 
-def test_ai_design_rejects_non_narrow() -> None:
-    """★ AI 設計師模式目前限窄面寬透天;寬基地擋下(422)並說明。"""
+def test_ai_design_rejects_too_wide() -> None:
+    """★ AI 設計師模式目前做透天(≤9m 寬);更寬的基地擋下(422)並說明改走一般模式。"""
     brief = _payload(site_width_m=16, site_depth_m=14, floors_above=3)
     c = _seq_client([brief])
     r = c.post("/api/generate",
                json={"text": "透天三層,基地16×14米,三房", "ai_design": True})
     assert r.status_code == 422
-    assert "窄面寬" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert "請關掉 AI 模式" in detail and "16.0" in detail   # 說明實際寬度、給出路
+
+
+def test_ai_design_site_basis_no_side_setback() -> None:
+    """★ 基地尺寸(共壁透天不退側院)→ 建築填滿面寬,不再被退縮吃小。
+
+    「基地9×14」= 建築 9×12(僅退前院),舊版會誤算成 5×10 被擋;新版接受並生圖。
+    """
+    brief = _payload(site_width_m=9, site_depth_m=14, floors_above=3)
+    c = _seq_client([brief, _GRAPH_PAYLOAD, _GRAPH_PAYLOAD, _GRAPH_PAYLOAD])
+    r = c.post("/api/generate",
+               json={"text": "透天三層,基地9×14米,三房", "ai_design": True})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data.get("ai_design") is True
+    assert {"1F", "2F", "3F"} <= {s["label"] for s in data["sheets"]}
 
 
 def test_quota_error_is_friendly() -> None:

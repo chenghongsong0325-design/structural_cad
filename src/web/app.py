@@ -207,17 +207,25 @@ def _ai_generate(brief_text: str, brief, client):
     """
     from src.design.building_generator import _narrow_to_building
     from src.design.layout.design_loop import design_building
-    from src.design.layout.narrow_house import MAX_WIDTH, MIN_DEPTH, MIN_WIDTH
+    from src.design.layout.graph_layout import (
+        AI_MAX_WIDTH, AI_MIN_DEPTH, AI_MIN_WIDTH)
 
     t = brief.typical
     if not isinstance(t, HouseBrief):
         raise ValueError("AI 設計師模式目前只做單戶透天(不吃集合住宅),請關掉此模式")
-    bw = t.site_width - 2 * t.setback           # 建築 = 基地 − 四周退縮
-    bd = t.site_depth - 2 * t.setback
-    if not (MIN_WIDTH <= bw <= MAX_WIDTH and bd >= MIN_DEPTH):
+    # 換算建築尺寸。使用者講「建築物」→ 直接用(基地已由 parser 加了四周退縮,退回
+    # 來即得建築)。使用者講「基地」→ 透天共壁不退側院,建築填滿面寬;進深退前院、
+    # 貼後界(退一次)。這樣「基地5×10」= 建築 5×8,不再被退縮吃成 1×6。
+    if t.dimension_basis == "building":
+        bw = t.site_width - 2 * t.setback
+        bd = t.site_depth - 2 * t.setback
+    else:
+        bw = t.site_width                       # 共壁,無側院
+        bd = t.site_depth - t.setback           # 前院退縮,後貼界
+    if not (AI_MIN_WIDTH <= bw <= AI_MAX_WIDTH and bd >= AI_MIN_DEPTH):
         raise ValueError(
-            f"AI 設計師模式目前只做窄面寬透天(建築寬 {MIN_WIDTH/1000:.0f}~"
-            f"{MAX_WIDTH/1000:.0f} 米、深 ≥{MIN_DEPTH/1000:.1f} 米);你的建築約 "
+            f"AI 設計師模式目前做透天(建築寬 {AI_MIN_WIDTH/1000:.0f}~"
+            f"{AI_MAX_WIDTH/1000:.0f} 米、深 ≥{AI_MIN_DEPTH/1000:.0f} 米);你的建築約 "
             f"{bw/1000:.1f}×{bd/1000:.1f} 米,請關掉 AI 模式改用一般生成。")
 
     best, history = design_building(brief_text, bw, bd, iterations=2, client=client)
