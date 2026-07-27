@@ -36,7 +36,7 @@ from shapely.geometry import Point, Polygon
 
 from src.drafting.apartment_plan import DoorPlacement
 from src.drafting.door_window import Door
-from src.drafting.stair import Stair
+from src.drafting.stair import UStair
 from src.drafting.wall import Opening
 
 from src.design.layout.bsp_layout import rooms_to_spec
@@ -51,12 +51,14 @@ SETBACK = 2000.0
 MIN_WIDTH, MAX_WIDTH = 5000.0, 7000.0
 MIN_DEPTH = 10500.0             # 三段(前+核+後)放得下 + 樓上後室夠住的下限
 
-# 樓梯:單跑直梯,貼樓梯間東牆;西側留通道(前後動線)。
-STAIR_W = 1100.0
+# 樓梯:U 形折返梯(填滿樓梯間)。中段核只有 ~3.6m 深,單跑直梯爬一層會太陡
+# (需 ~4.7m 才緩);折返梯上一段+平台轉身+再上一段,同深度內每階升高正常(~178mm)。
 STAIR_TREAD = 260.0
 WALL_GAP = 75.0
-MIN_PASSAGE = 900.0
-STAIRWELL_W = STAIR_W + WALL_GAP + MIN_PASSAGE      # 樓梯間面寬(梯+通道)
+STAIR_WELL_GAP = 100.0                              # 兩梯段間的梯井縫
+STAIRWELL_W = 2075.0                                # 樓梯間面寬(容兩梯段,各 ~910)
+FLOOR_HEIGHT = 3200.0                               # 層高(算級數/每階升高用)
+MAX_RISER = 190.0                                   # 每階升高上限(住宅舒適下限步距)
 
 # 採光天井(窄屋核只放天井+樓梯時的天井寬)。
 WELL_W_MIN, WELL_W_MAX = 1400.0, 2200.0
@@ -71,7 +73,7 @@ ENTRY_WIDTH = 1000.0            # 臨路大門寬
 # 三段進深:(段名, 分配權重, 最小進深mm)。前室 / 中段核 / 後室。
 ZONES = [
     ("front", 0.38, 3300.0),
-    ("core", 0.24, 3000.0),
+    ("core", 0.24, 3500.0),        # 容得下 U 梯(梯跑 + 轉身平台)
     ("rear", 0.38, 3200.0),
 ]
 
@@ -100,13 +102,18 @@ def _core_widths(W: float, with_east: bool):
     return _well_width(W), W - _well_width(W), 0.0
 
 
-def _stair(x_east, y1, y2, label):
-    """樓梯間內單跑直梯:貼東牆(x_east,西側留通道),往北跑。"""
-    length = (y2 - y1) - 2 * WALL_GAP
-    steps = max(2, int(length / STAIR_TREAD))
-    return Stair(origin=(x_east - WALL_GAP - STAIR_W, y1 + WALL_GAP),
-                 width=STAIR_W, length=length, direction="north",
-                 steps=steps, tread=STAIR_TREAD, label=label)
+def _stair(x_west, x_east, y1, y2, label):
+    """樓梯間內 U 形折返梯(填滿 [x_west,x_east]×[y1,y2]),往北上。
+
+    級數由層高回推、每階升高 ≤MAX_RISER(住宅舒適);分兩段折返,故梯跑只需一半深度,
+    塞得進淺的中段核。"""
+    total = max(4, -(-int(FLOOR_HEIGHT) // int(MAX_RISER)))      # ceil,爬完一層的總級數
+    spf = max(2, -(-total // 2))                                 # 每段級數(向上取半)
+    return UStair(origin=(x_west + WALL_GAP, y1 + WALL_GAP),
+                  width=(x_east - x_west) - 2 * WALL_GAP,
+                  length=(y2 - y1) - 2 * WALL_GAP, direction="north",
+                  steps_per_flight=spf, tread=STAIR_TREAD,
+                  well_gap=STAIR_WELL_GAP, label=label)
 
 
 def _core(bx0, bx1, y1, y2, label, east_kind, east_name):
@@ -121,7 +128,7 @@ def _core(bx0, bx1, y1, y2, label, east_kind, east_name):
              ("stair_hall", "樓梯間", _rect(xw, y1, xs, y2))]
     if east_w > 0:
         rooms.append((east_kind, east_name, _rect(xs, y1, bx1, y2)))
-    return rooms, _stair(xs, y1, y2, label)
+    return rooms, _stair(xw, xs, y1, y2, label)
 
 
 def _floor_rooms(level, top, bx0, by0, bx1, by1):

@@ -121,6 +121,17 @@ def test_stairs_aligned_across_floors():
     assert len(origins) == 1
 
 
+def test_stair_riser_is_comfortable():
+    """★ 樓梯不能太陡:U 形折返梯 → 每階升高在住宅正常範圍(≤190mm)。
+
+    單跑直梯塞進 3.6m 深的中段核每階要升 ~246mm(太陡);折返梯分兩段爬,~178mm。"""
+    from src.design.layout.narrow_house import FLOOR_HEIGHT
+    _, spec = generate_narrow_building(W, D, floors=2)[0]
+    st = spec.stairs[0]
+    total = st.steps_per_flight * 2
+    assert 150.0 <= FLOOR_HEIGHT / total <= 190.0
+
+
 def test_top_floor_stair_labeled_down():
     floors = generate_narrow_building(W, D, floors=3)
     assert floors[-1][1].stairs[0].label == "下"
