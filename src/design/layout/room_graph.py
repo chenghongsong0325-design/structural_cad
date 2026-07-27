@@ -120,6 +120,46 @@ DESIGNER_PROMPT = """\
 """
 
 
+# 修正模式(雙向收斂迴圈用):給上一版關係圖 + 落實後發現的問題,請 LLM 改良。
+# 跟首次設計同一張 schema → 改完仍是合法關係圖。
+REFINE_PROMPT = DESIGNER_PROMPT + """
+
+修正模式:輸入含「上一版關係圖(JSON)」與「落實後發現的問題」兩段。請針對每個
+問題修改關係圖,輸出**完整**的改良後關係圖(同格式,所有欄位齊全)。常見對策:
+- 某房太大 → 拆成兩間,或該層增加房間/機能,把多的面積吸收掉。
+- 內間沒對外採光 → 減少該層房間數,或把它移到前後採光面/天井旁。
+- 要求的相鄰沒排進去 → 簡化該層、確保關鍵相鄰(廚房挨餐廳、臥室挨走廊)。
+- 動線不通 → 該房別擠太多機能。
+保留原本合理的部分,只動有問題的地方。
+"""
+
+
+def refine_room_graph(prev_graph: dict, problems: list, *,
+                      client: Optional[object] = None, temperature: float = 0.7,
+                      floor_area_m2: Optional[float] = None) -> dict:
+    """上一版關係圖 + 問題清單 → 改良後的關係圖(雙向收斂迴圈的「重設計」那步)。"""
+    if client is None:
+        from google import genai
+        client = genai.Client()
+    contents = ("上一版關係圖(JSON):\n"
+                + json.dumps(prev_graph, ensure_ascii=False)
+                + "\n\n落實後發現的問題:\n"
+                + "\n".join(f"- {p}" for p in problems))
+    if floor_area_m2:
+        contents += f"\n\n(每一層樓地板面積約 {floor_area_m2:.0f} ㎡。)"
+    response = client.models.generate_content(
+        model=MODEL,
+        contents=contents,
+        config={
+            "system_instruction": REFINE_PROMPT,
+            "response_mime_type": "application/json",
+            "response_schema": ROOM_GRAPH_SCHEMA,
+            "temperature": temperature,
+        },
+    )
+    return json.loads(response.text)
+
+
 def propose_room_graph(brief_text: str, client: Optional[object] = None,
                        temperature: float = 1.0,
                        floor_area_m2: Optional[float] = None) -> dict:
