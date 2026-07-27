@@ -120,3 +120,26 @@ def test_design_building_fitness_penalizes_problems():
     best, history = design_building("三房", W, D, iterations=1, client=client)
     h = history[0]
     assert h["fitness"] == pytest.approx(h["mean_score"] - 2.0 * h["n_problems"])
+
+
+class _ProposeThenFail:
+    """propose 成功、之後(refine)一律拋錯——模擬 Gemini 額度用完/斷網。"""
+
+    def __init__(self, graph):
+        self._graph = graph
+        self.n = 0
+        self.models = self
+
+    def generate_content(self, **kwargs):
+        self.n += 1
+        if self.n == 1:
+            return types.SimpleNamespace(text=json.dumps(self._graph))
+        raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+
+def test_design_building_survives_refine_failure():
+    """★ 重設計時額度爆掉/斷網 → 仍回得出目前最佳(iter 0),不讓整棟白做、不拋錯。"""
+    client = _ProposeThenFail(GRAPH)
+    best, history = design_building("三房", W, D, iterations=3, client=client)
+    assert best is not None and best["floors"]        # 有結果、沒拋錯
+    assert len(history) >= 1

@@ -55,6 +55,97 @@ def _client(payload: dict) -> TestClient:
     return TestClient(app)
 
 
+# 序列假 client:AI 設計師模式一次請求會呼叫多次 LLM(解析需求→設計拓撲→重設計),
+# 每次回傳形狀不同(BRIEF / room-graph),故依序回傳不同 payload。
+class _SeqModels:
+    def __init__(self, payloads):
+        self._payloads = list(payloads)
+        self._i = 0
+
+    def generate_content(self, **kwargs):
+        p = self._payloads[min(self._i, len(self._payloads) - 1)]
+        self._i += 1
+        return _FakeResponse(text=json.dumps(p))
+
+
+class _SeqClient:
+    def __init__(self, payloads):
+        self.models = _SeqModels(payloads)
+
+
+def _seq_client(payloads) -> TestClient:
+    app = create_app(client_factory=lambda: _SeqClient(payloads))
+    return TestClient(app)
+
+
+# AI 設計師模式的 room-graph(3 層窄透天;不呼叫網路,假 client 直接回這個)。
+_GRAPH_PAYLOAD = {
+    "rooms": [
+        {"id": "entry", "kind": "corridor", "floor": 1, "wants_daylight": False},
+        {"id": "living", "kind": "living", "floor": 1, "wants_daylight": True},
+        {"id": "dining", "kind": "dining", "floor": 1, "wants_daylight": True},
+        {"id": "kitchen", "kind": "kitchen", "floor": 1, "wants_daylight": False},
+        {"id": "toilet1", "kind": "toilet", "floor": 1, "wants_daylight": False},
+        {"id": "stair1", "kind": "stair", "floor": 1, "wants_daylight": False},
+        {"id": "corr2", "kind": "corridor", "floor": 2, "wants_daylight": False},
+        {"id": "bedA", "kind": "bedroom", "floor": 2, "wants_daylight": True},
+        {"id": "bedB", "kind": "bedroom", "floor": 2, "wants_daylight": True},
+        {"id": "bath2", "kind": "bathroom", "floor": 2, "wants_daylight": False},
+        {"id": "stair2", "kind": "stair", "floor": 2, "wants_daylight": False},
+        {"id": "corr3", "kind": "corridor", "floor": 3, "wants_daylight": False},
+        {"id": "master", "kind": "master_bedroom", "floor": 3,
+         "wants_daylight": True},
+        {"id": "mbath", "kind": "bathroom", "floor": 3, "wants_daylight": False},
+        {"id": "study", "kind": "study", "floor": 3, "wants_daylight": True},
+        {"id": "stair3", "kind": "stair", "floor": 3, "wants_daylight": False},
+    ],
+    "adjacencies": [
+        {"a": "entry", "b": "living", "connection": "open"},
+        {"a": "living", "b": "dining", "connection": "open"},
+        {"a": "dining", "b": "kitchen", "connection": "open"},
+        {"a": "entry", "b": "toilet1", "connection": "door"},
+        {"a": "stair2", "b": "corr2", "connection": "open"},
+        {"a": "corr2", "b": "bedA", "connection": "door"},
+        {"a": "corr2", "b": "bedB", "connection": "door"},
+        {"a": "corr2", "b": "bath2", "connection": "door"},
+        {"a": "stair3", "b": "corr3", "connection": "open"},
+        {"a": "corr3", "b": "master", "connection": "door"},
+        {"a": "master", "b": "mbath", "connection": "door"},
+        {"a": "corr3", "b": "study", "connection": "door"},
+    ],
+    "entry": "entry",
+    "rationale": "測試用。",
+}
+
+
+def test_generate_ai_design_narrow_townhouse() -> None:
+    """★ AI 設計師模式:窄透天走混合式收斂管線,回收斂軌跡 + 多層真圖。"""
+    brief = _payload(site_width_m=7, site_depth_m=12,
+                     dimension_basis="building", floors_above=3)
+    c = _seq_client([brief, _GRAPH_PAYLOAD, _GRAPH_PAYLOAD, _GRAPH_PAYLOAD])
+    r = c.post("/api/generate",
+               json={"text": "透天三層,建築物7×12米,三房", "ai_design": True})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data.get("ai_design") is True
+    assert data.get("ai_trajectory")                       # 有迭代軌跡
+    labels = [s["label"] for s in data["sheets"]]
+    assert {"1F", "2F", "3F"} <= set(labels)
+    assert "AI 設計師" in data["design_note"]
+    assert "<svg" in data["sheets"][0]["svg"]
+    assert c.get(data["sheets"][0]["dxf"]).status_code == 200
+
+
+def test_ai_design_rejects_non_narrow() -> None:
+    """★ AI 設計師模式目前限窄面寬透天;寬基地擋下(422)並說明。"""
+    brief = _payload(site_width_m=16, site_depth_m=14, floors_above=3)
+    c = _seq_client([brief])
+    r = c.post("/api/generate",
+               json={"text": "透天三層,基地16×14米,三房", "ai_design": True})
+    assert r.status_code == 422
+    assert "窄面寬" in r.json()["detail"]
+
+
 @pytest.fixture(autouse=True)
 def _no_access_code(monkeypatch):
     """預設不設通行碼(要測通行碼的測試自己 setenv)。"""

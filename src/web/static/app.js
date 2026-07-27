@@ -32,10 +32,10 @@ fetch("/api/config").then((r) => r.json()).then((cfg) => {
 
 // ── 範例句:點了直接填進輸入框 ─────────────────────────────────────
 $("examples").addEventListener("click", (e) => {
-  if (e.target.classList.contains("chip")) {
-    $("text").value = e.target.textContent;
-    $("text").focus();
-  }
+  if (!e.target.classList.contains("chip")) return;
+  $("text").value = e.target.textContent.split("(")[0].split("(")[0].trim();
+  if (e.target.dataset.ai) $("ai-design").checked = true;   // 窄透天範例 → 自動勾 AI
+  $("text").focus();
 });
 
 // ── 生成 / 重新設計 / 修改 ─────────────────────────────────────────
@@ -117,7 +117,8 @@ async function generate(reuseText) {
   const text = (reuseText !== null ? reuseText : $("text").value).trim();
   if (!text) { showError("請先輸入需求描述"); return; }
   const btn = reuseText !== null ? $("redesign") : $("generate");
-  await requestPlan({ text, code: $("code").value }, btn, text);
+  await requestPlan(
+    { text, code: $("code").value, ai_design: $("ai-design").checked }, btn, text);
 }
 
 async function modify() {
@@ -136,7 +137,9 @@ async function modify() {
 // 共用請求流程:送出 → 成功就渲染結果。回傳是否成功。
 async function requestPlan(body, btn, textForRedesign) {
   btn.disabled = true;
-  $("status").textContent = "解析需求、設計格局、出圖中…(約 10~30 秒)";
+  $("status").textContent = body.ai_design
+    ? "AI 設計師運轉中:設計 → 落實 → 挑毛病 → 重設計…(約 30~60 秒)"
+    : "解析需求、設計格局、出圖中…(約 10~30 秒)";
   hideError();
   try {
     const resp = await fetch("/api/generate", {
@@ -169,6 +172,7 @@ function applyResult(data) {
   $("summary").textContent = data.summary;
   $("design-note").textContent = data.design_note
     ? "本案設計:" + data.design_note : "";
+  renderAiPanel(data);
   renderMetrics(data.metrics || null);
   renderSuggestions(data.suggestions || []);
   $("zip").href = data.zip;
@@ -211,6 +215,25 @@ function renderMetrics(m) {
   note.className = "hint";
   note.textContent = "(量體粗估,非法規檢討)";
   box.appendChild(note);
+  box.classList.remove("hidden");
+}
+
+// ── AI 設計師收斂軌跡:每次迭代的分數/問題數 + 收斂後仍待改的問題 ──────────
+function renderAiPanel(data) {
+  const box = $("ai-panel");
+  if (!data || !data.ai_design) {
+    box.classList.add("hidden"); box.innerHTML = ""; return;
+  }
+  const traj = (data.ai_trajectory || []).map((h) =>
+    `<span class="ai-step">${h.iter}｜分 ${Math.round(h.mean_score)} · 問題 ${h.n_problems}</span>`
+  ).join(`<span class="ai-arrow">→</span>`);
+  const probs = (data.ai_problems || []).length
+    ? `<div class="ai-problems"><b>收斂後仍待改(${data.ai_problems.length}):</b>` +
+      data.ai_problems.map((p) => `<div>· ${p}</div>`).join("") + `</div>`
+    : `<div class="ai-problems ok">✅ 收斂後無明顯問題</div>`;
+  box.innerHTML =
+    `<div class="ai-head">🤖 AI 設計師:設計 → 落實 → 挑毛病 → 重設計,擇優</div>` +
+    `<div class="ai-traj">${traj}</div>` + probs;
   box.classList.remove("hidden");
 }
 

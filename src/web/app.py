@@ -80,6 +80,9 @@ class GenerateRequest(BaseModel):
     # 多輪修改(E4):帶上一輪的需求 dict(回應裡的 brief_data)→ text 視為
     # 「修改指令」,以 base 為底合併;不帶 = 全新需求。
     base: Optional[dict] = None
+    # AI 設計師模式:走「LLM 設計拓撲 → 搜尋落實 → 挑毛病回饋重設計」的混合式
+    # 收斂管線(design_loop),而非既有規則產生器。目前限窄面寬透天(建築 5~7m 寬)。
+    ai_design: bool = False
 
 
 class ScoreRequest(BaseModel):
@@ -179,6 +182,41 @@ def _suggestions(brief, building: BuildingSpec) -> list[dict]:
     return out
 
 
+def _ai_generate(brief_text: str, brief, client):
+    """AI 設計師模式:跑混合式收斂管線 → (BuildingSpec, 額外回應欄位)。
+
+    LLM 自由設計房間關係圖 → 搜尋落實成對齊多層透天(核/柱/機電/家具)→ 挑毛病
+    回饋 Gemini 重設計 → 留 fitness 最高那版(design_loop.design_building)。
+    目前只做窄面寬透天(建築寬 5~7m);其餘尺寸請走一般模式。
+    """
+    from src.design.building_generator import _narrow_to_building
+    from src.design.layout.design_loop import design_building
+    from src.design.layout.narrow_house import MAX_WIDTH, MIN_DEPTH, MIN_WIDTH
+
+    t = brief.typical
+    if not isinstance(t, HouseBrief):
+        raise ValueError("AI 設計師模式目前只做單戶透天(不吃集合住宅),請關掉此模式")
+    bw = t.site_width - 2 * t.setback           # 建築 = 基地 − 四周退縮
+    bd = t.site_depth - 2 * t.setback
+    if not (MIN_WIDTH <= bw <= MAX_WIDTH and bd >= MIN_DEPTH):
+        raise ValueError(
+            f"AI 設計師模式目前只做窄面寬透天(建築寬 {MIN_WIDTH/1000:.0f}~"
+            f"{MAX_WIDTH/1000:.0f} 米、深 ≥{MIN_DEPTH/1000:.1f} 米);你的建築約 "
+            f"{bw/1000:.1f}×{bd/1000:.1f} 米,請關掉 AI 模式改用一般生成。")
+
+    best, history = design_building(brief_text, bw, bd, iterations=2, client=client)
+    building = _narrow_to_building(
+        [(lb, sp) for lb, sp, _s, _t in best["floors"]], brief.floor_height)
+    extra = {
+        "ai_design": True,
+        "ai_trajectory": history,               # 每次迭代的分數/問題數/fitness
+        "ai_problems": best["problems"],        # 收斂後剩下的問題(可能是物理硬限)
+        "ai_iter": best["iter"],
+        "ai_fitness": round(best["fitness"], 1),
+    }
+    return building, extra
+
+
 def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI:
     """建立應用。client_factory 注入假 Gemini client(測試用);None = 真的。"""
     app = FastAPI(title="自動建築平面圖生成器")
@@ -219,12 +257,21 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             raise HTTPException(
                 502, f"需求解析服務暫時無法使用:{exc}") from exc
 
-        # 2) 生成格局 + 出圖——設計檢核不過(基地太小等)一樣回 422 給使用者看
+        # 2) 生成格局 + 出圖——設計檢核不過(基地太小等)一樣回 422 給使用者看。
+        #    AI 設計師模式走混合式收斂管線(design_loop);否則走既有規則產生器。
         try:
-            building = generate_building_auto(brief)
+            if req.ai_design:
+                building, ai_extra = _ai_generate(req.text, brief, client)
+            else:
+                building = generate_building_auto(brief)
+                ai_extra = {}
             sheets = build_sheets(building)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:                 # AI 模式的二次 LLM 呼叫也可能失敗
+            raise HTTPException(502, f"生成服務暫時無法使用:{exc}") from exc
 
         # 3) 存檔(DXF + 打包 zip + PDF 圖冊)+ 組回應(SVG 直接內嵌 JSON)
         job_id = uuid.uuid4().hex[:12]
@@ -245,17 +292,28 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             for s in sheets:
                 zf.write(job_dir / s.filename, s.filename)
 
+        try:
+            metrics = building_metrics(building)          # 關鍵數字(E4)
+        except Exception:                                 # AI 版 spec 邊角 → 不擋出圖
+            metrics = {}
+        if ai_extra:
+            note = (f"AI 設計師:{len(ai_extra['ai_trajectory'])} 次迭代擇優"
+                    f"(fitness {ai_extra['ai_fitness']},剩 "
+                    f"{len(ai_extra['ai_problems'])} 個待改)")
+        else:
+            note = house_design_note(brief.typical)
         result = {
             "job_id": job_id,
             "seed": seed,
             "summary": _summary(brief, building),
-            "design_note": house_design_note(brief.typical),
-            "metrics": building_metrics(building),       # 關鍵數字(E4)
+            "design_note": note,
+            "metrics": metrics,
             "brief_data": data,                          # 多輪修改的底(E4)
-            "suggestions": _suggestions(brief, building),
+            "suggestions": [] if ai_extra else _suggestions(brief, building),
             "sheets": out_sheets,
             "zip": f"/api/jobs/{job_id}/all_dxf.zip",
             "pdf": f"/api/jobs/{job_id}/pdf",            # 點了才產生(懶生成)
+            **ai_extra,                                  # AI 模式:收斂軌跡/剩餘問題
         }
 
         # 4) 歷史方案(E4):整包回應存 result.json(重新載入用)、

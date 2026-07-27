@@ -104,8 +104,13 @@ def design_building(brief: str, building_w: float, building_d: float, *,
     best = None
     history: list[dict] = []
     for it in range(iterations):
-        floors = realize_graph_building(graph, building_w, building_d,
-                                        rng=random.Random(7))
+        try:
+            floors = realize_graph_building(graph, building_w, building_d,
+                                            rng=random.Random(7))
+        except Exception:                                # 這版落實失敗
+            if best is not None:
+                break                                    # 已有較早的最佳 → 用它
+            raise                                        # 第一版就失敗,沒得回
         scores = [score_report(sp)["overall_score"] for _, sp, _, _ in floors]
         mean_score = sum(scores) / len(scores)
         problems = critique_building(floors, env)
@@ -122,8 +127,11 @@ def design_building(brief: str, building_w: float, building_d: float, *,
                 print(f"       · {p}")
         if not problems or it == iterations - 1:         # 沒毛病了就收工
             break
-        graph = refine_room_graph(graph, problems, client=client,
-                                  floor_area_m2=floor_area_m2)
+        try:
+            graph = refine_room_graph(graph, problems, client=client,
+                                      floor_area_m2=floor_area_m2)
+        except Exception:                                # 重設計失敗(額度/網路)
+            break                                        # → 用目前最佳,不讓整棟白做
     return best, history
 
 

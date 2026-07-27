@@ -22,10 +22,14 @@
       <button class="chip">透天三層,基地19×13米,三房,地下一層車庫</button>
       <button class="chip">集合住宅每排6戶,走廊2米寬,五層樓,地下一層</button>
       <button class="chip">基地16×14米,三房,主臥在西南角,廚房靠北</button>
+      <button class="chip" data-ai="1">透天三層,建築物7×12米,三房(可勾 AI 設計師)</button>
     </div>
 
     <div class="actions">
       <input id="code" type="password" placeholder="通行碼" class="hidden">
+      <label class="ai-toggle" title="LLM 自由設計→搜尋落實→挑毛病回饋重設計(目前限窄面寬透天,建築 5~7 米寬)">
+        <input type="checkbox" id="ai-design"> 🤖 AI 設計師模式
+      </label>
       <button id="generate" class="primary">生成平面圖</button>
       <button id="history-btn" class="ghost">🕘 歷史方案</button>
       <span id="status"></span>
@@ -40,6 +44,7 @@
       <div class="result-info">
         <span id="summary" class="summary"></span>
         <span id="design-note" class="design-note"></span>
+        <div id="ai-panel" class="ai-panel hidden"></div>
         <div id="metrics" class="metrics hidden"></div>
         <div id="suggestions" class="suggestions hidden"></div>
       </div>

@@ -205,6 +205,38 @@ button.ghost:disabled { opacity: .55; cursor: wait; }
 }
 .hidden { display: none !important; }
 
+/* ── AI 設計師模式:切換 + 收斂軌跡面板 ────────────────────────────── */
+.ai-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.ai-toggle input { accent-color: var(--accent); }
+.ai-panel {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: #21252b;
+  border: 1px solid var(--accent-dark);
+  border-radius: 8px;
+}
+.ai-head { font-size: 13px; color: var(--accent); margin-bottom: 8px; }
+.ai-traj { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ai-step {
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+.ai-arrow { color: var(--muted); }
+.ai-problems { margin-top: 8px; font-size: 13px; color: var(--muted); line-height: 1.6; }
+.ai-problems b { color: var(--text); }
+.ai-problems.ok { color: #2f9e6f; }
+
 /* ── 家具自動配置評分卡(Phase 6-9)──────────────────────────────── */
 .layout-score {
   background: var(--panel);
