@@ -34,7 +34,6 @@ fetch("/api/config").then((r) => r.json()).then((cfg) => {
 $("examples").addEventListener("click", (e) => {
   if (!e.target.classList.contains("chip")) return;
   $("text").value = e.target.textContent.split("(")[0].split("(")[0].trim();
-  if (e.target.dataset.ai) $("ai-design").checked = true;   // 透天範例 → 自動勾 AI
   $("text").focus();
 });
 
@@ -117,8 +116,7 @@ async function generate(reuseText) {
   const text = (reuseText !== null ? reuseText : $("text").value).trim();
   if (!text) { showError("請先輸入需求描述"); return; }
   const btn = reuseText !== null ? $("redesign") : $("generate");
-  await requestPlan(
-    { text, code: $("code").value, ai_design: $("ai-design").checked }, btn, text);
+  await requestPlan({ text, code: $("code").value }, btn, text);
 }
 
 async function modify() {
@@ -137,9 +135,7 @@ async function modify() {
 // 共用請求流程:送出 → 成功就渲染結果。回傳是否成功。
 async function requestPlan(body, btn, textForRedesign) {
   btn.disabled = true;
-  $("status").textContent = body.ai_design
-    ? "AI 設計師運轉中:設計 → 落實 → 挑毛病 → 重設計…(約 30~60 秒)"
-    : "解析需求、設計格局、出圖中…(約 10~30 秒)";
+  $("status").textContent = "設計中:解析需求 → 配置格局 → 檢查 → 出圖…(約 10~60 秒)";
   hideError();
   try {
     const resp = await fetch("/api/generate", {
@@ -221,8 +217,12 @@ function renderMetrics(m) {
 // ── AI 設計師收斂軌跡:每次迭代的分數/問題數 + 收斂後仍待改的問題 ──────────
 function renderAiPanel(data) {
   const box = $("ai-panel");
-  if (!data || !data.ai_design) {
-    box.classList.add("hidden"); box.innerHTML = ""; return;
+  if (!data) { box.classList.add("hidden"); box.innerHTML = ""; return; }
+  if (!data.ai_design) {                    // 規則引擎:只顯示圖面檢查結果
+    const html = renderPlanCheck(data.plan_check);
+    box.innerHTML = html;
+    box.classList.toggle("hidden", !html);
+    return;
   }
   const traj = (data.ai_trajectory || []).map((h) =>
     `<span class="ai-step">${h.iter}｜分 ${Math.round(h.mean_score)} · 問題 ${h.n_problems}</span>`

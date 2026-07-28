@@ -150,6 +150,51 @@ def test_ai_design_returns_plan_check() -> None:
     assert pc["ok"] is True and pc["n_errors"] == 0     # 上線的圖必須是合格圖
 
 
+def test_single_entry_auto_picks_ai_for_townhouse() -> None:
+    """★ 單一入口:不必勾任何模式,窄透天自動走 AI 設計師。"""
+    brief = _payload(site_width_m=7, site_depth_m=12,
+                     dimension_basis="building", floors_above=3)
+    c = _seq_client([brief, _GRAPH_PAYLOAD, _GRAPH_PAYLOAD, _GRAPH_PAYLOAD])
+    r = c.post("/api/generate", json={"text": "透天三層,建築物7×12米,三房"})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data.get("engine") == "ai"                 # 自動選了 AI
+    assert data["plan_check"]["ok"] is True
+
+
+def test_single_entry_falls_back_to_rule_for_wide_site() -> None:
+    """★ 單一入口:寬基地(AI 引擎不合用)自動走規則版,使用者不會看到錯誤。"""
+    c = _client(_payload(site_width_m=19, site_depth_m=13, floors_above=2))
+    r = c.post("/api/generate", json={"text": "透天二層,基地19×13米,三房"})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data.get("engine") == "rule"               # 自動退回規則版
+    assert data["sheets"]                             # 照樣有圖
+
+
+def test_single_entry_falls_back_when_ai_fails() -> None:
+    """★ AI 這條掛掉(額度用完等)→ 自動退回規則版出圖,不是回錯誤。"""
+    class _BriefThenBoom:
+        def __init__(self, payload):
+            self.models = self
+            self.n = 0
+            self._p = payload
+
+        def generate_content(self, **kw):
+            self.n += 1
+            if self.n == 1:
+                return _FakeResponse(text=json.dumps(self._p))
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+    payload = _payload(site_width_m=7, site_depth_m=12,
+                       dimension_basis="building", floors_above=3)
+    app = create_app(client_factory=lambda: _BriefThenBoom(payload))
+    c = TestClient(app)
+    r = c.post("/api/generate", json={"text": "透天三層,建築物7×12米,三房"})
+    assert r.status_code == 200, r.text               # 沒有把錯誤丟給使用者
+    assert r.json().get("engine") == "rule"           # 退回規則版
+
+
 def test_ai_design_rejects_too_wide() -> None:
     """★ AI 設計師模式目前做透天(≤9m 寬);更寬的基地擋下(422)並說明改走一般模式。"""
     brief = _payload(site_width_m=16, site_depth_m=14, floors_above=3)

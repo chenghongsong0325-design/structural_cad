@@ -240,6 +240,7 @@ def _ai_generate(brief_text: str, brief, client):
     check = check_building([(lb, sp) for lb, sp, _s, _t in best["floors"]], env)
 
     extra = {
+        "engine": "ai",                         # 單一入口:回報實際用了哪個引擎
         "ai_design": True,
         "ai_trajectory": history,               # 每次迭代的分數/問題數/fitness
         "ai_problems": best["problems"],        # 收斂後剩下的問題(可能是物理硬限)
@@ -247,6 +248,54 @@ def _ai_generate(brief_text: str, brief, client):
         "ai_fitness": round(best["fitness"], 1),
         "plan_check": check.to_dict(),          # 圖面檢查:ok / 錯誤數 / 警告數 / 明細
     }
+    return building, extra
+
+
+def _ai_applicable(brief) -> bool:
+    """這份需求適不適合走 AI 設計師(單戶透天、尺寸在搜尋引擎的定義域內)。"""
+    from src.design.layout.graph_layout import (
+        AI_MAX_WIDTH, AI_MIN_DEPTH, AI_MIN_WIDTH)
+
+    t = brief.typical
+    if not isinstance(t, HouseBrief):
+        return False                                # 集合住宅走規則版
+    if t.dimension_basis == "building":
+        bw, bd = t.site_width - 2 * t.setback, t.site_depth - 2 * t.setback
+    else:
+        bw, bd = t.site_width, t.site_depth - t.setback
+    return AI_MIN_WIDTH <= bw <= AI_MAX_WIDTH and bd >= AI_MIN_DEPTH
+
+
+def _generate_auto(brief_text: str, brief, client, force_ai: bool = False):
+    """**單一入口**:自動挑引擎生圖 → (BuildingSpec, 額外回應欄位)。
+
+    規則:合用就走 AI 設計師(LLM 設計房間關係 → 搜尋落實 → 收斂),它畫得比較好;
+    不合用(寬基地/集合住宅)或 AI 這條出任何狀況(額度用完、斷網、落實失敗)就
+    **自動退回規則產生器**——使用者不必知道有幾種引擎,也不會因為 AI 掛掉就沒圖。
+
+    force_ai=True:明確要求 AI(不合用時照樣報錯,方便測試/除錯)。
+    """
+    if force_ai:
+        return _ai_generate(brief_text, brief, client)
+
+    if _ai_applicable(brief):
+        try:
+            return _ai_generate(brief_text, brief, client)
+        except Exception:                           # 額度/網路/落實失敗 → 退回規則版
+            pass
+
+    building = generate_building_auto(brief)
+    extra = {"engine": "rule"}
+    try:                                            # 規則版也送圖面檢查(同一套標準)
+        from src.design.layout.plan_check import check_building
+        floors = [(f.label, f.spec) for f in building.floors]
+        xs = [p[0] for p in floors[0][1].site_boundary]
+        ys = [p[1] for p in floors[0][1].site_boundary]
+        sb = getattr(brief.typical, "setback", 2000.0)
+        env = (min(xs) + sb, min(ys) + sb, max(xs) - sb, max(ys) - sb)
+        extra["plan_check"] = check_building(floors, env).to_dict()
+    except Exception:                               # 檢查本身不該擋出圖
+        pass
     return building, extra
 
 
@@ -291,13 +340,11 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
                    or HTTPException(502, f"需求解析服務暫時無法使用:{exc}")) from exc
 
         # 2) 生成格局 + 出圖——設計檢核不過(基地太小等)一樣回 422 給使用者看。
-        #    AI 設計師模式走混合式收斂管線(design_loop);否則走既有規則產生器。
+        #    **單一入口**:自動選引擎(合用就走 AI 設計師,否則規則產生器),
+        #    AI 這條失敗(額度/尺寸不合/意外)就自動退回規則版,不讓使用者看到錯誤。
         try:
-            if req.ai_design:
-                building, ai_extra = _ai_generate(req.text, brief, client)
-            else:
-                building = generate_building_auto(brief)
-                ai_extra = {}
+            building, ai_extra = _generate_auto(req.text, brief, client,
+                                                force_ai=req.ai_design)
             sheets = build_sheets(building)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
@@ -330,7 +377,7 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             metrics = building_metrics(building)          # 關鍵數字(E4)
         except Exception:                                 # AI 版 spec 邊角 → 不擋出圖
             metrics = {}
-        if ai_extra:
+        if ai_extra.get("ai_design"):                # 只有 AI 引擎才有收斂軌跡
             note = (f"AI 設計師:{len(ai_extra['ai_trajectory'])} 次迭代擇優"
                     f"(fitness {ai_extra['ai_fitness']},剩 "
                     f"{len(ai_extra['ai_problems'])} 個待改)")
@@ -343,7 +390,8 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             "design_note": note,
             "metrics": metrics,
             "brief_data": data,                          # 多輪修改的底(E4)
-            "suggestions": [] if ai_extra else _suggestions(brief, building),
+            "suggestions": ([] if ai_extra.get("ai_design")
+                            else _suggestions(brief, building)),
             "sheets": out_sheets,
             "zip": f"/api/jobs/{job_id}/all_dxf.zip",
             "pdf": f"/api/jobs/{job_id}/pdf",            # 點了才產生(懶生成)
