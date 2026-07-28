@@ -233,8 +233,22 @@ function renderAiPanel(data) {
     : `<div class="ai-problems ok">✅ 收斂後無明顯問題</div>`;
   box.innerHTML =
     `<div class="ai-head">🤖 AI 設計師:設計 → 落實 → 挑毛病 → 重設計,擇優</div>` +
-    `<div class="ai-traj">${traj}</div>` + probs;
+    `<div class="ai-traj">${traj}</div>` + renderPlanCheck(data.plan_check) + probs;
   box.classList.remove("hidden");
+}
+
+// ── 圖面正確性檢查:每房有門/室內連通/有大門/家具不穿牆/動線通 ──────────
+function renderPlanCheck(c) {
+  if (!c) return "";
+  const items = (c.issues || []).filter((i) => i.severity === "error");
+  if (c.ok) {
+    return `<div class="ai-problems ok">✅ 圖面檢查通過:每間房都有門、室內走得通、` +
+           `有臨路大門、家具不穿牆、動線暢通` +
+           (c.n_warnings ? `(另有 ${c.n_warnings} 項設計建議)` : "") + `</div>`;
+  }
+  return `<div class="ai-problems"><b>圖面檢查未過(${items.length}):</b>` +
+         items.map((i) => `<div>· ${i.floor}${i.room ? "/" + i.room : ""}:${i.detail}</div>`)
+              .join("") + `</div>`;
 }
 
 // ── 歷史方案:列出最近生成、點了重新載入 ───────────────────────────

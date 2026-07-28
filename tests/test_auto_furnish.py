@@ -146,3 +146,23 @@ def test_random_theta_furnishes_without_error():
         th, fl = random_theta(rng)
         spec = furnish_spec(bsp_to_spec(th, fl, SITE_W, SITE_D, BEDS))
         assert 0.0 <= score_report(spec)["overall_score"] <= 100.0
+
+
+# ── 家具不得嵌進牆體(v0.7:房間多邊形走牆中心線,擺位前要縮到牆內面)──────────
+def test_furniture_never_embedded_in_walls():
+    """★ 家具不會穿牆:所有家具與牆體的重疊面積趨近 0。
+
+    房間多邊形記的是牆**中心線**,家具貼齊房間邊界就會陷進半個牆厚(≈75~100mm),
+    畫出來就是「家具穿牆」。_inner_room 先把可擺範圍縮到牆內面,消除這個誤差。
+    """
+    from shapely.geometry import LineString
+
+    from src.design.collision.geometry import fixture_obstacles
+
+    spec = furnish_spec(bsp_to_spec(THETA, FLAGS, SITE_W, SITE_D, BEDS))
+    bodies = [LineString([w.start, w.end]).buffer(w.thickness / 2.0,
+                                                 cap_style=2, join_style=2)
+              for w in spec.walls]
+    for o in fixture_obstacles(spec):
+        overlap = sum(o.poly.intersection(b).area for b in bodies)
+        assert overlap < 1000.0, f"{o.tag} 嵌進牆體 {overlap/1e6:.3f}㎡"

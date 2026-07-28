@@ -49,6 +49,44 @@ COUNTER_DEPTH = 600.0        # 流理台檯面深(mm)
 COUNTER_INSET = 300.0        # 兩端離牆角留的距離(mm)
 COUNTER_MIN_LEN = 1500.0     # 太短就不擺流理台
 
+DEFAULT_HALF_WALL = 75.0     # 找不到對應牆時的預設半牆厚(mm)
+MIN_INNER_SIDE = 900.0       # 內緣縮完至少要這麼寬,否則不縮(極小房不失效)
+
+
+def _inner_room(spec, room):
+    """把房間縮到**牆的內面**再交給擺位器 → 家具不會陷進牆體。
+
+    房間多邊形走的是牆**中心線**,家具貼齊邊界就等於嵌進半個牆厚(≈75~100mm),
+    畫出來就是「家具穿牆」。這裡依每一側實際覆蓋的牆厚往內縮,回一個**臨時 Room**
+    (不動 spec 內的房間,面積標註/評分仍用原多邊形)。"""
+    from src.drafting.room import Room
+
+    poly = Polygon(room.points)
+    x0, y0, x1, y1 = poly.bounds
+    ins = {"S": DEFAULT_HALF_WALL, "N": DEFAULT_HALF_WALL,
+           "W": DEFAULT_HALF_WALL, "E": DEFAULT_HALF_WALL}
+    for w in spec.walls:
+        (sx, sy), (ex, ey) = w.start, w.end
+        half = w.thickness / 2.0
+        if abs(sx - ex) < 1.0:                       # 垂直牆 → 東西側
+            if min(sy, ey) < y1 - 1 and max(sy, ey) > y0 + 1:
+                if abs(sx - x0) < 60:
+                    ins["W"] = max(ins["W"], half)
+                elif abs(sx - x1) < 60:
+                    ins["E"] = max(ins["E"], half)
+        elif abs(sy - ey) < 1.0:                     # 水平牆 → 南北側
+            if min(sx, ex) < x1 - 1 and max(sx, ex) > x0 + 1:
+                if abs(sy - y0) < 60:
+                    ins["S"] = max(ins["S"], half)
+                elif abs(sy - y1) < 60:
+                    ins["N"] = max(ins["N"], half)
+    nx0, ny0 = x0 + ins["W"], y0 + ins["S"]
+    nx1, ny1 = x1 - ins["E"], y1 - ins["N"]
+    if nx1 - nx0 < MIN_INNER_SIDE or ny1 - ny0 < MIN_INNER_SIDE:
+        return room                                  # 太小就不縮(免得擺不下任何東西)
+    return Room(name=room.name, kind=room.kind,
+                points=[(nx0, ny0), (nx1, ny0), (nx1, ny1), (nx0, ny1)])
+
 
 def _room_priority(room) -> int:
     kind = canonical_room(room.kind)
@@ -80,9 +118,10 @@ def _add_counter(spec, room) -> bool:
     """沿牆擺一段流理台;由 Phase 6 碰撞引擎把關(不撞牆/門迴轉/既有家具)。
 
     逐面牆試,取第一個「檯面落在房內 + 通過碰撞查詢」的候選。都不行就不擺。"""
-    poly = Polygon(room.points)
+    inner = _inner_room(spec, room)                  # 貼牆內面,不嵌進牆體
+    poly = Polygon(inner.points)
     engine = FurnitureCollisionEngine(spec)
-    for counter in _counter_candidates(room):
+    for counter in _counter_candidates(inner):
         if not poly.buffer(1.0).contains(Polygon(counter_footprint(counter))):
             continue
         if engine.check(counter).valid:          # 不撞門迴轉/牆/既有家具
@@ -101,11 +140,12 @@ def furnish_spec(spec, *, weights: PlacementWeights | None = None):
         kind = canonical_room(room.kind)
         if kind == "kitchen":                    # 流理台先擺,冰箱才看得到它
             _add_counter(spec, room)
+        inner = _inner_room(spec, room)              # 可擺範圍=牆內面(家具不穿牆)
         for item in FURNITURE_PROGRAM.get(kind, []):
             names = item if isinstance(item, tuple) else (item,)
             for name in names:
                 opt = FurniturePlacementOptimizer(spec)
-                res = opt.place(name, room, weights=weights)
+                res = opt.place(name, inner, weights=weights)
                 if res.found:
                     spec.fixtures.append(res.best.placement())
                     break                        # 這個位置的家具已定,換下一項

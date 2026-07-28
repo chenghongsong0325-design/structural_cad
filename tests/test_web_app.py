@@ -136,6 +136,20 @@ def test_generate_ai_design_narrow_townhouse() -> None:
     assert c.get(data["sheets"][0]["dxf"]).status_code == 200
 
 
+def test_ai_design_returns_plan_check() -> None:
+    """★ AI 模式回應要帶「圖面正確性檢查」結果:合格且明細可讀(上線後看得到)。"""
+    brief = _payload(site_width_m=7, site_depth_m=12,
+                     dimension_basis="building", floors_above=3)
+    c = _seq_client([brief, _GRAPH_PAYLOAD, _GRAPH_PAYLOAD, _GRAPH_PAYLOAD])
+    r = c.post("/api/generate",
+               json={"text": "透天三層,建築物7×12米,三房", "ai_design": True})
+    assert r.status_code == 200, r.text
+    pc = r.json().get("plan_check")
+    assert pc is not None
+    assert set(pc) == {"ok", "n_errors", "n_warnings", "issues"}
+    assert pc["ok"] is True and pc["n_errors"] == 0     # 上線的圖必須是合格圖
+
+
 def test_ai_design_rejects_too_wide() -> None:
     """★ AI 設計師模式目前做透天(≤9m 寬);更寬的基地擋下(422)並說明改走一般模式。"""
     brief = _payload(site_width_m=16, site_depth_m=14, floors_above=3)

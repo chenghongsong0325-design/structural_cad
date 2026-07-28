@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
 
 from src.design.layout.graph_layout import (
     partition_envelope,
@@ -131,3 +131,128 @@ def test_partition_tiles_envelope():
     assert len(cells) == 6
     total = sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in cells)
     assert abs(total - W * D) < 1.0             # 鋪滿、不重疊
+
+
+def _floating_columns(spec, env):
+    """柱網交點中「落在某房內部(離邊界 >半柱寬)」的數目 = 孤立在房間中央的內柱。"""
+    from shapely.geometry import Point
+    from src.design.layout.graph_layout import COLUMN_SIZE, COLUMN_SPAN, _n_bays_x
+    wd, dp = env[2] - env[0], env[3] - env[1]
+    nx, ny = _n_bays_x(wd), max(1, round(dp / COLUMN_SPAN))
+    xs = [env[0] + i * (wd / nx) for i in range(nx + 1)]
+    ys = [env[1] + j * (dp / ny) for j in range(ny + 1)]
+    polys = [Polygon(r.points) for r in spec.rooms]
+    half = COLUMN_SIZE / 2
+    return sum(
+        1 for x in xs for y in ys
+        if any(p.contains(Point(x, y)) and p.boundary.distance(Point(x, y)) > half
+               for p in polys))
+
+
+def test_habitable_rooms_get_windows():
+    """★ 有採光面的居室一定有窗:貼前後外牆(或天井)的房間不能是暗房。
+
+    以前配窗挑「最長的外牆邊」,深長客廳最長邊是東側共壁 → 窗開了又被共壁規則刪掉,
+    結果整層採光分 0。修正後由 _ensure_room_windows 補回前後外牆/天井側的窗。"""
+    from src.design.layout.global_score import score_report
+    from src.design.layout.narrow_house import WINDOW_KINDS
+
+    for bw, bd in [(7000.0, 12000.0), (11000.0, 12000.0), (13000.0, 14000.0)]:
+        env = (2000.0, 2000.0, 2000.0 + bw, 2000.0 + bd)
+        for lb, spec, _, _ in realize_graph_building(GRAPH, bw, bd,
+                                                     rng=random.Random(7)):
+            for r in spec.rooms:
+                if r.kind not in WINDOW_KINDS:
+                    continue
+                poly = Polygon(r.points)
+                x0, y0, x1, y1 = poly.bounds
+                if not (abs(y0 - env[1]) < 60 or abs(y1 - env[3]) < 60):
+                    continue                     # 內間(無前後外牆)不強制,由 critique 回報
+                has = any(op.kind == "window" and poly.exterior.distance(
+                    Point(*w.point_at(op.position))) < 60
+                    for w in spec.walls for op in w.openings)
+                assert has, f"{bw:.0f}x{bd:.0f} {lb}/{r.name} 貼外牆卻沒窗"
+        # 整棟採光子分數不得再是 0
+        for _lb, spec, _, _ in realize_graph_building(GRAPH, bw, bd,
+                                                      rng=random.Random(7)):
+            assert score_report(spec)["sub_scores"]["natural_lighting"] > 0
+
+
+def test_floor_is_one_connected_whole_all_sizes():
+    """★ 從大門進來走得到每一間房:整層室內連通,不會被柱線牆切成兩半、
+    也不會有「只能從室外自己開門進去」的孤島。"""
+    from src.design.layout.narrow_house import _room_components
+
+    for bw, bd in [(5000.0, 10000.0), (7000.0, 12000.0), (9000.0, 12000.0),
+                   (11000.0, 12000.0), (13000.0, 14000.0)]:
+        for lb, spec, _, _ in realize_graph_building(GRAPH, bw, bd,
+                                                     rng=random.Random(7)):
+            comps = _room_components(spec)
+            assert len(comps) == 1, (
+                f"{bw:.0f}x{bd:.0f} {lb} 室內斷成 {len(comps)} 塊:"
+                f"{[[spec.rooms[i].name for i in c] for c in comps]}")
+
+
+def test_only_one_entrance_on_ground_floor():
+    """★ 1F 恰有一扇對外大門(不會為了補門在外牆多開一道);樓上外牆完全不開門。"""
+    for bw, bd in [(7000.0, 12000.0), (11000.0, 12000.0)]:
+        env = (2000.0, 2000.0, 2000.0 + bw, 2000.0 + bd)
+        for lb, spec, _, _ in realize_graph_building(GRAPH, bw, bd,
+                                                     rng=random.Random(7)):
+            ext = 0
+            for w in spec.walls:
+                for op in w.openings:
+                    if op.kind != "door":
+                        continue
+                    cx, cy = w.point_at(op.position)
+                    if (abs(cy - env[1]) < 60 or abs(cy - env[3]) < 60
+                            or abs(cx - env[0]) < 60 or abs(cx - env[2]) < 60):
+                        ext += 1
+            assert ext == (1 if lb == "1F" else 0), f"{lb} 對外門 {ext} 扇"
+
+
+def test_every_room_has_a_door_all_sizes():
+    """★ 不管尺寸:每間可進入的房間都有門/通道(機電豎管、天井除外),1F 有臨路大門,
+    樓上外牆不開門(不會有通往空中的門)。"""
+    from src.design.layout.narrow_house import NO_DOOR_KINDS
+    from src.design.layout.room_circulation import _room_openings
+
+    for bw, bd in [(5000.0, 10000.0), (7000.0, 12000.0), (11000.0, 12000.0),
+                   (13000.0, 14000.0)]:
+        env = (2000.0, 2000.0, 2000.0 + bw, 2000.0 + bd)
+        floors = realize_graph_building(GRAPH, bw, bd, rng=random.Random(7))
+        for lb, spec, _, _ in floors:
+            for r in spec.rooms:
+                if r.kind in NO_DOOR_KINDS:
+                    continue
+                assert _room_openings(spec, Polygon(r.points)), \
+                    f"{bw:.0f}x{bd:.0f} {lb}/{r.name}({r.kind}) 沒有門"
+            # 樓上外牆不得開門(通往空中)
+            if lb != "1F":
+                for w in spec.walls:
+                    for op in w.openings:
+                        if op.kind != "door":
+                            continue
+                        cx, cy = w.point_at(op.position)
+                        on_edge = (abs(cy - env[1]) < 60 or abs(cy - env[3]) < 60
+                                   or abs(cx - env[0]) < 60 or abs(cx - env[2]) < 60)
+                        assert not on_edge, f"{lb} 外牆開了通往室外的門"
+        # 1F 一定有臨路大門(南向外牆)
+        _, f1, _, _ = floors[0]
+        assert any(op.kind == "door" and abs(w.point_at(op.position)[1] - env[1]) < 60
+                   for w in f1.walls for op in w.openings), "1F 沒有臨路大門"
+
+
+def test_wide_building_multibay_columns_hidden():
+    """★ Phase 2:面寬 >9m → 多跨柱(每跨 ≤9m),內柱藏預切的柱線牆、不孤立房中央,
+    每層動線仍全通。"""
+    bw, bd = 13000.0, 12000.0
+    env = (2000.0, 2000.0, 2000.0 + bw, 2000.0 + bd)
+    floors = realize_graph_building(GRAPH, bw, bd, rng=random.Random(7))
+    _, spec, _, _ = floors[0]
+    assert len(spec.x_spacings) >= 2                 # 分多跨
+    assert max(spec.x_spacings) <= 9000.0            # 每跨 ≤9m 經濟上限
+    floating = sum(_floating_columns(sp, env) for _, sp, _, _ in floors)
+    assert floating <= 1, f"孤立內柱過多:{floating}"   # 藏牆內(容 1 根動線退讓)
+    for lb, sp, _, _ in floors:
+        assert analyze_room_circulation(sp).ok, lb

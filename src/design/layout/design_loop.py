@@ -49,10 +49,22 @@ def _touches_ns(rect, env) -> bool:
     return abs(rect[1] - env[1]) < 1.0 or abs(rect[3] - env[3]) < 1.0
 
 
+# plan_check 的問題代碼 → 給 LLM 的具體修法建議(critique 要「可行動」才有用)。
+_FIX_HINT = {
+    "room_no_daylight": "減少該層房間數或換位置(靠前後外牆或天井)",
+    "room_oversize": "拆成兩間或該層增加房間",
+    "room_skinny": "該層房間數減少,或把長邊拆給相鄰房間",
+}
+
+
 def critique_building(floors, env) -> list[str]:
-    """挑落實後的毛病 → 給 LLM 的可行動問題清單(純幾何/評分檢查,不呼叫網路)。"""
-    from src.design.layout.graph_layout import AREA_BAND, _adjacent
-    from src.design.layout.room_circulation import analyze_room_circulation
+    """挑落實後的毛病 → 給 LLM 的可行動問題清單(純幾何/評分檢查,不呼叫網路)。
+
+    ⚠️ 判準一律走 plan_check(單一來源):硬錯誤(沒門/斷開/穿牆/動線)照理已被
+    產線關卡擋掉,萬一漏網也一併回報;設計面警告(內間沒光/過大/細長)加上具體修法。
+    另外補一項 plan_check 看不到的:LLM 要求的相鄰沒排進去(那是關係圖 vs 落實的落差)。
+    """
+    from src.design.layout.plan_check import check_building
 
     problems: list[str] = []
     for label, spec, sat, tot in floors:
@@ -61,27 +73,20 @@ def critique_building(floors, env) -> list[str]:
                 f"{label}:{tot - sat} 組要求的相鄰沒排進去"
                 f"(房間太多擠不下,考慮減少或合併)")
 
-        patios = [_rect(r) for r in spec.rooms if r.kind == "patio"]
-        for r in spec.rooms:
-            band = AREA_BAND.get(r.kind)
-            if (band and r.kind in OVERSIZE_KINDS
-                    and r.area_m2 > band[1] * OVERSIZE):  # 居室誇張過大(設計端可救)
-                problems.append(
-                    f"{label}:{r.name} {r.area_m2:.0f}㎡ 太大"
-                    f"(理想≤{band[1]:.0f}㎡),拆成兩間或該層增加房間")
-            if r.kind in DAYLIGHT_KINDS:                 # 居室變內間沒光
-                rr = _rect(r)
-                lit = _touches_ns(rr, env) or any(_adjacent(rr, pr)
-                                                  for pr in patios)
-                if not lit:
-                    problems.append(
-                        f"{label}:{r.name} 是內間、沒對外採光"
-                        f"(前後外牆或天井旁才有光),減少該層房間數或換位置")
-
-        rep = analyze_room_circulation(spec)             # 動線不通
-        if not rep.ok:
-            for rc in rep.blocked:
-                problems.append(f"{label}:{rc.name} 動線不通({rc.reason})")
+    rep = check_building([(lb, sp) for lb, sp, _s, _t in floors], env)
+    for issue in rep.issues:
+        if issue.code == "room_oversize" and issue.room:
+            kind_ok = True                               # 只挑設計端救得動的居室
+            for lb, spec, _s, _t in floors:
+                if lb != issue.floor:
+                    continue
+                r = next((x for x in spec.rooms if x.name == issue.room), None)
+                kind_ok = r is not None and r.kind in OVERSIZE_KINDS
+            if not kind_ok:
+                continue                                 # 走道/儲藏過大是切法餘量,改設計救不動
+        who = f"{issue.floor}:{issue.room}" if issue.room else f"{issue.floor}"
+        hint = _FIX_HINT.get(issue.code, "")
+        problems.append(f"{who} {issue.detail}" + (f",{hint}" if hint else ""))
     return problems
 
 

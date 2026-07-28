@@ -40,6 +40,12 @@ DAYLIGHT_BONUS = 0.5     # 要採光的房落在外框(有窗)→ 加分
 ENTRY_FRONT_BONUS = 1.0  # 大門那間貼南面(臨路)→ 加分
 W_SIZE = 1.0             # 房間大小離「合理範圍」的扣分權重
 SIZE_CAP = 1.5           # 單間大小扣分上限(免得一間爆掉壓過相鄰)
+W_ASPECT = 1.0           # 房間細長(像走廊)的扣分權重
+ASPECT_OK = 2.2          # 長寬比在這以內算方正(真實住宅居室多為 1:1~1:2)
+ASPECT_CAP = 1.5         # 單間細長扣分上限
+# 這些房間本來就細長,不罰:走道是線性動線、豎井/天井是設備井、陽台是帶狀。
+SKINNY_OK_KINDS = {"corridor", "pipe_shaft", "patio", "balcony", "storage",
+                   "utility"}
 
 # 每種房間的合理面積帶(㎡):落在帶內不扣分,超出越多扣越兇。
 # 依台灣住宅常識抓的粗範圍——不是要精準,是要把「浴廁 9㎡、玄關 14㎡」這種腫房間壓下去。
@@ -77,10 +83,11 @@ COLUMN_SIZE = 400.0      # 結構柱斷面(mm 見方)
 COLUMN_SPAN = 6000.0     # 柱距目標(沿進深,6m 經濟跨度;藏外牆內、上下對齊)
 
 # AI 設計師模式(混合式收斂管線)實測可穩定落實的建築尺寸範圍。與 narrow_house
-# 的規則產生器分開:這個搜尋式引擎比規則版更耐尺寸(5~9m 寬 × ≥8m 深,實測不崩、
-# 採光/柱都乾淨)。>9m 寬需多跨柱(內柱要藏牆內)+ 寬樓層補天井,屬下一階段。
+# 的規則產生器分開:這個搜尋式引擎比規則版更耐尺寸(5~13m 寬 × ≥8m 深,實測不崩、
+# 採光/柱都乾淨)。>9m 寬自動走多跨柱(內柱藏預切的柱線牆);>13m 或方形地要另一套
+# 中庭骨架(Phase 3)。多層透天每層房少,西側天井+外周採光撐到 13m 仍無暗房。
 AI_MIN_WIDTH = 5000.0    # <5m:西側核(樓梯+管道+天井)吃掉寬度,東側住不了
-AI_MAX_WIDTH = 9000.0    # 單跨經濟上限;>9m 跨度過大,待多跨柱(Phase 2)
+AI_MAX_WIDTH = 13000.0   # >13m 需 3 跨 + 中庭骨架(Phase 3)
 AI_MIN_DEPTH = 8000.0    # <8m:前段+核(6.3m)+後室三段擠不下
 
 
@@ -131,6 +138,37 @@ def partition_envelope(rect: Rect, n: int, rng: random.Random,
     return _partition_from([rect], n, rng, min_cell)
 
 
+def _n_bays_x(building_w: float) -> int:
+    """面寬方向的柱跨數:每跨 ≤9m(經濟上限);9m 以下 1 跨,免多內柱擾動格局。"""
+    nx = 1
+    while building_w / nx > 9000.0 + 1e-6:
+        nx += 1
+    return nx
+
+
+def _bay_xlines(env: Rect) -> list[float]:
+    """內部柱軸線的 x 座標(不含左右外牆)。1 跨時為空 → 無內柱。"""
+    ex0, _, ex1, _ = env
+    nx = _n_bays_x(ex1 - ex0)
+    return [ex0 + k * (ex1 - ex0) / nx for k in range(1, nx)]
+
+
+def _apply_bay_walls(seed: list[Rect], xlines: list[float]) -> list[Rect]:
+    """在每條內柱軸線處,把被它穿過的 seed 矩形垂直切開 → 保證該處有一道隔間牆
+    (內柱藏其中、上下對齊)。房間之後在各柱跨帶內細分,不跨越柱線。"""
+    cells = list(seed)
+    for x in xlines:
+        out: list[Rect] = []
+        for (x0, y0, x1, y1) in cells:
+            if x0 + SNAP < x < x1 - SNAP:          # 柱線穿過這格內部 → 切開
+                out.append((x0, y0, x, y1))
+                out.append((x, y0, x1, y1))
+            else:
+                out.append((x0, y0, x1, y1))
+        cells = out
+    return cells
+
+
 # ── 2) 格子之間的相鄰關係 / 是否貼外框 ──────────────────────────────────────
 def _adjacent(a: Rect, b: Rect, thr: float = EDGE_MIN) -> bool:
     ax0, ay0, ax1, ay1 = a
@@ -177,6 +215,22 @@ def _size_penalty(area_m2: float, kind: str) -> float:
     return min(SIZE_CAP, over)
 
 
+def _aspect_penalty(c: Rect, kind: str) -> float:
+    """房間長寬比離「方正」多遠(0=夠方正)。走道/豎井本來就細長,不罰。
+
+    為什麼要罰:切法只顧面積時會生出 2.9×10.2m 這種「像走廊的餐廳」——面積合格但
+    完全不能用。真實住宅居室長寬比大多在 1:1~1:2 之間。"""
+    if kind in SKINNY_OK_KINDS:
+        return 0.0
+    w, h = c[2] - c[0], c[3] - c[1]
+    if w <= 0 or h <= 0:
+        return ASPECT_CAP
+    ar = max(w, h) / min(w, h)
+    if ar <= ASPECT_OK:
+        return 0.0
+    return min(ASPECT_CAP, (ar - ASPECT_OK) / ASPECT_OK)
+
+
 def _score(perm: tuple, rooms: list, edges: list, cells: list[Rect],
            cell_adj: set[frozenset], env: Rect, entry_id: Optional[str]) -> float:
     """perm[k] = 第 k 個房間放進哪個格子。回總分(越高越符合 LLM 的關係圖)。"""
@@ -198,6 +252,7 @@ def _score(perm: tuple, rooms: list, edges: list, cells: list[Rect],
             s += ENTRY_FRONT_BONUS
         area_m2 = (c[2] - c[0]) * (c[3] - c[1]) / 1e6
         s -= W_SIZE * _size_penalty(area_m2, r["kind"])       # 房間大小合不合理
+        s -= W_ASPECT * _aspect_penalty(c, r["kind"])         # 房間會不會細長像走廊
     return s
 
 
@@ -360,31 +415,39 @@ def _assign_core(free, fixed, allcells, cell_adj, env, entry_id, edges):
             pf), rooms_full
 
 
-def _declutter_for_circulation(spec, max_removals: int = 8) -> int:
+DECLUTTER_SKIP = ("patio", "parking", "garage", "stair", "balcony")
+
+
+def _declutter_for_circulation(spec, max_removals: int = 20) -> int:
     """furnish 後修復動線:哪間房被家具擋住,移掉該房最占空間的家具再驗,直到走得通。
 
     擋路的通常就是那件過大的(穿越型餐廳的餐桌、擠爆浴室的浴缸);寧可少一件也要
-    走得通。回移除件數。"""
+    走得通(空房間至少走得進去,家具擺不下是房間太小的設計問題,由 critique 回報)。
+
+    ⚠️ **逐房間物件檢查**,不靠名稱比對:同一層常有兩間都叫「臥室」,用名稱找會永遠
+    修到第一間、真正被擋的那間一直沒修好(這正是小坪數樓層動線修不好的原因)。
+
+    回移除件數。"""
     from shapely.geometry import Polygon
 
     from src.design.collision.geometry import fixture_obstacles
-    from src.design.layout.room_circulation import analyze_room_circulation
+    from src.design.layout.room_circulation import analyze_room
+    from src.design.semantic.room_semantic import canonical_room
 
     removed = 0
     for _ in range(max_removals):
-        rep = analyze_room_circulation(spec)
-        if rep.ok:
-            break
         did = False
-        for rc in rep.blocked:                       # 找被擋的房,移掉最大件家具
-            room = next((r for r in spec.rooms if r.name == rc.name), None)
-            if room is None:
+        for room in spec.rooms:                      # 直接走房間物件(名稱可能重複)
+            if (canonical_room(room.kind) in DECLUTTER_SKIP
+                    or room.kind in DECLUTTER_SKIP):
                 continue
-            rpoly = Polygon(room.points)
+            if analyze_room(spec, room).ok:
+                continue
+            rpoly = Polygon(room.points)             # 這間被擋 → 移掉它最大件家具
             cands = [o for o in fixture_obstacles(spec)
                      if o.poly.intersection(rpoly).area > 0.0]
             if not cands:
-                continue
+                continue                             # 沒家具還不通 = 房間本身太小
             victim = max(cands, key=lambda o: o.poly.area)
             try:
                 spec.fixtures.remove(victim.ref)
@@ -392,15 +455,17 @@ def _declutter_for_circulation(spec, max_removals: int = 8) -> int:
                 continue
             removed += 1
             did = True
-            break
         if not did:
             break
     return removed
 
 
 def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
-                        furnish, floor_label, stair_label):
-    """落實一層:核件(樓梯/管道間/天井)釘同位,LLM 房間切核外空間;加柱、收尾門洞、家具。"""
+                        furnish, floor_label, stair_label, bay_walls=True):
+    """落實一層:核件(樓梯/管道間/天井)釘同位,LLM 房間切核外空間;加柱、收尾門洞、家具。
+
+    bay_walls:多跨時是否在內柱軸線預切隔間牆(藏內柱)。若某層因此動線卡死,
+    上層迴圈會關掉它重試(寧可浮柱也要動線通)。"""
     stair_rect, shaft_rect, patio_rect, seed, _cw = core
     # LLM 若提了樓梯/天井,用它的 id 讓相鄰邊還能評分;沒提就補一個(不影響對齊)。
     g_stair = next((r for r in rooms if r["kind"] == "stair"), None)
@@ -413,6 +478,14 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
     shaft_room = {"id": f"shaft_{floor_label}", "kind": "pipe_shaft",
                   "wants_daylight": False}
     m = len(free)
+
+    # 多跨(>9m 寬):在內柱軸線處預切 seed → 每層同位置都有隔間牆,內柱藏其中、
+    # 上下對齊。房間夠多才強制(否則分帶填不滿 → 退回原 seed,寧可少一道柱線牆)。
+    xlines = _bay_xlines(env) if bay_walls else []
+    if xlines:
+        banded = _apply_bay_walls(seed, xlines)
+        if m >= len(banded):
+            seed = banded
 
     best = None
     for _ in range(tries):
@@ -450,23 +523,32 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
 
     # 收尾門洞(重用 narrow_house):去重複門/界牆窗/天井門、浴室只留 1 門、1F 補前門。
     from src.design.layout.narrow_house import (
-        _door_kinds, _fix_openings, _remove_openings, _stair,
+        _door_kinds, _ensure_floor_connected, _ensure_room_doors,
+        _ensure_room_windows, _fix_openings, _remove_openings, _stair,
     )
     level = int(floor_label[:-1]) if floor_label[:-1].isdigit() else 1
     _fix_openings(spec, env[0], env[1], env[2], level)
     _remove_openings(spec, {(dp.wall_index, dp.opening_index) for dp in spec.doors
                             if "pipe_shaft" in _door_kinds(spec, dp)})  # 管道間非走入
+    # 開口保證(在所有刪門收尾之後,否則補的門會又被刪):
+    #   ① 整層室內連通 → 從大門走得到每一間房(柱線牆不會把一層切成兩半)
+    #   ② 仍沒門的房間補一扇(最後手段)
+    #   ③ 居室補窗(前後外牆或天井側;共壁窗被刪後不能讓房間全暗)
+    _ensure_floor_connected(spec)
+    _ensure_room_doors(spec, env[0], env[1], env[2], level)
+    _ensure_room_windows(spec, env[0], env[1], env[2], env[3])
 
     # 樓梯(舒適折返梯,填滿樓梯間)。
     sx0, sy0, sx1, sy1 = stair_rect
     spec.stairs = [_stair(sx0, sx1, sy0, sy1, stair_label)]
 
-    # 結構柱:沿進深每 ~6m 一道軸線,柱放外框軸網交點(藏牆內、每層同位=上下對齊)。
+    # 結構柱:面寬與進深各每 ~6m 一道軸線,柱放外框軸網交點(藏牆內、每層同位=上下
+    # 對齊)。面寬 >9m 時分多跨,內柱落在上面預切的柱線牆內,不孤立在房間中央。
     W, D = env[2] - env[0], env[3] - env[1]
-    n = max(1, round(D / COLUMN_SPAN))
+    nx, ny = _n_bays_x(W), max(1, round(D / COLUMN_SPAN))
     spec.grid_origin = (env[0], env[1])
-    spec.x_spacings = [W]
-    spec.y_spacings = [D / n] * n
+    spec.x_spacings = [W / nx] * nx
+    spec.y_spacings = [D / ny] * ny
     spec.column_centers = None                 # None → 自動放在軸網交點
     spec.column_size = COLUMN_SIZE
     spec.floor_label = floor_label
@@ -478,13 +560,17 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
     return spec, satisfied, len(edges), score
 
 
-CIRC_RETRIES = 6         # 某層第一次落實動線卡住 → 換這麼多個切法種子重試找全通的
+CIRC_RETRIES = 6         # 某層落實不合格 → 換這麼多個切法種子重試找合格的
 
 
-def _floor_blocked(spec) -> bool:
-    """這層有房間走不通(家具擋死門)嗎?"""
-    from src.design.layout.room_circulation import analyze_room_circulation
-    return not analyze_room_circulation(spec).ok
+def _floor_errors(spec, env, level: int, label: str = "") -> list:
+    """這層違反了哪些**硬規則**(沒門/斷開/穿牆家具/動線不通/門通往空中)。
+
+    空清單 = 這層是合格圖。設計面問題(內間沒光、房間過大)不在此列——那要改設計,
+    不是換切法能解決的,由 critique/收斂迴圈回饋給 LLM。"""
+    from src.design.layout.plan_check import check_floor
+    return [i for i in check_floor(spec, env, level, label)
+            if i.severity == "error"]
 
 
 def realize_graph_building(graph: dict, building_w: float, building_d: float,
@@ -512,18 +598,33 @@ def realize_graph_building(graph: dict, building_w: float, building_d: float,
                  if e["a"] in ids and e["b"] in ids]
         entry = graph.get("entry") if graph.get("entry") in ids else None
         stair_label = "下" if f == top else "上"
-        spec, sat, tot, _ = _realize_floor_core(
-            rooms, edges, entry, env, core, rng, tries, furnish,
-            f"{f}F", stair_label)
-        if furnish and _floor_blocked(spec):          # 動線卡住 → 換切法種子重試
-            for k in range(CIRC_RETRIES):
-                alt = random.Random(f * 1009 + k * 31 + 17)   # 決定性、可重現
-                a_spec, a_sat, a_tot, _ = _realize_floor_core(
-                    rooms, edges, entry, env, core, alt, tries, furnish,
-                    f"{f}F", stair_label)
-                if not _floor_blocked(a_spec):
-                    spec, sat, tot = a_spec, a_sat, a_tot
+
+        def realize(alt_rng, bay):
+            return _realize_floor_core(rooms, edges, entry, env, core, alt_rng,
+                                       tries, furnish, f"{f}F", stair_label,
+                                       bay_walls=bay)
+
+        spec, sat, tot, _ = realize(rng, True)        # 常態:傳入 rng + 柱線牆
+        # 圖面關卡:不合格(沒門/斷開/家具穿牆/動線不通/門通往空中)就換切法重生。
+        # 先保留柱線牆(內柱藏牆內),仍不合格再放棄柱線牆(寧可浮一根內柱也要圖能用)。
+        # 第一次一律用傳入 rng → 一次就合格的樓層(常態)輸出逐位元不變、不回歸。
+        # 全部重試都不合格時,留「錯誤最少」的那版(永不比原本差)。
+        errs = _floor_errors(spec, env, f, f"{f}F") if furnish else []
+        if errs:
+            best = (len(errs), spec, sat, tot)
+            for bay in (True, False):
+                base = f * 1009 + 17 + (0 if bay else 500)
+                for k in range(CIRC_RETRIES):
+                    a_spec, a_sat, a_tot, _ = realize(
+                        random.Random(base + k * 31), bay)
+                    n = len(_floor_errors(a_spec, env, f, f"{f}F"))
+                    if n < best[0]:
+                        best = (n, a_spec, a_sat, a_tot)
+                    if n == 0:
+                        break
+                if best[0] == 0:
                     break
+            _n, spec, sat, tot = best
         out.append((f"{f}F", spec, sat, tot))
     return out
 

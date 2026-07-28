@@ -32,6 +32,8 @@ N1 範圍:多層 + 單樓梯 + 天井 + 浴室 + 家具(Phase 6 擺位),能畫 D
 """
 from __future__ import annotations
 
+import itertools
+
 from shapely.geometry import Point, Polygon
 
 from src.drafting.apartment_plan import DoorPlacement
@@ -69,6 +71,12 @@ BATH_MIN_W, BATH_MAX_W = 1500.0, 2400.0
 CORE_BATH_MIN_W = STAIRWELL_W + WELL_W_MIN + BATH_MIN_W
 
 ENTRY_WIDTH = 1000.0            # 臨路大門寬
+INTERIOR_DOOR_WIDTH = 850.0     # 補內門寬(對齊 bsp_layout.DOOR_WIDTH)
+# 補門保證的例外:機電豎管、採光天井本來就不設走入門(封閉服務豎井)。
+NO_DOOR_KINDS = {"pipe_shaft", "patio"}
+# 補門時偏好接的鄰室(越公共/動線越優先);越前面優先度越高。
+_DOOR_NEIGHBOR_PREF = ("corridor", "foyer", "stair_hall", "living", "dining",
+                       "kitchen", "stair")
 
 # 三段進深:(段名, 分配權重, 最小進深mm)。前室 / 中段核 / 後室。
 ZONES = [
@@ -267,16 +275,369 @@ def _add_front_door(spec, bx0, by0, bx1):
         length = w.length
         taken = [(op.position - op.width / 2, op.position + op.width / 2)
                  for op in w.openings]
-        for pos in (length * 0.22, length * 0.78, length * 0.5):
-            a, b = pos - ENTRY_WIDTH / 2, pos + ENTRY_WIDTH / 2
-            if a < 0 or b > length:
-                continue
-            if all(b < t0 or a > t1 for t0, t1 in taken):    # 不撞既有洞口
+        # 先試慣用比例,再沿牆掃描 → 一定落在「不撞洞口 且 離每間房角落夠遠」的位置。
+        step = 100.0
+        n = max(1, int(length / step))
+        cands = [length * 0.22, length * 0.78, length * 0.5]
+        cands += [i * step for i in range(1, n)]
+        for clear in DOOR_CLEAR_STEPS:              # 先求舒適淨距,不行再放寬
+            for pos in cands:
+                a, b = pos - ENTRY_WIDTH / 2, pos + ENTRY_WIDTH / 2
+                if a < 0 or b > length:
+                    continue
+                if not all(b < t0 or a > t1 for t0, t1 in taken):   # 撞既有洞口
+                    continue
+                if not _door_pos_ok(spec, w, pos, ENTRY_WIDTH, clear):
+                    continue                        # 卡在房間角落
                 w.openings.append(Opening(pos, ENTRY_WIDTH, "door"))
                 spec.doors.append(DoorPlacement(
                     wi, len(w.openings) - 1, Door(hinge="left", swing="in")))
                 return
         return                                      # 這面牆塞不下就算了(罕見)
+
+
+DOOR_TOUCH_TOL = 60.0           # 門洞中心離房間邊界多近算「這扇門開在這間房上」
+# 門洞兩端離「垂直方向的牆(房間角落)」的最小淨距(mm)。門擠在角落時,人走不進
+# 那個角(房內可站區是牆內縮半個通行寬,角落구域接不上門)→ 動線檢查會判不通。
+DOOR_CORNER_CLEAR = 350.0
+# 分級退讓:先求舒適淨距,擺不下就放寬;最後一級是「動線仍走得通」的物理下限
+# (房內可站區是牆內縮半個通行寬,門離角落太近就接不上那塊 → 判動線不通)。
+DOOR_CLEAR_STEPS = (350.0, 250.0, 150.0, 100.0)
+DOOR_CORNER_MIN = 90.0          # 檢查器判定「卡死在角落」的門檻(動線下限 ~67mm)
+
+
+def _room_edge_span(room_poly, wall, along_start):
+    """牆與這間房相鄰的那一段在牆上的範圍 → (lo, hi) 沿牆座標;不相鄰回 None。"""
+    (sx, sy), (ex, ey) = wall.start, wall.end
+    rx0, ry0, rx1, ry1 = room_poly.bounds
+    if abs(sx - ex) < 1.0:                              # 垂直牆
+        if not (abs(sx - rx0) < DOOR_TOUCH_TOL or abs(sx - rx1) < DOOR_TOUCH_TOL):
+            return None
+        lo, hi = max(min(sy, ey), ry0), min(max(sy, ey), ry1)
+    elif abs(sy - ey) < 1.0:                            # 水平牆
+        if not (abs(sy - ry0) < DOOR_TOUCH_TOL or abs(sy - ry1) < DOOR_TOUCH_TOL):
+            return None
+        lo, hi = max(min(sx, ex), rx0), min(max(sx, ex), rx1)
+    else:
+        return None
+    if hi - lo <= 0:
+        return None
+    return abs(lo - along_start), abs(hi - along_start)
+
+
+def _door_pos_ok(spec, wall, pos: float, width: float,
+                 clear: float = DOOR_CORNER_CLEAR) -> bool:
+    """這個門洞位置合不合格:對**兩側每一間房**都要離房間角落 ≥ clear。
+
+    這條規則所有開門路徑共用(前門/補門/接通用門),避免「門卡在牆角、人走不進去」
+    ——那正是動線檢查會判不通、但看圖不明顯的錯誤。"""
+    (sx, sy), (ex, ey) = wall.start, wall.end
+    along_start = sy if abs(sx - ex) < 1.0 else sx
+    px, py = wall.point_at(pos)
+    a, b = pos - width / 2, pos + width / 2
+    for room in spec.rooms:
+        poly = Polygon(room.points)
+        if poly.exterior.distance(Point(px, py)) > DOOR_TOUCH_TOL:
+            continue                                    # 這扇門不在這間房的邊界上
+        span = _room_edge_span(poly, wall, along_start)
+        if span is None:
+            continue
+        lo, hi = min(span), max(span)
+        if a < lo + clear - 1e-6 or b > hi - clear + 1e-6:
+            return False                                # 太靠近這間房的角落
+    return True
+# 需要對外採光通風的房間(補窗保證的對象);走道/樓梯/儲藏/豎井不強制。
+WINDOW_KINDS = {"living", "dining", "kitchen", "bedroom", "master_bedroom",
+                "study", "elder_room", "bathroom"}
+
+
+def _ensure_room_windows(spec, bx0, by0, bx1, by1) -> int:
+    """保證居室有窗:沒窗的房間在「前後外牆」或「天井側」補一扇。
+
+    為什麼需要:透天是共壁,東西外牆不能開窗(_fix_openings 會刪),但配窗時是挑
+    「最長的外牆邊」——深長的客廳最長邊正是東側共壁,窗開了又被刪 → 房間全暗。
+    這裡在刪窗收尾後補回:優先前後外牆(真採光面),其次開向天井(台灣透天的
+    標準做法:內側廚衛靠天井採光通風)。回補了幾扇窗。"""
+    from src.design.layout.bsp_layout import MIN_EDGE_FOR_WINDOW, WINDOW_WIDTH
+    from src.drafting.apartment_plan import WindowPlacement
+    from src.drafting.door_window import Window
+
+    patios = [Polygon(r.points) for r in spec.rooms if r.kind == "patio"]
+    added = 0
+    for room in spec.rooms:
+        if room.kind not in WINDOW_KINDS:
+            continue
+        poly = Polygon(room.points)
+        if any(op.kind == "window"
+               and poly.exterior.distance(Point(*w.point_at(op.position))) < 60
+               for w in spec.walls for op in w.openings):
+            continue                                    # 已有窗
+        rx0, ry0, rx1, ry1 = poly.bounds
+        best = None                                     # (rank, -邊長, wi, lo, hi, along)
+        for wi, w in enumerate(spec.walls):
+            (sx, sy), (ex, ey) = w.start, w.end
+            vertical = abs(sx - ex) < 1.0
+            if vertical:
+                if not (abs(sx - rx0) < 60 or abs(sx - rx1) < 60):
+                    continue
+                lo, hi, along = (max(min(sy, ey), ry0), min(max(sy, ey), ry1), sy)
+                on_ext_ns = False                       # 東西向=共壁,永遠不開窗
+                mid_pt = lambda m: (sx, m)              # noqa: E731
+            else:
+                if not (abs(sy - ry0) < 60 or abs(sy - ry1) < 60):
+                    continue
+                lo, hi, along = (max(min(sx, ex), rx0), min(max(sx, ex), rx1), sx)
+                on_ext_ns = abs(sy - by0) < 60 or abs(sy - by1) < 60
+                mid_pt = lambda m: (m, sy)              # noqa: E731
+            if hi - lo < MIN_EDGE_FOR_WINDOW:
+                continue
+            if on_ext_ns:
+                rank = 0                                # 前後外牆:真正的採光面
+            else:
+                mx, my = mid_pt((lo + hi) / 2)          # 牆另一側是不是天井?
+                near = [Point(mx + dx, my + dy)
+                        for dx, dy in ((250, 0), (-250, 0), (0, 250), (0, -250))]
+                if any(p.contains(q) for p in patios for q in near):
+                    rank = 1                            # 天井側:內間的採光通風井
+                else:
+                    continue                            # 內牆:開窗無意義
+            cand = (rank, -(hi - lo), wi, lo, hi, along)
+            if best is None or cand[:2] < best[:2]:
+                best = cand
+        if best is None:
+            continue                                    # 真的沒採光面(內間,由 critique 回報)
+        _rank, _l, wi, lo, hi, along = best
+        w = spec.walls[wi]
+        taken = [(op.position - op.width / 2, op.position + op.width / 2)
+                 for op in w.openings]
+        for frac in (0.5, 0.35, 0.65, 0.25, 0.75):
+            m = lo + (hi - lo) * frac
+            pos = abs(m - along)
+            a, b = pos - WINDOW_WIDTH / 2, pos + WINDOW_WIDTH / 2
+            if a < 0 or b > w.length:
+                continue
+            if all(b < t0 or a > t1 for t0, t1 in taken):
+                w.openings.append(Opening(pos, WINDOW_WIDTH, "window"))
+                spec.windows.append(
+                    WindowPlacement(wi, len(w.openings) - 1, Window()))
+                added += 1
+                break
+    return added
+
+
+def _door_touching_rooms(spec, wall, op, polys):
+    """這個門洞貼到哪幾間房(2 間=內門、1 間=外門)。"""
+    p = Point(*wall.point_at(op.position))
+    return [i for i, (_r, poly) in enumerate(polys)
+            if poly.exterior.distance(p) < DOOR_TOUCH_TOL]
+
+
+def _room_components(spec):
+    """靠門/通道互通的房間分群 → [set(房間index)](豎井/天井不算,它們本來就封閉)。
+
+    這是「從大門走不走得到」的判準:一層若分成兩群,代表其中一群只能從室外進,
+    室內走不過去——真實住宅不會這樣。"""
+    polys = [(r, Polygon(r.points)) for r in spec.rooms]
+    live = [i for i, (r, _p) in enumerate(polys) if r.kind not in NO_DOOR_KINDS]
+    adj = {i: set() for i in live}
+    for w in spec.walls:
+        for op in w.openings:
+            if op.kind != "door":
+                continue
+            touch = [i for i in _door_touching_rooms(spec, w, op, polys)
+                     if i in adj]
+            for a, b in itertools.combinations(touch, 2):
+                adj[a].add(b)
+                adj[b].add(a)
+    comps, seen = [], set()
+    for i in live:
+        if i in seen:
+            continue
+        grp, stack = {i}, [i]
+        seen.add(i)
+        while stack:
+            k = stack.pop()
+            for n in adj[k]:
+                if n not in grp:
+                    grp.add(n)
+                    seen.add(n)
+                    stack.append(n)
+        comps.append(grp)
+    return comps
+
+
+def _wall_covering(spec, kind, line, a, b):
+    """找出覆蓋共用邊 (kind, line, [a,b]) 的那道牆 → (wall_index, 沿牆位置) 或 None。"""
+    mid = (a + b) / 2
+    for wi, w in enumerate(spec.walls):
+        (sx, sy), (ex, ey) = w.start, w.end
+        if kind == "V":
+            if abs(sx - ex) > 1.0 or abs(sx - line) > DOOR_TOUCH_TOL:
+                continue
+            lo, hi, start_along = min(sy, ey), max(sy, ey), sy
+        else:
+            if abs(sy - ey) > 1.0 or abs(sy - line) > DOOR_TOUCH_TOL:
+                continue
+            lo, hi, start_along = min(sx, ex), max(sx, ex), sx
+        if lo - SNAP_TOL <= mid <= hi + SNAP_TOL:
+            return wi, start_along
+    return None
+
+
+SNAP_TOL = 1.0
+
+
+def _open_door_on_wall(spec, wi, start_along, a, b) -> bool:
+    """在牆 wi 的 [a,b] 段開一扇內門(避開既有洞口)。成功回 True。"""
+    w = spec.walls[wi]
+    taken = [(op.position - op.width / 2, op.position + op.width / 2)
+             for op in w.openings]
+    for clear in DOOR_CLEAR_STEPS:                  # 連通是硬需求,淨距可分級退讓
+        for frac in (0.5, 0.35, 0.65, 0.25, 0.75, 0.45, 0.55):
+            m = a + (b - a) * frac
+            pos = abs(m - start_along)
+            lo, hi = pos - INTERIOR_DOOR_WIDTH / 2, pos + INTERIOR_DOOR_WIDTH / 2
+            if lo < 0 or hi > w.length:
+                continue
+            if not all(hi < t0 or lo > t1 for t0, t1 in taken):
+                continue
+            if not _door_pos_ok(spec, w, pos, INTERIOR_DOOR_WIDTH, clear):
+                continue                            # 不卡牆角
+            w.openings.append(Opening(pos, INTERIOR_DOOR_WIDTH, "door"))
+            spec.doors.append(DoorPlacement(wi, len(w.openings) - 1, Door()))
+            return True
+    return False
+
+
+def _ensure_floor_connected(spec, max_new_doors: int = 8) -> int:
+    """保證整層室內連通:從大門進來走得到每一間房(不必繞到室外)。
+
+    分成多群時,挑「跨群、共用牆最長、且鄰室最公共」的一對開一扇門,重複到只剩一群。
+    這是比「每間房有門」更強的保證——房間各自有門但彼此不通(例:柱線牆把一層切兩半,
+    客廳只能從室外進)在真實住宅是錯的。回補了幾扇門。"""
+    from src.design.layout.bsp_layout import _shared_edge
+
+    added = 0
+    for _ in range(max_new_doors):
+        comps = _room_components(spec)
+        if len(comps) <= 1:
+            break
+        best = None                       # (rank, -共用邊長, se, wi, start_along)
+        for ca, cb in itertools.combinations(comps, 2):
+            for i in ca:
+                for j in cb:
+                    ri, rj = spec.rooms[i], spec.rooms[j]
+                    se = _shared_edge(Polygon(ri.points), Polygon(rj.points))
+                    if se is None or se[4] < INTERIOR_DOOR_WIDTH + 200.0:
+                        continue
+                    cover = _wall_covering(spec, se[0], se[1], se[2], se[3])
+                    if cover is None:
+                        continue
+                    # 兩邊挑「比較公共」的那間當優先度(走道/客廳優先,臥室/浴廁最後)
+                    rank = min(_DOOR_NEIGHBOR_PREF.index(r.kind)
+                               if r.kind in _DOOR_NEIGHBOR_PREF
+                               else len(_DOOR_NEIGHBOR_PREF)
+                               for r in (ri, rj))
+                    cand = (rank, -se[4], se, cover[0], cover[1])
+                    if best is None or cand[:2] < best[:2]:
+                        best = cand
+        if best is None:                  # 沒有夠長的共用牆可開(極罕見)
+            break
+        _rank, _len, se, wi, start_along = best
+        if not _open_door_on_wall(spec, wi, start_along, se[2], se[3]):
+            break
+        added += 1
+    return added
+
+
+def _ensure_room_doors(spec, bx0, by0, bx1, level):
+    """保證每間「可進入」的房間至少有一扇門/通道(機電豎管、天井除外)。
+
+    沒門的房間 → 在與鄰室共用的內牆上補一扇門,優先接動線/公共空間(免得補到另一間
+    孤立房或會被刪門的豎井);找不到內牆,只有 1F 才退而在南向前牆開(當入口;樓上外牆
+    開門會變成通往空中,禁止)。不管建築尺寸,保證「進得了建築、進得了每個房間」。
+
+    ⚠️ 要在所有刪門收尾(含 graph_layout 的管道間去門)之後才呼叫,否則剛補的門或
+       既有門可能又被刪掉。"""
+    from src.design.layout.room_circulation import _room_openings
+    for room in spec.rooms:
+        if room.kind in NO_DOOR_KINDS:
+            continue
+        if _room_openings(spec, Polygon(room.points)):     # 已有門/開放通道
+            continue
+        _add_interior_door(spec, room, bx0, by0, bx1, level)
+
+
+def _add_interior_door(spec, room, bx0, by0, bx1, level):
+    """給一間沒門的房間補一扇門:挑一道邊界內牆(接最公共/動線的鄰室)開洞。"""
+    import math
+
+    rp = Polygon(room.points)
+    cx, cy = rp.centroid.x, rp.centroid.y
+    rminx, rminy, rmaxx, rmaxy = rp.bounds
+    need = INTERIOR_DOOR_WIDTH + 200.0                       # 邊夠長才開得下門
+    best = None                                             # (rank, -overlap, wi, pos)
+
+    for wi, w in enumerate(spec.walls):
+        (sx, sy), (ex, ey) = w.start, w.end
+        vertical = abs(sx - ex) < 1.0
+        if vertical:
+            if not (abs(sx - rminx) < 60 or abs(sx - rmaxx) < 60):
+                continue                                    # 非本房左右邊界牆
+            lo, hi = max(min(sy, ey), rminy), min(max(sy, ey), rmaxy)
+            start_along, midpt_at = sy, lambda m: (sx, m)
+        else:
+            if not (abs(sy - rminy) < 60 or abs(sy - rmaxy) < 60):
+                continue                                    # 非本房上下邊界牆
+            lo, hi = max(min(sx, ex), rminx), min(max(sx, ex), rmaxx)
+            start_along, midpt_at = sx, lambda m: (m, sy)
+        if hi - lo < need:
+            continue
+
+        # 段內找一個不撞既有洞口的位置(中點優先,再試三七分)
+        taken = [(op.position - op.width / 2, op.position + op.width / 2)
+                 for op in w.openings]
+        pos = None
+        for clear in DOOR_CLEAR_STEPS:
+            for frac in (0.5, 0.35, 0.65, 0.45, 0.55):
+                m = lo + (hi - lo) * frac
+                p = abs(m - start_along)
+                a, b = p - INTERIOR_DOOR_WIDTH / 2, p + INTERIOR_DOOR_WIDTH / 2
+                if not all(b < t0 or a > t1 for t0, t1 in taken):
+                    continue
+                if not _door_pos_ok(spec, w, p, INTERIOR_DOOR_WIDTH, clear):
+                    continue                        # 不卡牆角
+                pos, mid = p, m
+                break
+            if pos is not None:
+                break
+        if pos is None:
+            continue
+
+        mx, my = midpt_at(mid)
+        dx, dy = mx - cx, my - cy
+        L = math.hypot(dx, dy) or 1.0
+        nb = Point(mx + dx / L * 300.0, my + dy / L * 300.0)  # 牆外側 → 鄰室
+        neighbor = next((r for r in spec.rooms if r is not room
+                         and Polygon(r.points).contains(nb)), None)
+        if neighbor is None:                # 外牆:寧可接室內鄰室,也不要多開一道前門
+            rank = 9 if (level == 1 and abs(my - by0) < 60) else 99  # 樓上外牆禁開
+        elif neighbor.kind in NO_DOOR_KINDS:                # 豎井/天井:開門無意義
+            rank = 99
+        elif neighbor.kind in _DOOR_NEIGHBOR_PREF:
+            rank = _DOOR_NEIGHBOR_PREF.index(neighbor.kind)
+        else:
+            rank = 8                                        # 一般房(臥室/浴廁等),末位候選
+        cand = (rank, -(hi - lo), wi, pos)
+        if best is None or cand[:2] < best[:2]:
+            best = cand
+
+    if best is None or best[0] >= 99:                       # 只剩通往空中/豎井 → 寧可不開
+        return
+    _, _, wi, pos = best
+    w = spec.walls[wi]
+    w.openings.append(Opening(pos, INTERIOR_DOOR_WIDTH, "door"))
+    spec.doors.append(DoorPlacement(wi, len(w.openings) - 1, Door()))
 
 
 def _build_floor(level, top, W, D, floor_label, furnish=True):
@@ -288,6 +649,9 @@ def _build_floor(level, top, W, D, floor_label, furnish=True):
     spec = rooms_to_spec(rooms, (bx0, by0, bx1, by1), site_w, site_d,
                          setback=SETBACK)
     _fix_openings(spec, bx0, by0, bx1, level)
+    _ensure_floor_connected(spec)                    # 從大門走得到每一間房
+    _ensure_room_doors(spec, bx0, by0, bx1, level)   # 保證每房都有門(不管尺寸)
+    _ensure_room_windows(spec, bx0, by0, bx1, by1)   # 居室補窗(前後外牆/天井側)
     spec.stairs = [stair]
     spec.floor_label = floor_label
     # 建築外框當「單跨」記進格線(不放柱):讓 metrics/摘要讀得到建築尺寸與院深。

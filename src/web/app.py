@@ -231,12 +231,21 @@ def _ai_generate(brief_text: str, brief, client):
     best, history = design_building(brief_text, bw, bd, iterations=2, client=client)
     building = _narrow_to_building(
         [(lb, sp) for lb, sp, _s, _t in best["floors"]], brief.floor_height)
+
+    # 圖面正確性檢查(硬規則):產線已在每層落實時把關,這裡再驗一次整棟並回報,
+    # 讓使用者/我們看得到「這張圖過了哪些檢查」。
+    from src.design.layout.design_loop import SETBACK as _SB   # 落實時用的退縮
+    from src.design.layout.plan_check import check_building
+    env = (_SB, _SB, _SB + bw, _SB + bd)
+    check = check_building([(lb, sp) for lb, sp, _s, _t in best["floors"]], env)
+
     extra = {
         "ai_design": True,
         "ai_trajectory": history,               # 每次迭代的分數/問題數/fitness
         "ai_problems": best["problems"],        # 收斂後剩下的問題(可能是物理硬限)
         "ai_iter": best["iter"],
         "ai_fitness": round(best["fitness"], 1),
+        "plan_check": check.to_dict(),          # 圖面檢查:ok / 錯誤數 / 警告數 / 明細
     }
     return building, extra
 
