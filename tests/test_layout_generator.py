@@ -566,3 +566,22 @@ def test_same_brief_same_design() -> None:
     assert [r.points for r in a.rooms] == [r.points for r in b.rooms]
     assert [(w.start, w.end, w.thickness) for w in a.walls] == \
            [(w.start, w.end, w.thickness) for w in b.walls]
+
+
+# ---------------------------------------------------------------------------
+# 6) 樓梯:梯段兩側一定要有牆(所有產線共用的硬規則)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("brief", ALL_BRIEFS, ids=_brief_id)
+def test_stair_flight_is_walled_on_both_sides(brief) -> None:
+    """★ 梯段兩側都要碰到牆 —— 一側懸空,人走上去會從旁邊掉下去。
+
+    集合住宅的折返梯原本只有 2500 寬、擺在 3100 的梯間正中,兩側各留 225mm 的空
+    ——那不是走道,是空的。判準與窄透天/AI 產線共用同一支 _side_is_walled。"""
+    from src.design.layout.narrow_house import _flight_sides, _side_is_walled
+
+    spec = generate_floor_plan(brief)
+    for st in getattr(spec, "stairs", None) or []:
+        sides, _v = _flight_sides(st)
+        assert len(sides) == 2
+        for seg in sides:
+            assert _side_is_walled(spec, seg), (_brief_id(brief), seg)

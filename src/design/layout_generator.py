@@ -947,13 +947,16 @@ def _corridor_shell(brief: CorridorBrief, unit_list: list[UnitSpec],
 
     # 折返梯 × 2(每端一座,靠梯間北牆,入口在南、留出門的迴轉):
     # 11 級 × 260 = 2860 run + 平台 1200 = 4060 深。
+    # ⚠️ 梯段**填滿梯間淨寬**(兩側各離牆中心線 75 = 貼著牆面):梯段旁邊不能留空
+    #    ——人走在階梯上,側邊是空的會掉下去(與窄透天/AI 產線同一條規則)。
     stair_len = 4060
+    stair_w = CORE_W - 2 * 75
     stairs = [
-        UStair(origin=(x0 + (CORE_W - 2500) / 2, by1 - 75 - stair_len),
-               width=2500, length=stair_len, direction="north",
+        UStair(origin=(x0 + 75, by1 - 75 - stair_len),
+               width=stair_w, length=stair_len, direction="north",
                steps_per_flight=11, tread=260, label="上"),
-        UStair(origin=(xe + (CORE_W - 2500) / 2, by1 - 75 - stair_len),
-               width=2500, length=stair_len, direction="north",
+        UStair(origin=(xe + 75, by1 - 75 - stair_len),
+               width=stair_w, length=stair_len, direction="north",
                steps_per_flight=11, tread=260, label="上"),
     ]
     # 電梯(西核,貼分戶牆;門開西面通電梯廳,電梯廳與走廊開放連通)。
