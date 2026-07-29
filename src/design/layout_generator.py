@@ -146,6 +146,11 @@ MAX_HOUSE_DEPTH = NORTH_BAND_RANGE[1] + DAYLIGHT_DEPTH_MAX   # 11.5m(兩帶式)
 # _patio_name),建築深度可到 MAX_HOUSE_DEPTH + 6.7 = 18.2m(帶跨 6.7m
 # 仍在 9m 結構跨距內);再深才封頂留前後院。範圍含走道 HALL_DEPTH。
 PATIO_BAND_RANGE = (2800, 6700)
+# 天井帶總開關:住宅不設天井(使用者 2026-07-29 定調)→ 深基地改「封頂 11.5m
+# + 前後院置中」。⚠️ 代價:很深的基地(可建深 ≥14.3m)以前會插天井帶蓋到 15.8m
+# 深,現在只蓋 11.5m,其餘留院子。要讓深基地也蓋滿,得另做一套「無天井三帶」
+# (中段擺服務空間),不是把天井換個名字。
+HAS_PATIO_BAND = False
 FOYER_W, FOYER_D = 2200, 1500          # 玄關落塵區(大門內側,C1.5b)
 COLUMN_CLEARANCE = 300       # 洞口與柱面的最小淨距(柱要避開開口部,不貼門窗)
 # 指定房間需求(E3)——
@@ -1542,7 +1547,10 @@ def _house_frame(brief: HouseBrief) -> SimpleNamespace:
     #      北帶 5.5m,最深 15.8m),中段靠天井採光——真實街屋的做法;
     #   2. 更深 → 封頂留前後院置中(基地再深房子也不會無限深,院子才是對的)。
     # 各層同一組帶深 → 外殼/軸網/天井位置上下一致。
-    has_patio = D >= MAX_HOUSE_DEPTH + PATIO_BAND_RANGE[0]
+    # ⚠️ 天井帶**停用**(使用者 2026-07-29 定調:所有尺寸的住宅都不要天井)。
+    #    深基地一律走上面的第 2 條:建築封頂 MAX_HOUSE_DEPTH、多的地變前後院。
+    #    _house_public_patio / _house_upper_patio 的骨架保留但不會被選到。
+    has_patio = HAS_PATIO_BAND and D >= MAX_HOUSE_DEPTH + PATIO_BAND_RANGE[0]
     dp = _clamp(D - MAX_HOUSE_DEPTH, *PATIO_BAND_RANGE) if has_patio else 0.0
     d_band = D - dp                            # 南北兩帶可用的總進深(扣掉天井帶)
 

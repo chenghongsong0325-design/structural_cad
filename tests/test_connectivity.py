@@ -157,8 +157,28 @@ def test_patio_is_exempt_from_reachability():
     """天井是室外空井,不該被當成走不到的房間。"""
     spec = generate_house_upper(
         HouseBrief(site_width=20000, site_depth=20000, bedrooms=3, seed=1))
+    _turn_room_into_patio(spec)                        # 產生器已不做天井,這裡自己造一個
     assert any(r.kind == "patio" for r in spec.rooms)
     assert analyze_connectivity(spec).ok
+
+def _turn_room_into_patio(spec, kind=("storage", "bathroom")):
+    """把一間房改成天井(拆掉它的門)→ 模擬真實圖面裡的室外空井。
+
+    產生器 2026-07-29 起一律不做天井(住宅不設天井),但**豁免機制仍要保留**:
+    圖上若真的有天井(手繪/匯入的圖),不該被當成「走不到的房間」誤報。"""
+    from shapely.geometry import Point, Polygon
+
+    from src.design.layout.narrow_house import _remove_openings
+
+    room = next(r for r in spec.rooms if r.kind in kind)
+    poly = Polygon(room.points)
+    room.kind = "patio"
+    _remove_openings(spec, {
+        (wi, oi) for wi, w in enumerate(spec.walls)
+        for oi, op in enumerate(w.openings)
+        if poly.exterior.distance(Point(*w.point_at(op.position))) < 60})
+    return room
+
 
 
 def test_analyze_does_not_mutate_spec():

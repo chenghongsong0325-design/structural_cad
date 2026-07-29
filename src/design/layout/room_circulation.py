@@ -196,13 +196,31 @@ def analyze_room(spec, room, width: float = PASSAGE_WIDTH) -> RoomCirculation:
         targets=len(openings) + len(furn), isolated=isolated, reason=reason)
 
 
+# 儲藏空間短邊小於這個就是**壁櫃/櫥櫃**(開門拿東西),不是走得進去的房間。
+CABINET_MAX_SIDE = 900.0
+
+
+def _is_cabinet(room) -> bool:
+    from shapely.geometry import Polygon
+    if canonical_room(room.kind) not in ("storage", "utility"):
+        return False
+    x0, y0, x1, y1 = Polygon(room.points).bounds
+    return min(x1 - x0, y1 - y0) < CABINET_MAX_SIDE
+
+
 def analyze_room_circulation(spec, width: float = PASSAGE_WIDTH,
                              *, skip_kinds=("patio", "parking", "garage",
-                                           "stair", "balcony")) -> CirculationReport:
-    """整個格局逐房檢查內部動線。**唯讀**。"""
+                                           "stair", "balcony",
+                                           "pipe_shaft")) -> CirculationReport:
+    """整個格局逐房檢查內部動線。**唯讀**。
+
+    ⚠️ 壁櫃不是房間:深度不到 CABINET_MAX_SIDE 的儲藏空間(管道間旁的收納、走道
+    邊的櫥櫃)是**開門拿東西**、不是走進去的,不要求 600mm 可站空間。"""
     rooms = []
     for room in spec.rooms:
         if canonical_room(room.kind) in skip_kinds or room.kind in skip_kinds:
+            continue
+        if _is_cabinet(room):
             continue
         try:
             rooms.append(analyze_room(spec, room, width))

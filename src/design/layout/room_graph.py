@@ -33,10 +33,12 @@ if str(_PROJECT_ROOT) not in sys.path:
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 # 房間種類:對齊產生器已認得的 kind(living/dining/kitchen/bedroom/bathroom/
-# stair/patio/storage/study…),多幾個生活化的(elder_room/garage/balcony)。
+# stair/storage/study…),多幾個生活化的(elder_room/garage/balcony)。
+# ⚠️ 沒有 patio(天井):住宅一律不設天井(使用者 2026-07-29 定調),LLM 連提都
+#    不該提;真的提了也會在落實時丟掉(見 graph_layout._realize_floor_core)。
 ROOM_KINDS = [
     "living", "dining", "kitchen", "bedroom", "master_bedroom", "bathroom",
-    "toilet", "stair", "patio", "storage", "study", "elder_room",
+    "toilet", "stair", "storage", "study", "elder_room",
     "garage", "balcony", "utility", "corridor",
 ]
 
@@ -110,7 +112,8 @@ DESIGNER_PROMPT = """\
 - 臥室要私密:從走廊/樓梯平台進,不要「穿過一間臥室才到另一間」。
 - 每一層都要能被樓梯到達;多層透天樓梯上下同位。
 - 浴廁要有人到得了,且盡量靠近臥室或公共動線。
-- 客廳、臥室需要對外採光;窄面寬透天可用中段天井(patio)補光。
+- 客廳、臥室需要對外採光,要排在貼外牆的位置;**不要用天井**(住宅不設天井),
+  中段放樓梯/衛浴/儲藏這類不需要採光的服務空間。
 - 房間數/廳數依需求增減,該有的機能(睡、煮、吃、盥洗、儲藏、上下樓)要齊。
 - 若下方補充有給「每層樓地板面積」,房間數要配到剛好塞滿那個面積,別讓單一
   房間過大(不要出現 50㎡ 的客廳)。面積越大,房間與機能越多(玄關、儲藏、
@@ -127,7 +130,7 @@ REFINE_PROMPT = DESIGNER_PROMPT + """
 修正模式:輸入含「上一版關係圖(JSON)」與「落實後發現的問題」兩段。請針對每個
 問題修改關係圖,輸出**完整**的改良後關係圖(同格式,所有欄位齊全)。常見對策:
 - 某房太大 → 拆成兩間,或該層增加房間/機能,把多的面積吸收掉。
-- 內間沒對外採光 → 減少該層房間數,或把它移到前後採光面/天井旁。
+- 內間沒對外採光 → 減少該層房間數,或把它換成不需採光的服務空間(衛浴/儲藏)。
 - 要求的相鄰沒排進去 → 簡化該層、確保關鍵相鄰(廚房挨餐廳、臥室挨走廊)。
 - 動線不通 → 該房別擠太多機能。
 保留原本合理的部分,只動有問題的地方。
@@ -233,7 +236,7 @@ def sanity_check(graph: dict) -> list[str]:
     if entry_kind in ("bedroom", "master_bedroom", "bathroom", "toilet"):
         problems.append(f"大門直接開進 {entry_kind}(該先進公共空間)")
 
-    # 4) 每間房都要有人到得了(除了天井/陽台可以是純採光不進人)
+    # 4) 每間房都要有人到得了(陽台可以是純採光不進人)
     connected = {e["a"] for e in edges} | {e["b"] for e in edges}
     for r in rooms:
         if r["kind"] in ("patio", "balcony"):

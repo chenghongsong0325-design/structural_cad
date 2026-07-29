@@ -170,36 +170,28 @@ def test_dining_zone_is_split_when_it_would_be_oversized():
     assert got.get("餐廳", 0) <= ROOM_PROGRAM["dining"].max_area * 1.5
 
 
-def test_patio_band_dining_split_but_family_room_kept_whole():
-    """深基地(三帶+天井版)的東段房間:1F 餐廳大到超過上限要切一間儲藏室
-    出來(改造中途實測 32×26 基地量出 89m² 的「餐廳」);但 2F 家庭廳**不**
-    比照切割——它是所有臥室門共用的走道(validate_spec C1.5b:有走道時
-    每間臥室門都要通到走道),切開會讓貼樓梯間側的臥室門搆不到,判定
-    「門未通走道」。功能性硬約束(走道必須貫通)優先於面積目標。
+def test_deep_site_dining_stays_capped():
+    """★ 深基地的餐廳不會隨基地一直長大(面積程式封頂有生效),家庭廳不被切。
 
-    餐廳是 L 形(東段 + 天井北側固定走道段),深基地時東段的「結構下限」
-    (min_width × 深帶進深 dp)本身就可能超過 max_area(dp 越深越明顯)——
-    這種情況下切割只能把面積壓到這個下限,壓不進 max_area,是合理的
-    (同主臥深度加成的結論:硬性幾何約束有時就是比面積目標優先)。所以這裡
-    只驗證「切了之後大幅縮小、且不再隨基地繼續長大」,不驗證絕對值達標。
+    ⚠️ 2026-07-29 起天井帶停用(住宅不設天井),原本「三帶天井版量出 89m² 的餐廳、
+       要切一間儲藏室出來」那條路不再走到;深基地現在一律是兩帶式 + 前後院,餐廳
+       由面積程式直接封頂。2F 家庭廳仍**不**切割——它是所有臥室門共用的走道
+       (validate_spec C1.5b),切開會讓貼樓梯間側的臥室門搆不到走道。
     """
     w, d = 32000, 26000
-    pub = generate_house_public(HouseBrief(site_width=w, site_depth=d,
-                                           bedrooms=3, seed=1))
-    upper = generate_house_upper(HouseBrief(site_width=w, site_depth=d,
-                                            bedrooms=3, seed=1))
-    assert pub is not upper                                # 兩層各自產生
-    got_pub = _areas(pub)
-    assert "儲藏室" in got_pub, "深基地 1F 東段沒有切出儲藏室"
-    assert got_pub["餐廳"] < 30, f"餐廳 {got_pub['餐廳']:.1f}m² 遠超合理範圍,切割沒生效"
+    pub = _areas(generate_house_public(HouseBrief(site_width=w, site_depth=d,
+                                                  bedrooms=3, seed=1)))
+    assert pub["餐廳"] <= ROOM_PROGRAM["dining"].max_area * 1.5,         f"餐廳 {pub['餐廳']:.1f}m² 超出合理範圍"
 
-    # 基地再深一截,餐廳不該繼續變大(已經切到結構下限、停止成長)。
+    # 基地再深一截,餐廳不該繼續變大。
     bigger = _areas(generate_house_public(
         HouseBrief(site_width=w + 8000, site_depth=d + 6000, bedrooms=3, seed=1)))
-    assert bigger["餐廳"] <= got_pub["餐廳"] + 1.0
+    assert bigger["餐廳"] <= pub["餐廳"] + 1.0
 
-    got_upper = _areas(upper)
-    assert "儲藏室" not in got_upper, "2F 家庭廳不該被切(會斷走道)"
+    upper = generate_house_upper(HouseBrief(site_width=w, site_depth=d,
+                                            bedrooms=3, seed=1))
+    assert "儲藏室" not in _areas(upper), "2F 家庭廳不該被切(會斷走道)"
+    assert not [r for r in upper.rooms if r.kind == "patio"]    # 住宅不設天井
 
 
 # ── 柱網優先(使用者定調:不得為了湊面積破壞柱網)──────────────────

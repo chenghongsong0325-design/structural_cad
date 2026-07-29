@@ -50,12 +50,15 @@ def test_metrics_basement_costs_more_per_area() -> None:
 
 
 def test_metrics_patio_excluded() -> None:
-    """深基地有天井的棟:建築面積要扣天井(建蔽率跟著降)。"""
+    """圖上若有天井,建築面積要扣掉它(建蔽率跟著降)。
+
+    ⚠️ 產生器 2026-07-29 起不做天井(住宅不設天井),但扣除機制要留著 → 這裡
+       自己把一間房改成天井來驗。"""
     b = generate_building(_house(site_width=19000, site_depth=19000,
                                  floors=2, basements=0))
     spec = next(f.spec for f in b.floors if f.level == 1)
-    patio = [r for r in spec.rooms if r.kind == "patio"]
-    assert patio, "19×19 深基地應該有天井(前提檢查)"
-    m = building_metrics(b)
-    shell = sum(spec.x_spacings) * sum(spec.y_spacings) / 1e6
-    assert m["footprint_m2"] < shell - 1     # 確實扣掉了(天井 > 1 m²)
+    before = building_metrics(b)["footprint_m2"]
+    room = next(r for r in spec.rooms if r.kind in ("storage", "bathroom"))
+    room.kind = "patio"
+    after = building_metrics(b)["footprint_m2"]
+    assert after < before - 1                # 確實扣掉了(天井 > 1 m²)

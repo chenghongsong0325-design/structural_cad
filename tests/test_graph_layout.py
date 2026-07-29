@@ -2,7 +2,7 @@
 
 用**固定關係圖**(不呼叫 Gemini)驗證落實引擎:
   * 三層都生得出、畫得出 DXF、評得動分。
-  * 垂直核(樓梯+管道間+天井)與結構柱**上下對齊**(符合柱網原則)。
+  * 垂直核(樓梯+管道間)與結構柱**上下對齊**(符合柱網原則);不設天井。
   * 每層動線走得通(furnish 後動線修復器把擋路家具移掉)。
   * 管道間(機電豎管)非走入 → 不開門。
   * BSP 分割鋪滿、不重疊。
@@ -82,14 +82,19 @@ def test_builds_three_floors(floors):
         assert spec.rooms and spec.walls and spec.doors
 
 
-def test_core_and_patio_aligned(floors):
-    """★ 樓梯與天井每層同位(上下對齊 → 通樓垂直核)。"""
+def test_core_and_shaft_aligned(floors):
+    """★ 樓梯與管道間每層同位(上下對齊 → 通樓垂直核)。
+
+    ⚠️ 住宅不設天井(使用者 2026-07-29 定調):LLM 關係圖裡就算提了 patio,
+       落實時也會被丟掉,圖上不會有天井。"""
     stairs = {s.origin for _, sp, _, _ in floors for s in sp.stairs}
-    patios = {next((tuple(map(tuple, r.points))
-                    for r in sp.rooms if r.kind == "patio"), None)
+    shafts = {next((tuple(map(tuple, r.points))
+                    for r in sp.rooms if r.kind == "pipe_shaft"), None)
               for _, sp, _, _ in floors}
     assert len(stairs) == 1
-    assert len(patios) == 1 and None not in patios
+    assert len(shafts) == 1 and None not in shafts
+    assert not [r for _, sp, _, _ in floors for r in sp.rooms
+                if r.kind == "patio"]
 
 
 def test_structural_columns_aligned(floors):

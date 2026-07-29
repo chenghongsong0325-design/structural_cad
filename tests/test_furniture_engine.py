@@ -179,8 +179,8 @@ def test_stair_is_detected():
 
 def test_void_is_detected():
     """擺進天井 → 回 void(天井不在任何房間內,故 wall 也可接受)。"""
-    spec = generate_house_upper(
-        HouseBrief(site_width=20000, site_depth=20000, bedrooms=3, seed=1))
+    spec = _add_patio(generate_house_upper(
+        HouseBrief(site_width=20000, site_depth=20000, bedrooms=3, seed=1)))
     eng = FurnitureCollisionEngine(spec)
     assert eng.voids
     c = eng.voids[0].poly.centroid
@@ -258,3 +258,25 @@ def test_window_check_can_be_disabled():
             assert eng_off.check(fx).reason != REASON_WINDOW
             return
     raise AssertionError("找不到會觸發 window_clearance 的窗")
+
+
+def _add_patio(spec):
+    """把一間房改成天井(拆掉它的門)→ 圖上真的有一口空井。
+
+    ⚠️ 產生器 2026-07-29 起一律不做天井(住宅不設天井),但**天井是硬障礙**這套
+    機制要留著:匯入/手繪的圖仍可能有天井,家具不能掉進去。"""
+    from shapely.geometry import Point, Polygon
+
+    from src.design.layout.narrow_house import _remove_openings
+
+    room = next(r for r in spec.rooms if r.kind in ("storage", "bathroom"))
+    poly = Polygon(room.points)
+    room.kind = "patio"
+    _remove_openings(spec, {
+        (wi, oi) for wi, w in enumerate(spec.walls)
+        for oi, op in enumerate(w.openings)
+        if poly.exterior.distance(Point(*w.point_at(op.position))) < 60})
+    spec.fixtures = [f for f in spec.fixtures
+                     if not poly.contains(Point(*getattr(f, "insert",
+                                                         (-1e9, -1e9))))]
+    return spec

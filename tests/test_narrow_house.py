@@ -1,10 +1,10 @@
 """窄面寬透天產生器測試(v0.7 Phase N1a~N1c)。
 
-驗證「窄深 envelope → 前後串聯 + 中段核(天井+樓梯)」的另一套骨架:
+驗證「窄深 envelope → 前後串聯 + 中段核(衛浴+樓梯)」的另一套骨架:
 
   * 7×12 米(舊兩帶式引擎直接拒絕的窄面寬)生得出來、畫得出 DXF、評得動分。
   * 房間前後串聯:1F 客廳/核/廚房;樓上 前臥/核/後臥+浴室。
-  * 界牆(東西共用牆)不開窗;中段有天井(patio)。
+  * 界牆(東西共用牆)不開窗;**不設天井**,後段有真實尺寸的管道間。
   * 多層共用垂直核 → 樓梯每層同位(上下對齊)。
   * 每層動線走得通(room_circulation ok)。
   * 面寬/進深超出定義域會擋。
@@ -52,8 +52,8 @@ def test_dims_are_building_not_site():
 
 def test_1f_is_front_to_back_sequence():
     kinds = [r.kind for r in generate_narrow_house(W, D).rooms]
-    assert kinds == ["living", "patio", "stair_hall", "storage",
-                     "dining", "kitchen"]
+    assert kinds == ["living", "bathroom", "storage", "stair_hall",
+                     "pipe_shaft", "storage", "dining", "kitchen"]
 
 
 def test_1f_has_front_entry_door():
@@ -75,12 +75,12 @@ def test_bathroom_has_single_door():
             assert len(_room_openings(spec, Polygon(r.points))) == 1
 
 
-def test_patio_has_no_door():
-    """★ 採光天井不設走入門。"""
+def test_pipe_shaft_has_no_door():
+    """★ 機電豎管是封閉服務井,不設走入門。"""
     from src.design.layout.room_circulation import _room_openings
     spec = generate_narrow_house(W, D)
-    patio = next(r for r in spec.rooms if r.kind == "patio")
-    assert len(_room_openings(spec, Polygon(patio.points))) == 0
+    shaft = next(r for r in spec.rooms if r.kind == "pipe_shaft")
+    assert len(_room_openings(spec, Polygon(shaft.points))) == 0
 
 
 def test_draws_to_dxf_and_scores():
@@ -93,7 +93,7 @@ def test_draws_to_dxf_and_scores():
     assert len(rep["sub_scores"]) == 13
 
 
-# ── 界牆無窗 / 有天井 ────────────────────────────────────────────────────────
+# ── 界牆無窗 / 不設天井 / 管道間尺寸 ─────────────────────────────────────────
 def test_no_windows_on_party_walls():
     """★ 東西兩側是共用界牆,不該開窗。"""
     spec = generate_narrow_house(W, D)
@@ -103,8 +103,33 @@ def test_no_windows_on_party_walls():
         assert not _is_party_wall(spec.walls[wp.wall_index], bx0, bx1)
 
 
-def test_has_light_well():
-    assert any(r.kind == "patio" for r in generate_narrow_house(W, D).rooms)
+def test_no_light_well_at_any_size():
+    """★ 住宅不設天井(使用者 2026-07-29 定調):任何尺寸都不能生出 patio。"""
+    for bw in (5000.0, 6000.0, 7000.0):
+        for bd in (11000.0, 14000.0, 18000.0):
+            for label, spec in generate_narrow_building(bw, bd, floors=3):
+                pat = [r for r in spec.rooms if r.kind == "patio"]
+                assert not pat, (bw, bd, label)
+
+
+def test_pipe_shaft_is_realistic_size():
+    """★ 管道間是真實尺寸(寬 40~80cm、深 40~60cm),不是一間房那麼大。"""
+    for bw in (5000.0, 6000.0, 7000.0):
+        for label, spec in generate_narrow_building(bw, 12000.0, floors=3):
+            shafts = [r for r in spec.rooms if r.kind == "pipe_shaft"]
+            assert shafts, (bw, label)
+            for r in shafts:
+                x0, y0, x1, y1 = Polygon(r.points).bounds
+                assert 400 <= x1 - x0 <= 800, (bw, label, x1 - x0)
+                assert 400 <= y1 - y0 <= 600, (bw, label, y1 - y0)
+
+
+def test_pipe_shaft_stacks_across_floors():
+    """★ 管道間每層同位(給排水豎管要直落)。"""
+    boxes = {tuple(Polygon(next(r for r in spec.rooms
+                                if r.kind == "pipe_shaft").points).bounds)
+             for _lb, spec in generate_narrow_building(W, D, floors=3)}
+    assert len(boxes) == 1
 
 
 # ── 多層 + 樓梯對齊 ─────────────────────────────────────────────────────────
@@ -212,7 +237,7 @@ def test_building_basis_reverse_derives_site():
 
 
 def test_auto_router_picks_narrow_for_narrow_building():
-    """★ 建築 7m 寬 → 自動走窄面寬骨架(有天井+樓梯間)。"""
+    """★ 建築 7m 寬 → 自動走窄面寬骨架(樓梯間+管道間,無天井)。"""
     from src.design.building_generator import BuildingBrief, generate_building_auto
     from src.design.layout_generator import HouseBrief
     brief = BuildingBrief(typical=HouseBrief(site_width=11000, site_depth=16000,
@@ -220,7 +245,8 @@ def test_auto_router_picks_narrow_for_narrow_building():
     building = generate_building_auto(brief)
     assert len(building.floors) == 3
     kinds = {r.kind for fl in building.floors for r in fl.spec.rooms}
-    assert "stair_hall" in kinds and "patio" in kinds
+    assert "stair_hall" in kinds and "pipe_shaft" in kinds
+    assert "patio" not in kinds
 
 
 def test_auto_router_keeps_two_band_for_wide_building():

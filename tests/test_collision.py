@@ -191,13 +191,35 @@ def test_table4_uses_tightened_collision_footprint():
 
 # ── Phase 3-1:Void Collision(天井/挑空為硬障礙)────────────────────────────
 def _patio_specs():
-    """含天井/中庭的樓層(深基地 → 天井版)。"""
+    """含天井的樓層。產生器已不做天井 → 自己把一間房改成天井來驗機制。"""
     return [
-        generate_house_upper(
-            HouseBrief(site_width=20000, site_depth=20000, bedrooms=3, seed=1)),
-        generate_house_public(
-            HouseBrief(site_width=26000, site_depth=22000, bedrooms=3, seed=1)),
+        _add_patio(generate_house_upper(
+            HouseBrief(site_width=20000, site_depth=20000, bedrooms=3, seed=1))),
+        _add_patio(generate_house_public(
+            HouseBrief(site_width=26000, site_depth=22000, bedrooms=3, seed=1))),
     ]
+
+def _add_patio(spec):
+    """把一間房改成天井(拆掉它的門)→ 圖上真的有一口空井。
+
+    ⚠️ 產生器 2026-07-29 起一律不做天井(住宅不設天井),但**天井是硬障礙**這套
+    機制要留著:匯入/手繪的圖仍可能有天井,家具不能掉進去。"""
+    from shapely.geometry import Point, Polygon
+
+    from src.design.layout.narrow_house import _remove_openings
+
+    room = next(r for r in spec.rooms if r.kind in ("storage", "bathroom"))
+    poly = Polygon(room.points)
+    room.kind = "patio"
+    _remove_openings(spec, {
+        (wi, oi) for wi, w in enumerate(spec.walls)
+        for oi, op in enumerate(w.openings)
+        if poly.exterior.distance(Point(*w.point_at(op.position))) < 60})
+    spec.fixtures = [f for f in spec.fixtures
+                     if not poly.contains(Point(*getattr(f, "insert",
+                                                         (-1e9, -1e9))))]
+    return spec
+
 
 
 def test_void_obstacles_are_patios():
