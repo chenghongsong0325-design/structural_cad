@@ -63,10 +63,14 @@ STAIR_WELL_GAP = 100.0                              # 兩梯段間的梯井縫
 ENTRY_LANDING = 900.0
 STAIRWELL_W = 2075.0                                # 梯段本身佔的面寬(兩梯段各 ~910)
 # 樓梯旁的通道:前後段要互通就得走過樓梯間,沒有這條通道等於要人踩著階梯走過去。
-# 寬度要容得下「門(850)+ 兩側牆角淨距」,門才有合法位置可開;950 太緊,
+# 寬度要容得下「門(850)+ 兩側牆角淨距 + 導牆」,門才有合法位置可開;950 太緊,
 # 合法窗口只剩 ~75mm,常常開不成門 → 只好穿浴室當通道(不合理)。
-PASSAGE_W = 1200.0
+GUARD_WALL_T = 150.0                                # 梯段側邊「導牆」厚(見下)
+PASSAGE_W = 1350.0 + GUARD_WALL_T                   # 通道淨寬 1350 + 導牆
 STAIRWELL_TOTAL = STAIRWELL_W + PASSAGE_W           # 樓梯間總面寬(梯段 + 通道)
+# 梯段旁邊剩不到這麼寬就不留通道,改讓**梯段填滿整間**(兩側直接靠牆)——留一條
+# 走不了人的窄縫,只會讓梯段有一側懸空。
+PASSAGE_MIN = 1000.0
 FLOOR_HEIGHT = 3200.0                               # 層高(算級數/每階升高用)
 MAX_RISER = 190.0                                   # 每階升高上限(住宅舒適下限步距)
 MIN_TREAD = 210.0                                   # 踏面下限(建築技術規則:住宅 ≥21cm)
@@ -136,9 +140,12 @@ def _stair(x_west, x_east, y1, y2, label):
     tread = STAIR_TREAD
     if spf * tread + TURN_LANDING_MIN > run_len:                 # 太擠 → 縮踏面(≥法定)
         tread = max(MIN_TREAD, (run_len - TURN_LANDING_MIN) / spf)
-    # 梯段靠**東側**擺,西側留 PASSAGE_W 當前後通道(人不必踩階梯走過去)。
+    # 梯段靠**東側**擺,西側留通道(人不必踩階梯走過去);通道與梯段之間補一道導牆
+    # (_add_stair_guard_walls),梯段兩側才都靠著牆。剩下的寬度不夠當通道時,梯段
+    # 直接填滿整間 —— 寧可梯段寬一點,也不要有一側是空的。
     span = (x_east - x_west) - 2 * WALL_GAP
-    flight_w = min(span, STAIRWELL_W - 2 * WALL_GAP) if span > STAIRWELL_W else span
+    flight_w = (STAIRWELL_W - 2 * WALL_GAP
+                if span - STAIRWELL_W >= PASSAGE_MIN else span)
     return UStair(origin=(x_east - WALL_GAP - flight_w, y1 + WALL_GAP + landing),
                   width=flight_w,
                   length=run_len, direction="north",
@@ -171,9 +178,11 @@ def _floor_rooms(level, top, bx0, by0, bx1, by1):
     # 樓上=浴室(暗區,天井旁)。
     if level == 1:                                  # 1F:客廳 / 核 / 餐廳|廚房
         core, stair = _core(bx0, bx1, y1, y2, label, "storage", "儲藏")
-        # 後段左右分:切在**樓梯旁通道**的東緣,讓通道正對餐廳 → 前後段那扇門開得成
-        # (切在幾何中線時,通道與餐廳只重疊一小段,門塞不下,整層就會被判走不通)。
-        xm = min(max(stair.origin[0], bx0 + 2000.0), bx1 - 2000.0)
+        # 後段左右分:切在**樓梯旁通道**的東緣(=梯段導牆中心線),讓通道正對餐廳 →
+        # 前後段那扇門開得成,且門洞離導牆自動有牆角淨距(切在幾何中線時,通道與餐廳
+        # 只重疊一小段,門塞不下,整層就會被判走不通)。
+        xm = min(max(stair.origin[0] - GUARD_WALL_T / 2.0, bx0 + 2000.0),
+                 bx1 - 2000.0)
         rooms = [("living", "客廳", _rect(bx0, by0, bx1, y1)), *core,
                  ("dining", "餐廳", _rect(bx0, y2, xm, by1)),
                  ("kitchen", "廚房", _rect(xm, y2, bx1, by1))]
@@ -388,6 +397,85 @@ def _stair_boxes(spec) -> list:
     return out
 
 
+def _flight_sides(stair):
+    """梯段兩條**長邊**(人走上去時的左右側)→ [((x,y),(x,y)), ...] 世界座標線段。
+
+    另回行進方向是不是南北向,讓呼叫端知道要往哪一軸補牆。"""
+    try:
+        ox, oy = stair.origin
+        w, ln = stair.width, stair.length
+    except Exception:
+        return [], True
+    vertical = getattr(stair, "direction", "north") in ("north", "south")
+    if vertical:
+        x0, y0, x1, y1 = ox, oy, ox + w, oy + ln
+        return [((x0, y0), (x0, y1)), ((x1, y0), (x1, y1))], True
+    x0, y0, x1, y1 = ox, oy, ox + ln, oy + w
+    return [((x0, y0), (x1, y0)), ((x0, y1), (x1, y1))], False
+
+
+# 牆面離梯段這麼近就算「靠著牆」。梯段是離牆**中心線** WALL_GAP(75)擺的,內牆只有
+# 120 厚(半厚 60)→ 牆面與梯段之間本來就有 ~15mm 的縫,那不叫沒牆。
+WALL_TOUCH_GAP = 100.0
+
+
+def _side_is_walled(spec, seg, tol: float = 50.0) -> bool:
+    """這條邊有沒有牆貼著(牆體覆蓋整段)。"""
+    from shapely.geometry import LineString
+    line = LineString(seg)
+    for w in spec.walls:
+        body = LineString([w.start, w.end]).buffer(
+            w.thickness / 2.0 + WALL_TOUCH_GAP, cap_style=2, join_style=2)
+        if line.intersection(body).length >= line.length - tol:
+            return True
+    return False
+
+
+def _add_stair_guard_walls(spec) -> int:
+    """梯段旁邊沒有牆就補一道「導牆」——人走在梯段上,旁邊是空的會掉下去。
+
+    只補**梯段(含折返平台)**那一段,起步平台不補:那裡是平地,而且要開口讓人走
+    進來。導牆往樓梯間盡端延伸 WALL_GAP 與端牆接成 T 字,起步端留開口(=梯廳)。
+    兩條產線共用(規則版窄透天 / AI 關係圖版):梯段填滿樓梯間時本來就兩側靠牆,
+    這裡查得到牆就不補,所以呼叫兩次也不會多畫。回補了幾道牆。"""
+    from src.drafting.wall import Wall
+
+    added = 0
+    for st in getattr(spec, "stairs", []) or []:
+        sides, vertical = _flight_sides(st)
+        if not sides:
+            continue
+        far_is_low = getattr(st, "direction", "north") in ("south", "west")
+        for (p0, p1), sgn in zip(sides, (-1, +1)):
+            if _side_is_walled(spec, (p0, p1)):
+                continue                        # 已經靠著牆(外牆/隔間牆)
+            half = GUARD_WALL_T / 2.0
+            if vertical:                        # 上樓往南北 → 導牆是垂直牆
+                cx = p0[0] + sgn * half
+                lo = p0[1] - (WALL_GAP if far_is_low else 0.0)
+                hi = p1[1] + (0.0 if far_is_low else WALL_GAP)
+                start, end = (cx, lo), (cx, hi)
+            else:                               # 上樓往東西 → 導牆是水平牆
+                cy = p0[1] + sgn * half
+                lo = p0[0] - (WALL_GAP if far_is_low else 0.0)
+                hi = p1[0] + (0.0 if far_is_low else WALL_GAP)
+                start, end = (lo, cy), (hi, cy)
+            wall = Wall(start=start, end=end, thickness=GUARD_WALL_T,
+                        openings=[])
+            wall.stair_guard = True             # 開門時要避開它(見 _door_clear_of_stairs)
+            spec.walls.append(wall)
+            added += 1
+    return added
+
+
+def _stair_guard_bodies(spec) -> list:
+    """導牆的牆體(門前站人的空間不能被它擋住)。"""
+    from shapely.geometry import LineString
+    return [LineString([w.start, w.end]).buffer(w.thickness / 2.0,
+                                                cap_style=2, join_style=2)
+            for w in spec.walls if getattr(w, "stair_guard", False)]
+
+
 def _door_approach_rects(wall, pos: float, width: float, depth: float):
     """門「兩側各一塊站人的空間」= 門寬 × depth 深的矩形(世界座標)。"""
     from shapely.geometry import box
@@ -406,8 +494,9 @@ def _door_clear_of_stairs(spec, wall, pos: float,
     """開門後踩得到平地嗎?
 
     判準不是「離階梯多遠」,而是**門前面那塊站人的空間有沒有被階梯佔掉**——門開在
-    梯段旁 1m 通道的正中是可以的(人站在通道上),但門正對著踏step 就不行。"""
-    boxes = _stair_boxes(spec)
+    梯段旁 1m 通道的正中是可以的(人站在通道上),但門正對著踏step 就不行。
+    梯段側邊的導牆同理:門扇被那道牆擋掉一半也等於走不進去。"""
+    boxes = _stair_boxes(spec) + _stair_guard_bodies(spec)
     if not boxes:
         return True
     for rect in _door_approach_rects(wall, pos, width, STAIR_DOOR_CLEAR):
@@ -755,6 +844,7 @@ def _build_floor(level, top, W, D, floor_label, furnish=True):
     spec = rooms_to_spec(rooms, (bx0, by0, bx1, by1), site_w, site_d,
                          setback=SETBACK)
     spec.stairs = [stair]                            # 先掛樓梯:開口收尾才避得開梯段
+    _add_stair_guard_walls(spec)                     # 梯段兩側都要有牆(不能一側懸空)
     _fix_openings(spec, bx0, by0, bx1, level)
     _ensure_floor_connected(spec)                    # 從大門走得到每一間房
     _ensure_room_doors(spec, bx0, by0, bx1, level)   # 保證每房都有門(不管尺寸)

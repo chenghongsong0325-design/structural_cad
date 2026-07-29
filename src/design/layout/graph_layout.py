@@ -583,12 +583,14 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
 
     # 收尾門洞(重用 narrow_house):去重複門/界牆窗/天井門、浴室只留 1 門、1F 補前門。
     from src.design.layout.narrow_house import (
-        _door_kinds, _ensure_floor_connected, _ensure_room_doors,
-        _ensure_room_windows, _fix_openings, _remove_openings, _stair,
+        _add_stair_guard_walls, _door_kinds, _ensure_floor_connected,
+        _ensure_room_doors, _ensure_room_windows, _fix_openings,
+        _remove_openings, _stair,
     )
     level = int(floor_label[:-1]) if floor_label[:-1].isdigit() else 1
     sx0, sy0, sx1, sy1 = stair_rect              # 先掛樓梯:開口收尾才避得開梯段
     spec.stairs = [_stair(sx0, sx1, sy0, sy1, stair_label)]
+    _add_stair_guard_walls(spec)                 # 梯段兩側都要有牆(不能一側懸空)
     party = core_xlines is None                 # 中庭骨架=獨棟(四面採光);西側核=透天共壁
     _fix_openings(spec, env[0], env[1], env[2], level, party_walls=party)
     _remove_openings(spec, {(dp.wall_index, dp.opening_index) for dp in spec.doors

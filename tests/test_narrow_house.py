@@ -132,6 +132,35 @@ def test_stair_riser_is_comfortable():
     assert 150.0 <= FLOOR_HEIGHT / total <= 190.0
 
 
+def test_stair_flight_is_walled_on_both_sides():
+    """★ 梯段兩側都要碰到牆 —— 一側懸空,人走上去會從旁邊掉下去。
+
+    梯段旁留了通道(人不必踩階梯走前後段),那條通道與梯段之間就必須有一道導牆;
+    只有起步平台那一端可以開口(平地,而且要走進來)。"""
+    from src.design.layout.narrow_house import _flight_sides, _side_is_walled
+
+    for bw in (5000.0, 6000.0, 7000.0):
+        for label, spec in generate_narrow_building(bw, 12000.0, floors=3):
+            for st in spec.stairs:
+                sides, _v = _flight_sides(st)
+                assert len(sides) == 2
+                for seg in sides:
+                    assert _side_is_walled(spec, seg), (bw, label, seg)
+
+
+def test_stair_guard_wall_does_not_seal_the_passage():
+    """導牆補了之後,樓梯旁的通道仍要走得通(不能為了補牆把前後段封死)。"""
+    from src.design.layout.narrow_house import GUARD_WALL_T
+
+    for label, spec in generate_narrow_building(W, D, floors=3):
+        guards = [w for w in spec.walls if getattr(w, "stair_guard", False)]
+        assert guards, label                      # 這個骨架一定有側邊通道 → 一定要補
+        assert all(w.thickness == GUARD_WALL_T and not w.openings
+                   for w in guards)               # 導牆不開洞(開了就等於沒補)
+        rep = analyze_room_circulation(spec)
+        assert rep.ok, (label, [(r.name, r.reason) for r in rep.blocked])
+
+
 def test_top_floor_stair_labeled_down():
     floors = generate_narrow_building(W, D, floors=3)
     assert floors[-1][1].stairs[0].label == "下"

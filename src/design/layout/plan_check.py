@@ -13,6 +13,7 @@
     furniture_in_wall   家具嵌進牆體(畫出來是穿牆)
     door_in_corner      門洞卡在房間角落(人走不進那個角)
     stair_blocks_door   門直接開在階梯上(缺起步平台,門扇會掃到踏step)
+    stair_side_open     梯段有一側沒牆(人走上去會從旁邊掉下去)
     circulation_blocked 房間走不進去/家具擋死動線
 
 設計警告(warning,要改「房間怎麼配」才救得動,由收斂迴圈回饋給 LLM)::
@@ -247,6 +248,18 @@ def check_floor(spec, env, level: int, label: str = "") -> list[PlanIssue]:
                         "error", "stair_blocks_door", lb, "",
                         f"門洞({p.x:.0f},{p.y:.0f})正對階梯,開門就要踩上踏step"
                         f"(門前需有可站的平地)"))
+
+    # ⑥b 梯段兩側都要有牆:走在階梯上,旁邊是空的就會掉下去(只有起步/折返平台
+    #     那種平地才可以開口)。
+    from src.design.layout.narrow_house import _flight_sides, _side_is_walled
+    for st in getattr(spec, "stairs", None) or []:
+        sides, _vertical = _flight_sides(st)
+        for (p0, p1) in sides:
+            if not _side_is_walled(spec, (p0, p1)):
+                issues.append(PlanIssue(
+                    "error", "stair_side_open", lb, "",
+                    f"梯段側邊({p0[0]:.0f},{p0[1]:.0f})→({p1[0]:.0f},{p1[1]:.0f})"
+                    f"沒有牆,人走在階梯上會掉下去"))
 
     # ⑦ 動線:每間房走得進去、家具沒擋死
     rep = analyze_room_circulation(spec)

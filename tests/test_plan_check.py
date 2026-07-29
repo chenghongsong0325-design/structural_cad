@@ -86,12 +86,30 @@ def test_detects_furniture_in_wall():
     assert "furniture_in_wall" in codes
 
 
+def test_detects_open_stair_side():
+    """★ 人為拆掉梯段旁的導牆 → 檢查器必須抓到「梯段一側懸空」。
+
+    規則版窄透天的梯段旁邊留了通道,兩者之間那道導牆若不見了,人走在階梯上就會從
+    旁邊掉下去——這是看圖不明顯、但真實圖面絕不允許的錯誤。"""
+    from src.design.layout.narrow_house import generate_narrow_building
+
+    floors = generate_narrow_building(7000.0, 12000.0, floors=2)
+    env = (SB, SB, SB + 7000.0, SB + 12000.0)
+    spec = floors[0][1]
+    assert not any(i.code == "stair_side_open"
+                   for i in check_floor(spec, env, 1, "1F"))    # 原本是乾淨的
+    spec.walls = [w for w in spec.walls if not getattr(w, "stair_guard", False)]
+    codes = [i.code for i in check_floor(spec, env, 1, "1F")]
+    assert "stair_side_open" in codes
+
+
 def test_error_vs_warning_split():
     """★ 只有「換切法就能解」的問題算 error;設計面問題是 warning。"""
     floors, env = _build()
     rep = check_building(floors, env)
     hard = {"room_no_door", "floor_split", "no_entry", "entry_upstairs",
-            "furniture_in_wall", "circulation_blocked", "door_in_corner"}
+            "furniture_in_wall", "circulation_blocked", "door_in_corner",
+            "stair_blocks_door", "stair_side_open"}
     for i in rep.issues:
         if i.severity == "error":
             assert i.code in hard, f"{i.code} 不該是硬錯誤"
