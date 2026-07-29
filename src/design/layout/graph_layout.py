@@ -83,11 +83,14 @@ COLUMN_SIZE = 400.0      # 結構柱斷面(mm 見方)
 COLUMN_SPAN = 6000.0     # 柱距目標(沿進深,6m 經濟跨度;藏外牆內、上下對齊)
 
 # AI 設計師模式(混合式收斂管線)實測可穩定落實的建築尺寸範圍。與 narrow_house
-# 的規則產生器分開:這個搜尋式引擎比規則版更耐尺寸(5~13m 寬 × ≥8m 深,實測不崩、
-# 採光/柱都乾淨)。>9m 寬自動走多跨柱(內柱藏預切的柱線牆);>13m 或方形地要另一套
-# 中庭骨架(Phase 3)。多層透天每層房少,西側天井+外周採光撐到 13m 仍無暗房。
+# 的規則產生器分開:這個搜尋式引擎比規則版更耐尺寸,而且會**依平面比例自動換骨架**:
+#   * 窄長(≤13m 寬)→ 西側垂直核 + 東側房間(透天:東西共壁不開窗)
+#   * 寬扁/方形(>13m 寬)→ **中庭骨架**(Phase 3):核與中庭置中、房間繞一圈,
+#     視為獨棟 → 四面都能開窗(否則整棟只剩前後採光會變暗房)
+# >9m 寬的窄長骨架自動走多跨柱;中庭骨架的柱軸線直接落在中央核的左右牆。
+# 實測 5~34m 寬 × 8~24m 深全部 0 硬錯誤;上限保守設 30m(再大已非單戶住宅尺度)。
 AI_MIN_WIDTH = 5000.0    # <5m:西側核(樓梯+管道+天井)吃掉寬度,東側住不了
-AI_MAX_WIDTH = 13000.0   # >13m 需 3 跨 + 中庭骨架(Phase 3)
+AI_MAX_WIDTH = 30000.0   # 實測 34m 仍乾淨;30m 以上已非單戶住宅尺度
 AI_MIN_DEPTH = 8000.0    # <8m:前段+核(6.3m)+後室三段擠不下
 
 
@@ -362,6 +365,61 @@ def _core_width(building_w: float) -> float:
     return min(max(building_w * 0.34, 2000.0), 2600.0)
 
 
+COURTYARD_MIN_W = 13000.0    # 面寬超過這個改用中庭骨架(長條骨架會生出細長房間)
+COURT_MIN_SIDE = 2400.0      # 中庭最小邊長(採光井要夠大才有光進得來)
+COURT_MAX_SIDE = 4500.0
+COURT_STAIR_W = 2600.0       # 中央核裡樓梯間的面寬(容 U 形折返梯)
+RING_MIN = 2800.0            # 中庭四周「房間圈」每一帶的最小厚度(擺得下居室)
+
+
+def _core_courtyard(env: Rect):
+    """中庭骨架(Phase 3):樓梯+管道間+中庭擺在平面**中央**,房間繞成一圈。
+
+    寬扁/方形基地不能用長條骨架(西側核+東側長條)——那會把房間拉成 3×10m 的
+    細長條。真實大基地住宅的作法是**中庭(天井)置中**,四周一圈房間各自朝中庭或
+    外牆採光,誰都不會變暗房。
+
+    回 (stair_rect, shaft_rect, patio_rect, seed, core_w, xlines);
+    seed = 中庭核以外鋪滿的四塊(南帶/北帶/西帶/東帶),交給房間去細分。
+    xlines = 中央核的左右邊 → 柱軸線落在核的牆上(柱藏牆內,不會站在中庭裡)。
+    放不下(基地太小)回 None,由呼叫端退回長條骨架。"""
+    ex0, ey0, ex1, ey1 = env
+    W, D = ex1 - ex0, ey1 - ey0
+
+    patio_w = min(max(W * 0.20, COURT_MIN_SIDE), COURT_MAX_SIDE)
+    core_w = COURT_STAIR_W + SHAFT_DEPTH + patio_w
+    core_d = STAIR_DEPTH
+    if W - core_w < 2 * RING_MIN or D - core_d < 2 * RING_MIN:
+        return None                                  # 兩側/前後圈不夠厚 → 不適用
+
+    cx0 = ex0 + (W - core_w) / 2.0                   # 水平置中
+    cy0 = ey0 + max(RING_MIN, (D - core_d) * 0.45)   # 前段(南)略大於後段
+    cy0 = min(cy0, ey1 - core_d - RING_MIN)
+    cx1, cy1 = cx0 + core_w, cy0 + core_d
+
+    stair_rect = (cx0, cy0, cx0 + COURT_STAIR_W, cy1)
+    shaft_rect = (cx0 + COURT_STAIR_W, cy0, cx0 + COURT_STAIR_W + SHAFT_DEPTH, cy1)
+    patio_rect = (cx0 + COURT_STAIR_W + SHAFT_DEPTH, cy0, cx1, cy1)
+    seed = [(ex0, ey0, ex1, cy0),                    # 南帶(臨路,含玄關/客廳)
+            (ex0, cy1, ex1, ey1),                    # 北帶
+            (ex0, cy0, cx0, cy1),                    # 西帶
+            (cx1, cy0, ex1, cy1)]                    # 東帶
+    return stair_rect, shaft_rect, patio_rect, seed, core_w, [cx0, cx1]
+
+
+def _choose_core(env: Rect, min_free_rooms: int = 99):
+    """依平面比例選骨架:寬扁/方形走中庭,窄長走西側核(既有,不動)。
+
+    min_free_rooms:各樓層「核以外的房間數」最少的那層。中庭的房間圈是四塊帶,
+    某層房間少於四間就填不滿(切不出來)→ 退回西側核。骨架必須整棟一致(樓梯/柱
+    要上下對齊),所以用**最少的那層**決定。"""
+    if (env[2] - env[0]) > COURTYARD_MIN_W and min_free_rooms >= 4:
+        court = _core_courtyard(env)
+        if court is not None:
+            return court
+    return _core_column(env)
+
+
 def _core_column(env: Rect):
     """西側垂直核(每層同位):由南往北疊 樓梯 → 管道間 → 天井。
 
@@ -377,7 +435,7 @@ def _core_column(env: Rect):
     shaft_rect = (ex0, y1, ex0 + cw, y2)
     patio_rect = (ex0, y2, ex0 + cw, y3)
     seed = [(ex0 + cw, ey0, ex1, ey1), (ex0, y3, ex0 + cw, ey1)]
-    return stair_rect, shaft_rect, patio_rect, seed, cw
+    return stair_rect, shaft_rect, patio_rect, seed, cw, None   # None=柱距均分
 
 
 def _assign_core(free, fixed, allcells, cell_adj, env, entry_id, edges):
@@ -466,7 +524,7 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
 
     bay_walls:多跨時是否在內柱軸線預切隔間牆(藏內柱)。若某層因此動線卡死,
     上層迴圈會關掉它重試(寧可浮柱也要動線通)。"""
-    stair_rect, shaft_rect, patio_rect, seed, _cw = core
+    stair_rect, shaft_rect, patio_rect, seed, _cw, core_xlines = core
     # LLM 若提了樓梯/天井,用它的 id 讓相鄰邊還能評分;沒提就補一個(不影響對齊)。
     g_stair = next((r for r in rooms if r["kind"] == "stair"), None)
     g_patio = next((r for r in rooms if r["kind"] == "patio"), None)
@@ -481,7 +539,7 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
 
     # 多跨(>9m 寬):在內柱軸線處預切 seed → 每層同位置都有隔間牆,內柱藏其中、
     # 上下對齊。房間夠多才強制(否則分帶填不滿 → 退回原 seed,寧可少一道柱線牆)。
-    xlines = _bay_xlines(env) if bay_walls else []
+    xlines = ((core_xlines or _bay_xlines(env)) if bay_walls else [])
     if xlines:
         banded = _apply_bay_walls(seed, xlines)
         if m >= len(banded):
@@ -527,7 +585,8 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
         _ensure_room_windows, _fix_openings, _remove_openings, _stair,
     )
     level = int(floor_label[:-1]) if floor_label[:-1].isdigit() else 1
-    _fix_openings(spec, env[0], env[1], env[2], level)
+    party = core_xlines is None                 # 中庭骨架=獨棟(四面採光);西側核=透天共壁
+    _fix_openings(spec, env[0], env[1], env[2], level, party_walls=party)
     _remove_openings(spec, {(dp.wall_index, dp.opening_index) for dp in spec.doors
                             if "pipe_shaft" in _door_kinds(spec, dp)})  # 管道間非走入
     # 開口保證(在所有刪門收尾之後,否則補的門會又被刪):
@@ -536,7 +595,7 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
     #   ③ 居室補窗(前後外牆或天井側;共壁窗被刪後不能讓房間全暗)
     _ensure_floor_connected(spec)
     _ensure_room_doors(spec, env[0], env[1], env[2], level)
-    _ensure_room_windows(spec, env[0], env[1], env[2], env[3])
+    _ensure_room_windows(spec, env[0], env[1], env[2], env[3], party_walls=party)
 
     # 樓梯(舒適折返梯,填滿樓梯間)。
     sx0, sy0, sx1, sy1 = stair_rect
@@ -545,9 +604,14 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
     # 結構柱:面寬與進深各每 ~6m 一道軸線,柱放外框軸網交點(藏牆內、每層同位=上下
     # 對齊)。面寬 >9m 時分多跨,內柱落在上面預切的柱線牆內,不孤立在房間中央。
     W, D = env[2] - env[0], env[3] - env[1]
-    nx, ny = _n_bays_x(W), max(1, round(D / COLUMN_SPAN))
+    ny = max(1, round(D / COLUMN_SPAN))
     spec.grid_origin = (env[0], env[1])
-    spec.x_spacings = [W / nx] * nx
+    if core_xlines:                             # 中庭骨架:柱軸線=中央核的左右牆
+        xs = [env[0], *core_xlines, env[2]]
+        spec.x_spacings = [b - a for a, b in zip(xs, xs[1:])]
+    else:
+        nx = _n_bays_x(W)
+        spec.x_spacings = [W / nx] * nx
     spec.y_spacings = [D / ny] * ny
     spec.column_centers = None                 # None → 自動放在軸網交點
     spec.column_size = COLUMN_SIZE
@@ -587,7 +651,12 @@ def realize_graph_building(graph: dict, building_w: float, building_d: float,
         rng = random.Random(7)
     floors = sorted({r["floor"] for r in graph["rooms"] if r["floor"] >= 1})
     env = (setback, setback, setback + building_w, setback + building_d)
-    core = _core_column(env)
+    # 各層「核以外房間數」的最小值 → 決定骨架(中庭的房間圈需要 ≥4 間才填得滿)
+    min_free = min(
+        sum(1 for r in graph["rooms"]
+            if r["floor"] == f and r["kind"] not in ("stair", "patio"))
+        for f in floors) if floors else 0
+    core = _choose_core(env, min_free)             # 寬扁/方形→中庭,窄長→西側核
     top = max(floors)
 
     out = []

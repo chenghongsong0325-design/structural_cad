@@ -195,15 +195,15 @@ def test_single_entry_falls_back_when_ai_fails() -> None:
     assert r.json().get("engine") == "rule"           # 退回規則版
 
 
-def test_ai_design_rejects_too_wide() -> None:
-    """★ AI 設計師模式目前做透天(≤9m 寬);更寬的基地擋下(422)並說明改走一般模式。"""
-    brief = _payload(site_width_m=16, site_depth_m=14, floors_above=3)
+def test_ai_design_rejects_out_of_range() -> None:
+    """★ 超出 AI 引擎定義域(>30m 寬)才擋下(422);16m 這種寬基地現在走中庭骨架。"""
+    brief = _payload(site_width_m=40, site_depth_m=14, floors_above=3)
     c = _seq_client([brief])
     r = c.post("/api/generate",
-               json={"text": "透天三層,基地16×14米,三房", "ai_design": True})
+               json={"text": "透天三層,基地40×14米,三房", "ai_design": True})
     assert r.status_code == 422
     detail = r.json()["detail"]
-    assert "請關掉 AI 模式" in detail and "16.0" in detail   # 說明實際寬度、給出路
+    assert "請關掉 AI 模式" in detail and "40.0" in detail   # 說明實際寬度、給出路
 
 
 def test_ai_design_site_basis_no_side_setback() -> None:
@@ -439,7 +439,7 @@ def test_modify_uses_base_and_keeps_seed() -> None:
     assert "2 房" in data["summary"]                     # 用了修改後的需求
     assert data["brief_data"]["bedrooms"] == 2           # 新的底給下一輪
 
-    sent = log[-1]
+    sent = log[0]        # 第一通=修改解析(之後可能還有 AI 設計的呼叫)
     assert "修改指令:改二房" in sent["contents"]         # 指令有送到
     assert "site_width_m" in sent["contents"]            # 原需求 JSON 也在
     assert "修改模式" in sent["config"]["system_instruction"]

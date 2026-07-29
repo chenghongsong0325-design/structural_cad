@@ -50,7 +50,9 @@ COUNTER_INSET = 300.0        # 兩端離牆角留的距離(mm)
 COUNTER_MIN_LEN = 1500.0     # 太短就不擺流理台
 
 DEFAULT_HALF_WALL = 75.0     # 找不到對應牆時的預設半牆厚(mm)
-MIN_INNER_SIDE = 900.0       # 內緣縮完至少要這麼寬,否則不縮(極小房不失效)
+# 內緣縮完至少要留這麼寬才採用。設很小是刻意的:窄到放不下家具的房間本來就不會
+# 擺東西,但若因此「不縮」而沿用牆中心線,家具會貼著中心線畫出去 = 穿牆。
+MIN_INNER_SIDE = 300.0
 
 
 def _inner_room(spec, room):
@@ -130,6 +132,29 @@ def _add_counter(spec, room) -> bool:
     return False
 
 
+def _drop_furniture_in_walls(spec, tol: float = 1000.0) -> int:
+    """移掉「畫出來會嵌進牆體」的家具(最後防線)。
+
+    擺位器判斷放不放得下時用的是**碰撞尺寸**,比**繪圖尺寸**小一點;房間剛好卡在
+    中間時,它會以為 2.0m 的沙發塞得進 1.85m 的內緣,畫出來就凸進牆裡。這裡直接
+    以繪圖佔地驗一次,凸出去的就不擺——**畫面正確優先於家具齊全**。回移除件數。"""
+    from shapely.geometry import LineString
+
+    from src.design.collision.geometry import fixture_obstacles
+
+    bodies = [LineString([w.start, w.end]).buffer(w.thickness / 2.0,
+                                                 cap_style=2, join_style=2)
+              for w in spec.walls]
+    victims = [o.ref for o in fixture_obstacles(spec)
+               if sum(o.poly.intersection(b).area for b in bodies) > tol]
+    for v in victims:
+        try:
+            spec.fixtures.remove(v)
+        except ValueError:
+            pass
+    return len(victims)
+
+
 def furnish_spec(spec, *, weights: PlacementWeights | None = None):
     """就地把 spec 的每個房間配上家具(回傳同一個 spec,方便串接)。
 
@@ -149,4 +174,5 @@ def furnish_spec(spec, *, weights: PlacementWeights | None = None):
                 if res.found:
                     spec.fixtures.append(res.best.placement())
                     break                        # 這個位置的家具已定,換下一項
+    _drop_furniture_in_walls(spec)               # 最後防線:畫出來不能穿牆
     return spec

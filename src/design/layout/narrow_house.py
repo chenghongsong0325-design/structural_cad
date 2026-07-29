@@ -216,8 +216,11 @@ def _remove_openings(spec, targets: set):
 _BATH_DOOR_PREF = ("stair_hall", "corridor", "living", "dining", "kitchen")
 
 
-def _fix_openings(spec, bx0, by0, bx1, level):
-    """去重複門、去界牆窗、去天井門、浴室只留 1 門;1F 補臨路前門。"""
+def _fix_openings(spec, bx0, by0, bx1, level, party_walls: bool = True):
+    """去重複門、去界牆窗、去天井門、浴室只留 1 門;1F 補臨路前門。
+
+    party_walls:東西外牆是不是與鄰房共用的界牆(透天=True,不開窗)。獨棟(中庭
+    骨架)給 False → 四面都可開窗,否則整棟只剩前後採光、房間會變暗。"""
     remove: set = set()
 
     # 重複門:同一位置被開了兩扇(相鄰兩室互開)→ 只留一扇
@@ -231,12 +234,13 @@ def _fix_openings(spec, bx0, by0, bx1, level):
         else:
             seen[key] = True
 
-    # 界牆(東西共用牆)不開窗
-    for wi, w in enumerate(spec.walls):
-        if _is_party_wall(w, bx0, bx1):
-            for oi, op in enumerate(w.openings):
-                if op.kind == "window":
-                    remove.add((wi, oi))
+    # 界牆(東西共用牆)不開窗——獨棟不適用(party_walls=False 時四面都能開)
+    if party_walls:
+        for wi, w in enumerate(spec.walls):
+            if _is_party_wall(w, bx0, bx1):
+                for oi, op in enumerate(w.openings):
+                    if op.kind == "window":
+                        remove.add((wi, oi))
 
     # 天井不設走入門(採光豎井)
     for dp in spec.doors:
@@ -351,7 +355,7 @@ WINDOW_KINDS = {"living", "dining", "kitchen", "bedroom", "master_bedroom",
                 "study", "elder_room", "bathroom"}
 
 
-def _ensure_room_windows(spec, bx0, by0, bx1, by1) -> int:
+def _ensure_room_windows(spec, bx0, by0, bx1, by1, party_walls: bool = True) -> int:
     """保證居室有窗:沒窗的房間在「前後外牆」或「天井側」補一扇。
 
     為什麼需要:透天是共壁,東西外牆不能開窗(_fix_openings 會刪),但配窗時是挑
@@ -381,7 +385,9 @@ def _ensure_room_windows(spec, bx0, by0, bx1, by1) -> int:
                 if not (abs(sx - rx0) < 60 or abs(sx - rx1) < 60):
                     continue
                 lo, hi, along = (max(min(sy, ey), ry0), min(max(sy, ey), ry1), sy)
-                on_ext_ns = False                       # 東西向=共壁,永遠不開窗
+                # 透天:東西向=共壁不開窗;獨棟:東西外牆也是採光面
+                on_ext_ns = (not party_walls
+                             and (abs(sx - bx0) < 60 or abs(sx - bx1) < 60))
                 mid_pt = lambda m: (sx, m)              # noqa: E731
             else:
                 if not (abs(sy - ry0) < 60 or abs(sy - ry1) < 60):

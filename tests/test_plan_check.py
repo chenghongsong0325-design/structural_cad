@@ -149,8 +149,8 @@ def test_sweep_ai_pipeline_never_emits_broken_plan():
     這是「以後的圖都不會有問題」的真正依據——不是挑幾個尺寸看起來對。"""
     rng = random.Random(20260728)
     bad = []
-    for bw in (5000.0, 7000.0, 9000.0, 11000.0, 13000.0):
-        for bd in (8000.0, 12000.0):
+    for bw in (5000.0, 7000.0, 9000.0, 11000.0, 13000.0, 16000.0, 20000.0):
+        for bd in (8000.0, 12000.0, 18000.0):
             g = _random_graph(rng, rng.choice([2, 3]))
             env = (SB, SB, SB + bw, SB + bd)
             floors = realize_graph_building(g, bw, bd,

@@ -149,6 +149,34 @@ def _floating_columns(spec, env):
                for p in polys))
 
 
+def test_courtyard_skeleton_for_wide_and_square_sites():
+    """★ Phase 3:寬扁/方形基地自動換**中庭骨架**——核與中庭置中、房間繞一圈,
+    視為獨棟 → 四面採光(不套透天的東西共壁規則),圖面檢查零硬錯誤。"""
+    from src.design.layout.global_score import score_report
+    from src.design.layout.graph_layout import _choose_core
+    from src.design.layout.plan_check import check_building
+
+    for bw, bd in [(15000.0, 15000.0), (20000.0, 20000.0), (24000.0, 16000.0)]:
+        env = (2000.0, 2000.0, 2000.0 + bw, 2000.0 + bd)
+        assert _choose_core(env)[5], f"{bw:.0f}x{bd:.0f} 應該選中庭骨架"
+        floors = realize_graph_building(GRAPH, bw, bd, rng=random.Random(7))
+        rep = check_building(floors, env)
+        assert rep.ok, rep.summary()
+        for _lb, spec, _s, _t in floors:          # 獨棟:四面開窗 → 不該是暗棟
+            assert score_report(spec)["sub_scores"]["natural_lighting"] > 0
+        grids = {(sp.grid_origin, tuple(sp.x_spacings), tuple(sp.y_spacings))
+                 for _l, sp, _s, _t in floors}
+        assert len(grids) == 1                    # 柱網每層相同(上下對齊)
+
+
+def test_narrow_still_uses_column_core():
+    """★ 窄長基地維持原本的西側核骨架(Phase 3 不影響既有透天)。"""
+    from src.design.layout.graph_layout import _choose_core
+    for bw, bd in [(7000.0, 12000.0), (11000.0, 12000.0), (13000.0, 14000.0)]:
+        env = (2000.0, 2000.0, 2000.0 + bw, 2000.0 + bd)
+        assert _choose_core(env)[5] is None       # None = 西側核(非中庭)
+
+
 def test_habitable_rooms_get_windows():
     """★ 有採光面的居室一定有窗:貼前後外牆(或天井)的房間不能是暗房。
 
