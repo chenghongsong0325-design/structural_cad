@@ -12,6 +12,7 @@
     entry_upstairs      樓上外牆開門(門通往空中)
     furniture_in_wall   家具嵌進牆體(畫出來是穿牆)
     door_in_corner      門洞卡在房間角落(人走不進那個角)
+    stair_blocks_door   門直接開在階梯上(缺起步平台,門扇會掃到踏step)
     circulation_blocked 房間走不進去/家具擋死動線
 
 設計警告(warning,要改「房間怎麼配」才救得動,由收斂迴圈回饋給 LLM)::
@@ -43,6 +44,20 @@ EDGE_TOL = 60.0             # 貼邊/貼牆的容差(mm)
 WALL_OVERLAP_TOL = 1000.0   # 家具與牆重疊超過這個面積(mm²)算穿牆
 OVERSIZE_RATIO = 1.5        # 面積超過理想上限這麼多倍算過大
 ASPECT_LIMIT = 2.8          # 居室長寬比超過這個算細長
+STAIR_LANDING_MIN = 600.0   # 門與第一階之間至少要有這麼深的平地(起步平台)
+
+
+def _stair_footprint(stair):
+    """樓梯踏step 佔的矩形(世界座標)。拿不到幾何回 None。"""
+    from shapely.geometry import box
+    try:
+        ox, oy = stair.origin
+        w, ln = stair.width, stair.length
+    except Exception:
+        return None
+    if getattr(stair, "direction", "north") in ("north", "south"):
+        return box(ox, oy, ox + w, oy + ln)
+    return box(ox, oy, ox + ln, oy + w)
 
 
 @dataclass(frozen=True)
@@ -219,14 +234,28 @@ def check_floor(spec, env, level: int, label: str = "") -> list[PlanIssue]:
                     "error", "door_in_corner", lb, "",
                     f"門洞({px:.0f},{py:.0f})貼著房間角落,人走不進去"))
 
-    # ⑥ 動線:每間房走得進去、家具沒擋死
+    # ⑥ 門不得直接開在階梯上(門與第一階之間要有起步平台可站)
+    from src.design.layout.narrow_house import _door_clear_of_stairs
+    if getattr(spec, "stairs", None):
+        for w in spec.walls:
+            for op in w.openings:
+                if op.kind != "door":
+                    continue
+                if not _door_clear_of_stairs(spec, w, op.position, op.width):
+                    p = Point(*w.point_at(op.position))
+                    issues.append(PlanIssue(
+                        "error", "stair_blocks_door", lb, "",
+                        f"門洞({p.x:.0f},{p.y:.0f})正對階梯,開門就要踩上踏step"
+                        f"(門前需有可站的平地)"))
+
+    # ⑦ 動線:每間房走得進去、家具沒擋死
     rep = analyze_room_circulation(spec)
     if not rep.ok:
         for rc in rep.blocked:
             issues.append(PlanIssue("error", "circulation_blocked", lb, rc.name,
                                     f"動線不通({rc.reason})"))
 
-    # ⑦ 設計面警告(落實端救不動,回饋給 LLM 重設計)
+    # ⑧ 設計面警告(落實端救不動,回饋給 LLM 重設計)
     for r, poly in polys:
         if r.kind in VOID_KINDS:
             continue

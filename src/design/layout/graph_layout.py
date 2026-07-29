@@ -76,7 +76,9 @@ LABEL = {
 Rect = tuple[float, float, float, float]      # (x0, y0, x1, y1),mm
 
 # 垂直核(每層同位 → 樓梯/管道間/天井上下對齊)與結構柱。
-STAIR_DEPTH = 3600.0     # 樓梯間進深(容 U 形折返梯轉身)
+# 樓梯間進深:牆縫 150 + **起步平台 900**(門開進來先站平地再上階)+ 梯跑 9×260
+# + 折返平台 ~900。少了起步平台就會「開門即踏step」——門扇掃到階梯、人沒落腳處。
+STAIR_DEPTH = 4300.0
 SHAFT_DEPTH = 700.0      # 管道間(機電豎管:給排水/電氣)進深
 PATIO_DEPTH = 2000.0     # 天井(採光通風豎井)進深
 COLUMN_SIZE = 400.0      # 結構柱斷面(mm 見方)
@@ -91,7 +93,7 @@ COLUMN_SPAN = 6000.0     # 柱距目標(沿進深,6m 經濟跨度;藏外牆內�
 # 實測 5~34m 寬 × 8~24m 深全部 0 硬錯誤;上限保守設 30m(再大已非單戶住宅尺度)。
 AI_MIN_WIDTH = 5000.0    # <5m:西側核(樓梯+管道+天井)吃掉寬度,東側住不了
 AI_MAX_WIDTH = 30000.0   # 實測 34m 仍乾淨;30m 以上已非單戶住宅尺度
-AI_MIN_DEPTH = 8000.0    # <8m:前段+核(6.3m)+後室三段擠不下
+AI_MIN_DEPTH = 9000.0    # 核(樓梯4.3+管道0.7+天井2.0=7m)+ 後段房間 ≥2m
 
 
 # ── 1) 把建築範圍切成 n 個矩形(遞迴二分,保證鋪滿、不重疊)──────────────────
@@ -585,6 +587,8 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
         _ensure_room_windows, _fix_openings, _remove_openings, _stair,
     )
     level = int(floor_label[:-1]) if floor_label[:-1].isdigit() else 1
+    sx0, sy0, sx1, sy1 = stair_rect              # 先掛樓梯:開口收尾才避得開梯段
+    spec.stairs = [_stair(sx0, sx1, sy0, sy1, stair_label)]
     party = core_xlines is None                 # 中庭骨架=獨棟(四面採光);西側核=透天共壁
     _fix_openings(spec, env[0], env[1], env[2], level, party_walls=party)
     _remove_openings(spec, {(dp.wall_index, dp.opening_index) for dp in spec.doors
@@ -596,10 +600,6 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
     _ensure_floor_connected(spec)
     _ensure_room_doors(spec, env[0], env[1], env[2], level)
     _ensure_room_windows(spec, env[0], env[1], env[2], env[3], party_walls=party)
-
-    # 樓梯(舒適折返梯,填滿樓梯間)。
-    sx0, sy0, sx1, sy1 = stair_rect
-    spec.stairs = [_stair(sx0, sx1, sy0, sy1, stair_label)]
 
     # 結構柱:面寬與進深各每 ~6m 一道軸線,柱放外框軸網交點(藏牆內、每層同位=上下
     # 對齊)。面寬 >9m 時分多跨,內柱落在上面預切的柱線牆內,不孤立在房間中央。

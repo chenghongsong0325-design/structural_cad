@@ -51,16 +51,26 @@ SETBACK = 2000.0
 # (浴室/後臥擠爆、動線斷)。真正 4~5m 的超窄透天是「單間進深串聯 + 浴室塞樓梯旁」
 # 的另一種更緊的骨架,列為之後的工作。
 MIN_WIDTH, MAX_WIDTH = 5000.0, 7000.0
-MIN_DEPTH = 10500.0             # 三段(前+核+後)放得下 + 樓上後室夠住的下限
+MIN_DEPTH = 11000.0             # 三段(前+核[含起步平台]+後)放得下的下限
 
 # 樓梯:U 形折返梯(填滿樓梯間)。中段核只有 ~3.6m 深,單跑直梯爬一層會太陡
 # (需 ~4.7m 才緩);折返梯上一段+平台轉身+再上一段,同深度內每階升高正常(~178mm)。
 STAIR_TREAD = 260.0
 WALL_GAP = 75.0
 STAIR_WELL_GAP = 100.0                              # 兩梯段間的梯井縫
-STAIRWELL_W = 2075.0                                # 樓梯間面寬(容兩梯段,各 ~910)
+# 起步平台:門進到樓梯間之後、踩上第一階之前要站的那塊平地。沒有它,門一開就是
+# 踏step——門扇會掃到階梯、人也沒有落腳處,是真實圖面不會出現的錯誤。
+ENTRY_LANDING = 900.0
+STAIRWELL_W = 2075.0                                # 梯段本身佔的面寬(兩梯段各 ~910)
+# 樓梯旁的通道:前後段要互通就得走過樓梯間,沒有這條通道等於要人踩著階梯走過去。
+# 寬度要容得下「門(850)+ 兩側牆角淨距」,門才有合法位置可開;950 太緊,
+# 合法窗口只剩 ~75mm,常常開不成門 → 只好穿浴室當通道(不合理)。
+PASSAGE_W = 1200.0
+STAIRWELL_TOTAL = STAIRWELL_W + PASSAGE_W           # 樓梯間總面寬(梯段 + 通道)
 FLOOR_HEIGHT = 3200.0                               # 層高(算級數/每階升高用)
 MAX_RISER = 190.0                                   # 每階升高上限(住宅舒適下限步距)
+MIN_TREAD = 210.0                                   # 踏面下限(建築技術規則:住宅 ≥21cm)
+TURN_LANDING_MIN = 700.0                            # 折返端平台最小深(轉身用)
 
 # 採光天井(窄屋核只放天井+樓梯時的天井寬)。
 WELL_W_MIN, WELL_W_MAX = 1400.0, 2200.0
@@ -68,7 +78,7 @@ WELL_W_MIN, WELL_W_MAX = 1400.0, 2200.0
 # 浴室:面寬夠時擺進中段核(東);不足時退回後室東南角。
 BATH_MIN_W, BATH_MAX_W = 1500.0, 2400.0
 # 核放得下浴室的最小面寬(天井+樓梯間+浴室)。
-CORE_BATH_MIN_W = STAIRWELL_W + WELL_W_MIN + BATH_MIN_W
+CORE_BATH_MIN_W = STAIRWELL_TOTAL + WELL_W_MIN + BATH_MIN_W
 
 ENTRY_WIDTH = 1000.0            # 臨路大門寬
 INTERIOR_DOOR_WIDTH = 850.0     # 補內門寬(對齊 bsp_layout.DOOR_WIDTH)
@@ -81,7 +91,8 @@ _DOOR_NEIGHBOR_PREF = ("corridor", "foyer", "stair_hall", "living", "dining",
 # 三段進深:(段名, 分配權重, 最小進深mm)。前室 / 中段核 / 後室。
 ZONES = [
     ("front", 0.38, 3300.0),
-    ("core", 0.24, 3500.0),        # 容得下 U 梯(梯跑 + 轉身平台)
+    # 核最小深 = 牆縫 150 + 起步平台 900 + 梯跑 9×260 + 折返平台 ~900
+    ("core", 0.24, 4300.0),
     ("rear", 0.38, 3200.0),
 ]
 
@@ -104,23 +115,34 @@ def _rect(x0, y0, x1, y1):
 def _core_widths(W: float, with_east: bool):
     """中段核各段面寬 (天井, 樓梯間, 東格);東格=0 表示核裝不下(超窄屋)。"""
     if with_east and W >= CORE_BATH_MIN_W:
-        east = min(max((W - STAIRWELL_W) * 0.4, BATH_MIN_W), BATH_MAX_W)
-        east = min(east, W - STAIRWELL_W - WELL_W_MIN)     # 保住天井最小寬
-        return W - STAIRWELL_W - east, STAIRWELL_W, east
+        east = min(max((W - STAIRWELL_TOTAL) * 0.4, BATH_MIN_W), BATH_MAX_W)
+        east = min(east, W - STAIRWELL_TOTAL - WELL_W_MIN)  # 保住天井最小寬
+        return W - STAIRWELL_TOTAL - east, STAIRWELL_TOTAL, east
     return _well_width(W), W - _well_width(W), 0.0
 
 
 def _stair(x_west, x_east, y1, y2, label):
-    """樓梯間內 U 形折返梯(填滿 [x_west,x_east]×[y1,y2]),往北上。
+    """樓梯間內 U 形折返梯(往北上),**南側(門側)留起步平台**。
 
-    級數由層高回推、每階升高 ≤MAX_RISER(住宅舒適);分兩段折返,故梯跑只需一半深度,
-    塞得進淺的中段核。"""
+    級數由層高回推、每階升高 ≤MAX_RISER(住宅舒適);分兩段折返,故梯跑只需一半深度。
+    ⚠️ 樓梯不是從門邊就開始踩:南端讓出 ENTRY_LANDING 當起步平台,門開進來先站平地
+    再上階(否則門扇掃到踏step、人也沒落腳處)。平台不夠深時自動縮短踏面(仍 ≥法定
+    210mm)把空間讓出來。"""
     total = max(4, -(-int(FLOOR_HEIGHT) // int(MAX_RISER)))      # ceil,爬完一層的總級數
     spf = max(2, -(-total // 2))                                 # 每段級數(向上取半)
-    return UStair(origin=(x_west + WALL_GAP, y1 + WALL_GAP),
-                  width=(x_east - x_west) - 2 * WALL_GAP,
-                  length=(y2 - y1) - 2 * WALL_GAP, direction="north",
-                  steps_per_flight=spf, tread=STAIR_TREAD,
+    usable = (y2 - y1) - 2 * WALL_GAP
+    landing = min(ENTRY_LANDING, max(0.0, usable - spf * MIN_TREAD - TURN_LANDING_MIN))
+    run_len = usable - landing                                   # 梯跑+折返平台的長度
+    tread = STAIR_TREAD
+    if spf * tread + TURN_LANDING_MIN > run_len:                 # 太擠 → 縮踏面(≥法定)
+        tread = max(MIN_TREAD, (run_len - TURN_LANDING_MIN) / spf)
+    # 梯段靠**東側**擺,西側留 PASSAGE_W 當前後通道(人不必踩階梯走過去)。
+    span = (x_east - x_west) - 2 * WALL_GAP
+    flight_w = min(span, STAIRWELL_W - 2 * WALL_GAP) if span > STAIRWELL_W else span
+    return UStair(origin=(x_east - WALL_GAP - flight_w, y1 + WALL_GAP + landing),
+                  width=flight_w,
+                  length=run_len, direction="north",
+                  steps_per_flight=spf, tread=tread,
                   well_gap=STAIR_WELL_GAP, label=label)
 
 
@@ -149,7 +171,9 @@ def _floor_rooms(level, top, bx0, by0, bx1, by1):
     # 樓上=浴室(暗區,天井旁)。
     if level == 1:                                  # 1F:客廳 / 核 / 餐廳|廚房
         core, stair = _core(bx0, bx1, y1, y2, label, "storage", "儲藏")
-        xm = (bx0 + bx1) / 2                         # 後段左右分:餐廳(西)| 廚房(東)
+        # 後段左右分:切在**樓梯旁通道**的東緣,讓通道正對餐廳 → 前後段那扇門開得成
+        # (切在幾何中線時,通道與餐廳只重疊一小段,門塞不下,整層就會被判走不通)。
+        xm = min(max(stair.origin[0], bx0 + 2000.0), bx1 - 2000.0)
         rooms = [("living", "客廳", _rect(bx0, by0, bx1, y1)), *core,
                  ("dining", "餐廳", _rect(bx0, y2, xm, by1)),
                  ("kitchen", "廚房", _rect(xm, y2, bx1, by1))]
@@ -247,6 +271,15 @@ def _fix_openings(spec, bx0, by0, bx1, level, party_walls: bool = True):
         if "patio" in _door_kinds(spec, dp):
             remove.add((dp.wall_index, dp.opening_index))
 
+    # 開在梯段旁的門要拿掉:門一開就是踏step,人沒有落腳處。刪掉後由 _ensure_floor_
+    # connected 改開在起步平台那一側(那裡才有平地)。
+    if _stair_boxes(spec):
+        for dp in spec.doors:
+            w = spec.walls[dp.wall_index]
+            op = w.openings[dp.opening_index]
+            if not _door_clear_of_stairs(spec, w, op.position, op.width):
+                remove.add((dp.wall_index, dp.opening_index))
+
     # 每間浴室只留 1 門(偏好開向公共鄰室,其餘刪掉)
     for room in [r for r in spec.rooms if r.kind == "bathroom"]:
         bp = Polygon(room.points)
@@ -304,6 +337,15 @@ DOOR_TOUCH_TOL = 60.0           # 門洞中心離房間邊界多近算「這扇�
 # 門洞兩端離「垂直方向的牆(房間角落)」的最小淨距(mm)。門擠在角落時,人走不進
 # 那個角(房內可站區是牆內縮半個通行寬,角落구域接不上門)→ 動線檢查會判不通。
 DOOR_CORNER_CLEAR = 350.0
+# 門洞離「階梯本體」的最小淨距:門必須開在起步平台那一側,不能開在梯段旁邊
+# (從側面開門一樣是一腳踩在階梯上)。
+STAIR_DOOR_CLEAR = 600.0
+# 這些房間不能當「穿堂」:已經有門就不再為了連通多開一扇(浴廁只留一扇門)。
+_PRIVATE_KINDS = {"bathroom", "toilet"}
+# 開門位置候選:先試慣用比例(置中/三七分),再沿整段牆等距掃描——牆上有階梯或
+# 牆角要避開時,只試固定幾個點會找不到位置(前後段就會被判成走不通)。
+_DOOR_FRACS = (0.5, 0.35, 0.65, 0.25, 0.75, 0.45, 0.55,
+               *(i / 24.0 for i in range(1, 24)))
 # 分級退讓:先求舒適淨距,擺不下就放寬;最後一級是「動線仍走得通」的物理下限
 # (房內可站區是牆內縮半個通行寬,門離角落太近就接不上那塊 → 判動線不通)。
 DOOR_CLEAR_STEPS = (350.0, 250.0, 150.0, 100.0)
@@ -329,12 +371,59 @@ def _room_edge_span(room_poly, wall, along_start):
     return abs(lo - along_start), abs(hi - along_start)
 
 
+def _stair_boxes(spec) -> list:
+    """各座樓梯「梯段」佔的矩形(起步平台已排除在外,見 _stair)。"""
+    from shapely.geometry import box
+    out = []
+    for st in getattr(spec, "stairs", []) or []:
+        try:
+            ox, oy = st.origin
+            w, ln = st.width, st.length
+        except Exception:
+            continue
+        if getattr(st, "direction", "north") in ("north", "south"):
+            out.append(box(ox, oy, ox + w, oy + ln))
+        else:
+            out.append(box(ox, oy, ox + ln, oy + w))
+    return out
+
+
+def _door_approach_rects(wall, pos: float, width: float, depth: float):
+    """門「兩側各一塊站人的空間」= 門寬 × depth 深的矩形(世界座標)。"""
+    from shapely.geometry import box
+    (sx, sy), (ex, ey) = wall.start, wall.end
+    px, py = wall.point_at(pos)
+    half = width / 2.0
+    if abs(sx - ex) < 1.0:                       # 垂直牆 → 往東西兩側站
+        return [box(px, py - half, px + depth, py + half),
+                box(px - depth, py - half, px, py + half)]
+    return [box(px - half, py, px + half, py + depth),      # 水平牆 → 往南北兩側
+            box(px - half, py - depth, px + half, py)]
+
+
+def _door_clear_of_stairs(spec, wall, pos: float,
+                          width: float = INTERIOR_DOOR_WIDTH) -> bool:
+    """開門後踩得到平地嗎?
+
+    判準不是「離階梯多遠」,而是**門前面那塊站人的空間有沒有被階梯佔掉**——門開在
+    梯段旁 1m 通道的正中是可以的(人站在通道上),但門正對著踏step 就不行。"""
+    boxes = _stair_boxes(spec)
+    if not boxes:
+        return True
+    for rect in _door_approach_rects(wall, pos, width, STAIR_DOOR_CLEAR):
+        if any(rect.intersection(b).area > 10000.0 for b in boxes):
+            return False                          # 這一側是階梯,站不住
+    return True
+
+
 def _door_pos_ok(spec, wall, pos: float, width: float,
                  clear: float = DOOR_CORNER_CLEAR) -> bool:
     """這個門洞位置合不合格:對**兩側每一間房**都要離房間角落 ≥ clear。
 
     這條規則所有開門路徑共用(前門/補門/接通用門),避免「門卡在牆角、人走不進去」
     ——那正是動線檢查會判不通、但看圖不明顯的錯誤。"""
+    if not _door_clear_of_stairs(spec, wall, pos, width):   # 門前要站得住人
+        return False
     (sx, sy), (ex, ey) = wall.start, wall.end
     along_start = sy if abs(sx - ex) < 1.0 else sx
     px, py = wall.point_at(pos)
@@ -499,7 +588,7 @@ def _open_door_on_wall(spec, wi, start_along, a, b) -> bool:
     taken = [(op.position - op.width / 2, op.position + op.width / 2)
              for op in w.openings]
     for clear in DOOR_CLEAR_STEPS:                  # 連通是硬需求,淨距可分級退讓
-        for frac in (0.5, 0.35, 0.65, 0.25, 0.75, 0.45, 0.55):
+        for frac in _DOOR_FRACS:
             m = a + (b - a) * frac
             pos = abs(m - start_along)
             lo, hi = pos - INTERIOR_DOOR_WIDTH / 2, pos + INTERIOR_DOOR_WIDTH / 2
@@ -528,11 +617,17 @@ def _ensure_floor_connected(spec, max_new_doors: int = 8) -> int:
         comps = _room_components(spec)
         if len(comps) <= 1:
             break
-        best = None                       # (rank, -共用邊長, se, wi, start_along)
+        from src.design.layout.room_circulation import _room_openings
+        cands = []                        # (rank, -共用邊長, se, wi, start_along)
         for ca, cb in itertools.combinations(comps, 2):
             for i in ca:
                 for j in cb:
                     ri, rj = spec.rooms[i], spec.rooms[j]
+                    # 浴廁當穿堂是最後手段(rank 記大一級),優先走其他房間。
+                    thru_bath = any(
+                        r.kind in _PRIVATE_KINDS
+                        and _room_openings(spec, Polygon(r.points))
+                        for r in (ri, rj))
                     se = _shared_edge(Polygon(ri.points), Polygon(rj.points))
                     if se is None or se[4] < INTERIOR_DOOR_WIDTH + 200.0:
                         continue
@@ -544,13 +639,18 @@ def _ensure_floor_connected(spec, max_new_doors: int = 8) -> int:
                                if r.kind in _DOOR_NEIGHBOR_PREF
                                else len(_DOOR_NEIGHBOR_PREF)
                                for r in (ri, rj))
-                    cand = (rank, -se[4], se, cover[0], cover[1])
-                    if best is None or cand[:2] < best[:2]:
-                        best = cand
-        if best is None:                  # 沒有夠長的共用牆可開(極罕見)
-            break
-        _rank, _len, se, wi, start_along = best
-        if not _open_door_on_wall(spec, wi, start_along, se[2], se[3]):
+                    if thru_bath:
+                        rank += 100          # 排到最後:浴廁不該變成穿堂
+                    cands.append((rank, -se[4], se, cover[0], cover[1]))
+        # ⚠️ 要**依序試到成功**:最佳那面牆可能整段都是階梯(開了門會踩在踏step上),
+        #    此時得換次佳的牆,不能直接放棄——否則整層就被判成走不通。
+        cands.sort(key=lambda c: c[:2])
+        opened = False
+        for _rank, _len, se, wi, start_along in cands:
+            if _open_door_on_wall(spec, wi, start_along, se[2], se[3]):
+                opened = True
+                break
+        if not opened:                    # 真的沒有可開門的牆(極罕見)
             break
         added += 1
     return added
@@ -605,7 +705,7 @@ def _add_interior_door(spec, room, bx0, by0, bx1, level):
                  for op in w.openings]
         pos = None
         for clear in DOOR_CLEAR_STEPS:
-            for frac in (0.5, 0.35, 0.65, 0.45, 0.55):
+            for frac in _DOOR_FRACS:
                 m = lo + (hi - lo) * frac
                 p = abs(m - start_along)
                 a, b = p - INTERIOR_DOOR_WIDTH / 2, p + INTERIOR_DOOR_WIDTH / 2
@@ -654,11 +754,11 @@ def _build_floor(level, top, W, D, floor_label, furnish=True):
     rooms, stair = _floor_rooms(level, top, bx0, by0, bx1, by1)
     spec = rooms_to_spec(rooms, (bx0, by0, bx1, by1), site_w, site_d,
                          setback=SETBACK)
+    spec.stairs = [stair]                            # 先掛樓梯:開口收尾才避得開梯段
     _fix_openings(spec, bx0, by0, bx1, level)
     _ensure_floor_connected(spec)                    # 從大門走得到每一間房
     _ensure_room_doors(spec, bx0, by0, bx1, level)   # 保證每房都有門(不管尺寸)
     _ensure_room_windows(spec, bx0, by0, bx1, by1)   # 居室補窗(前後外牆/天井側)
-    spec.stairs = [stair]
     spec.floor_label = floor_label
     # 建築外框當「單跨」記進格線(不放柱):讓 metrics/摘要讀得到建築尺寸與院深。
     spec.x_spacings = [W]
@@ -666,7 +766,9 @@ def _build_floor(level, top, W, D, floor_label, furnish=True):
     spec.grid_origin = (bx0, by0)
     if furnish:                                     # 家具:沿用 Phase 6 擺位(必合法)
         from src.design.layout.auto_furnish import furnish_spec
+        from src.design.layout.graph_layout import _declutter_for_circulation
         furnish_spec(spec)
+        _declutter_for_circulation(spec)            # 擋動線的家具移掉(與 AI 產線同一套)
     return spec
 
 

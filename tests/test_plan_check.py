@@ -150,7 +150,7 @@ def test_sweep_ai_pipeline_never_emits_broken_plan():
     rng = random.Random(20260728)
     bad = []
     for bw in (5000.0, 7000.0, 9000.0, 11000.0, 13000.0, 16000.0, 20000.0):
-        for bd in (8000.0, 12000.0, 18000.0):
+        for bd in (9000.0, 12000.0, 18000.0):
             g = _random_graph(rng, rng.choice([2, 3]))
             env = (SB, SB, SB + bw, SB + bd)
             floors = realize_graph_building(g, bw, bd,
@@ -165,7 +165,7 @@ def test_sweep_rule_pipeline_never_emits_broken_plan():
     """★★ 規則版窄透天(不同寬/深/層數)同樣不得有硬錯誤。"""
     bad = []
     for bw in (5000.0, 6000.0, 7000.0):
-        for bd in (10500.0, 14000.0):
+        for bd in (11000.0, 14000.0):
             for n in (1, 3):
                 floors = generate_narrow_building(bw, bd, floors=n)
                 env = (SB, SB, SB + bw, SB + bd)
