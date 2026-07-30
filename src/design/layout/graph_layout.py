@@ -633,6 +633,10 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
         from src.design.layout.auto_furnish import furnish_spec
         furnish_spec(spec)
         _declutter_for_circulation(spec)          # 移掉擋動線的家具 → 每房走得通
+    # 門與動線規範:轉門/改橫拉門、衛浴門不朝廚房、補一扇門直通公共動線。
+    # 要在家具擺完之後——開啟弧線會不會撞到家具,擺完才知道。
+    from src.design.layout.door_rules import repair_doors
+    repair_doors(spec, env[0], env[1], env[2], level)
     return spec, satisfied, len(edges), score
 
 

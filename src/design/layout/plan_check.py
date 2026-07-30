@@ -14,6 +14,12 @@
     door_in_corner      門洞卡在房間角落(人走不進那個角)
     stair_blocks_door   門直接開在階梯上(缺起步平台,門扇會掃到踏step)
     stair_side_open     梯段有一側沒牆(人走上去會從旁邊掉下去)
+    entry_door_narrow   對外大門淨寬 <90cm(門與動線規範)
+    room_door_narrow    居室門 <80cm / 衛浴門 <75cm(同上)
+    door_swing_blocked  門的開啟弧線撞到牆/柱/家具/另一扇門(同上)
+    bath_door_to_kitchen 衛浴門直接開向廚房或神明廳(同上)
+    through_bedroom     要穿越別人的臥室才進得去(套內衛浴除外,同上)
+    stair_wrapped       樓梯間被私人房間包住,沒接到該層公共動線(同上)
     circulation_blocked 房間走不進去/家具擋死動線
 
 設計警告(warning,要改「房間怎麼配」才救得動,由收斂迴圈回饋給 LLM)::
@@ -38,8 +44,10 @@ VOID_KINDS = {"pipe_shaft", "patio"}
 DAYLIGHT_KINDS = {"living", "dining", "bedroom", "master_bedroom", "study",
                   "elder_room"}
 # 這些房間本來就細長,不檢查長寬比。
+# stair_hall:樓梯間裝的是一整段梯跑(4m 長 × 一梯段多寬),本來就是長條;
+# 那是垂直動線不是居室,不該用居室的長寬比去挑毛病。
 SKINNY_OK_KINDS = {"corridor", "pipe_shaft", "patio", "balcony", "storage",
-                   "utility"}
+                   "utility", "stair_hall"}
 
 EDGE_TOL = 60.0             # 貼邊/貼牆的容差(mm)
 WALL_OVERLAP_TOL = 1000.0   # 家具與牆重疊超過這個面積(mm²)算穿牆
@@ -275,6 +283,11 @@ def check_floor(spec, env=None, level: int = 1, label: str = "") -> list[PlanIss
                     "error", "stair_side_open", lb, "",
                     f"梯段側邊({p0[0]:.0f},{p0[1]:.0f})→({p1[0]:.0f},{p1[1]:.0f})"
                     f"沒有牆,人走在階梯上會掉下去"))
+
+    # ⑥c 門與動線規範(使用者 2026-07-30 定調):門淨寬、開啟弧線、衛浴門朝向、
+    #     不得穿越臥室、樓梯不得被房間包住。判準集中在 door_rules,這裡只接進來。
+    from src.design.layout.door_rules import check_door_rules
+    issues += check_door_rules(spec, env, level, lb)
 
     # ⑦ 動線:每間房走得進去、家具沒擋死
     rep = analyze_room_circulation(spec)

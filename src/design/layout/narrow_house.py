@@ -586,19 +586,28 @@ def _room_edge_span(room_poly, wall, along_start):
 
 
 def _stair_boxes(spec) -> list:
-    """各座樓梯「梯段」佔的矩形(起步平台已排除在外,見 _stair)。"""
+    """各座樓梯「**踏step**」佔的矩形——兩端平台都不算。
+
+    起步平台在 origin 之前(見 _stair);折返端平台在梯段跑完之後(s ≥ flight_run),
+    那是一塊站得住人的平地,門開在正對平台的牆上是合理的(真實透天的梯廳門就是這樣
+    開的)。只有正對踏step 的位置才算「門一開就踩階梯」。"""
     from shapely.geometry import box
     out = []
     for st in getattr(spec, "stairs", []) or []:
         try:
             ox, oy = st.origin
-            w, ln = st.width, st.length
+            w = st.width
+            run = min(st.flight_run, st.length)      # 踏step 的長度(不含折返平台)
         except Exception:
             continue
-        if getattr(st, "direction", "north") in ("north", "south"):
-            out.append(box(ox, oy, ox + w, oy + ln))
+        d = getattr(st, "direction", "north")
+        far_is_low = d in ("south", "west")          # s=0 在座標大的那一端
+        if d in ("north", "south"):
+            y0 = oy + (st.length - run) if far_is_low else oy
+            out.append(box(ox, y0, ox + w, y0 + run))
         else:
-            out.append(box(ox, oy, ox + ln, oy + w))
+            x0 = ox + (st.length - run) if far_is_low else ox
+            out.append(box(x0, oy, x0 + run, oy + w))
     return out
 
 
@@ -1022,8 +1031,12 @@ def _ensure_room_doors(spec, bx0, by0, bx1, level):
         _add_interior_door(spec, room, bx0, by0, bx1, level)
 
 
-def _add_interior_door(spec, room, bx0, by0, bx1, level):
-    """給一間沒門的房間補一扇門:挑一道邊界內牆(接最公共/動線的鄰室)開洞。"""
+def _add_interior_door(spec, room, bx0, by0, bx1, level, only_kinds=None):
+    """給一間沒門的房間補一扇門:挑一道邊界內牆(接最公共/動線的鄰室)開洞。
+
+    only_kinds:限定鄰室的 kind(門與動線規範的修復用——例如「這間一定要有一扇門
+    直接通公共動線」、「衛浴的門不能開向廚房」)。給了就只考慮這些鄰室,開不成
+    就不開(回 False),由呼叫端決定要不要換切法重生。回傳有沒有開成。"""
     import math
 
     rp = Polygon(room.points)
@@ -1073,7 +1086,10 @@ def _add_interior_door(spec, room, bx0, by0, bx1, level):
         nb = Point(mx + dx / L * 300.0, my + dy / L * 300.0)  # 牆外側 → 鄰室
         neighbor = next((r for r in spec.rooms if r is not room
                          and Polygon(r.points).contains(nb)), None)
-        if neighbor is None:                # 外牆:寧可接室內鄰室,也不要多開一道前門
+        if only_kinds is not None:          # 修復模式:只准接指定的鄰室
+            rank = 0 if (neighbor is not None
+                         and neighbor.kind in only_kinds) else 99
+        elif neighbor is None:              # 外牆:寧可接室內鄰室,也不要多開一道前門
             rank = 9 if (level == 1 and abs(my - by0) < 60) else 99  # 樓上外牆禁開
         elif neighbor.kind in NO_DOOR_KINDS:                # 豎井/天井:開門無意義
             rank = 99
@@ -1086,11 +1102,12 @@ def _add_interior_door(spec, room, bx0, by0, bx1, level):
             best = cand
 
     if best is None or best[0] >= 99:                       # 只剩通往空中/豎井 → 寧可不開
-        return
+        return False
     _, _, wi, pos = best
     w = spec.walls[wi]
     w.openings.append(Opening(pos, INTERIOR_DOOR_WIDTH, "door"))
     spec.doors.append(DoorPlacement(wi, len(w.openings) - 1, Door()))
+    return True
 
 
 def _floor_connected(spec) -> bool:
@@ -1126,6 +1143,8 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
     _ensure_floor_connected(spec)                    # 從大門走得到每一間房
     _ensure_room_doors(spec, bx0, by0, bx1, level)   # 保證每房都有門(不管尺寸)
     _ensure_room_windows(spec, bx0, by0, bx1, by1)   # 居室補窗(前後外牆/天井側)
+    from src.design.layout.door_rules import repair_doors
+    repair_doors(spec, bx0, by0, bx1, level)         # 門與動線規範:改門(不改切法)
     if not force_absorb and not _spare_hosts_ok(spec):   # 居室吃不下空格 → 給樓梯間
         return _build_floor(level, top, W, D, floor_label, furnish, variant,
                             force_absorb=True)
@@ -1143,6 +1162,7 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
         from src.design.layout.graph_layout import _declutter_for_circulation
         furnish_spec(spec)
         _declutter_for_circulation(spec)            # 擋動線的家具移掉(與 AI 產線同一套)
+        repair_doors(spec, bx0, by0, bx1, level)    # 家具擺完再修一次門(弧線會不會撞家具)
     if variant.mirror:                              # 整層東西鏡射(樓梯核換邊)
         from src.design.layout_generator import _mirror_spec
         spec = _mirror_spec(spec, True, False)

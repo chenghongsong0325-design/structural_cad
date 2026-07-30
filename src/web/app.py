@@ -241,12 +241,15 @@ def _ai_generate(brief_text: str, brief, client):
     fl = [(lb, sp) for lb, sp, _s, _t in best["floors"]]
     check = check_building(fl, env)
     code = check_code_building(fl, env)          # 法規尺寸(樓梯/採光…)
+    from src.design.layout.door_rules import door_table
+    doors = door_table(fl)                       # 門連通表(房間→門→通往哪裡)
 
     extra = {
         "engine": "ai",                         # 單一入口:回報實際用了哪個引擎
         "ai_design": True,
         "ai_trajectory": history,               # 每次迭代的分數/問題數/fitness
         "ai_problems": best["problems"],        # 收斂後剩下的問題(可能是物理硬限)
+        "door_table": doors.to_dict(),
         "ai_iter": best["iter"],
         "ai_fitness": round(best["fitness"], 1),
         "plan_check": check.to_dict(),          # 圖面檢查:ok / 錯誤數 / 警告數 / 明細
@@ -299,6 +302,8 @@ def _generate_auto(brief_text: str, brief, client, force_ai: bool = False):
         extra["plan_check"] = check_building(floors).to_dict()
         extra["code_check"] = check_code_building(
             floors, None, brief.floor_height).to_dict()
+        from src.design.layout.door_rules import door_table
+        extra["door_table"] = door_table(floors).to_dict()   # 房間→門→通往哪裡
     except Exception:                               # 檢查本身不該擋出圖
         pass
     return building, extra

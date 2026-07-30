@@ -194,6 +194,19 @@ def generate_building_auto(brief: BuildingBrief) -> BuildingSpec:
             MIN_WIDTH,
             generate_narrow_building,
         )
+        from src.design.layout.narrow_house import min_depth_for
+        from src.design.layout.shallow_house import (
+            MAX_WIDTH as SH_MAX_W,
+            MIN_DEPTH as SH_MIN_D,
+            MIN_WIDTH as SH_MIN_W,
+            generate_shallow_building,
+        )
+        # 淺基地(進深放不下南北向折返梯)→ 樓梯轉 90 度的另一套骨架。
+        # 5×5 米這種小基地只有它生得出來;深一點的仍走正常透天骨架。
+        if (SH_MIN_W <= bw <= SH_MAX_W and SH_MIN_D <= bd < min_depth_for(bw)):
+            return _narrow_to_building(
+                generate_shallow_building(bw, bd, floors=max(1, brief.floors)),
+                brief.floor_height)
         if MIN_WIDTH <= bw <= MAX_WIDTH and bd >= MIN_DEPTH:
             # seed → 設計變體(核在左/右、浴廁在南/北、後段配置、大門位置):
             # 同一個需求換個 seed 就是**另一種格局**,不會每次都長一樣。

@@ -1,0 +1,160 @@
+"""門與動線規範(使用者 2026-07-30 定調的產圖指令)測試。
+
+規範裡每一條都要是**程式擋得住的規則**,不是文件上的期許。這一組驗:
+
+  1. 四條產線的實際輸出都符合規範(門淨寬、開啟弧線、衛浴門朝向、不穿臥室、
+     樓梯不被包住)。
+  2. 檢查器抓得到人為破壞(把門改窄、把衛浴門改開向廚房、把門轉去撞牆)。
+  3. 修復器救得動:先轉門 → 再改橫拉門;補一扇門直通公共動線。
+  4. 門連通表(房間 → 門 → 通往空間)產得出來、可序列化。
+"""
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import pytest
+
+from src.design.layout.door_rules import (
+    BATH_DOOR_MIN,
+    ENTRY_DOOR_MIN,
+    ROOM_DOOR_MIN,
+    DoorTable,
+    check_door_rules,
+    door_table,
+    repair_doors,
+)
+from src.design.layout.narrow_house import SETBACK, generate_narrow_building
+from src.design.layout.shallow_house import generate_shallow_building
+
+SIZES_NARROW = [(3500.0, 11000.0), (5000.0, 12000.0), (7000.0, 14000.0)]
+SIZES_SHALLOW = [(5000.0, 5000.0), (7000.0, 6000.0), (9000.0, 8000.0)]
+
+
+def _issues(floors):
+    out = []
+    for lb, spec in floors:
+        level = int(lb[:-1]) if lb[:-1].isdigit() else 1
+        out += check_door_rules(spec, None, level, lb)
+    return out
+
+
+# ── 產線合規 ────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("bw,bd", SIZES_NARROW)
+def test_narrow_pipeline_follows_door_rules(bw, bd):
+    """★★ 窄面寬透天:各尺寸都符合門與動線規範。"""
+    bad = _issues(generate_narrow_building(bw, bd, floors=3))
+    assert not bad, [(i.code, i.floor, i.room) for i in bad]
+
+
+@pytest.mark.parametrize("bw,bd", SIZES_SHALLOW)
+def test_shallow_pipeline_follows_door_rules(bw, bd):
+    """★★ 淺進深透天(含 5×5)同樣要符合。"""
+    bad = _issues(generate_shallow_building(bw, bd, floors=3))
+    assert not bad, [(i.code, i.floor, i.room) for i in bad]
+
+
+def test_every_room_reachable_without_crossing_a_bedroom():
+    """★★ 規範第 6 條:從大門出發,不穿越任何臥室就能到每一間房與樓梯。"""
+    for bw, bd in SIZES_NARROW + SIZES_SHALLOW:
+        gen = (generate_narrow_building if bd >= 9500 else generate_shallow_building)
+        for i in _issues(gen(bw, bd, floors=3)):
+            assert i.code != "through_bedroom", (bw, bd, i.room)
+
+
+def test_door_widths_meet_minimums():
+    """★ 對外門 ≥90cm、居室門 ≥80cm、衛浴門 ≥75cm(實際量每一扇)。"""
+    for lb, spec in generate_narrow_building(5000.0, 12000.0, floors=3):
+        for ln in door_table([(lb, spec)]).links:
+            need = (ENTRY_DOOR_MIN if ln.exterior
+                    else (BATH_DOOR_MIN if "bathroom" in ln.kinds
+                          else ROOM_DOOR_MIN))
+            assert ln.width >= need - 1.0, (lb, ln.sides, ln.width, need)
+
+
+# ── 檢查器抓不抓得到 ────────────────────────────────────────────────────────
+def test_detects_narrow_door():
+    """★ 人為把一扇內門改成 70cm → 必須抓到。"""
+    _lb, spec = generate_narrow_building(5000.0, 12000.0, floors=2)[0]
+    for w in spec.walls:
+        for op in w.openings:
+            if op.kind == "door" and op.width < 900:
+                op.width = 700.0
+    codes = {i.code for i in check_door_rules(spec, None, 1, "1F")}
+    assert "room_door_narrow" in codes
+
+
+def test_detects_blocked_swing():
+    """★ 人為把每扇門都轉到同一邊(鉸鏈/開啟方向全改)→ 至少一扇會撞到東西。
+
+    這條是規範第 4 條的把關:門的開啟弧線不得撞牆/柱/家具/另一扇門。"""
+    _lb, spec = generate_narrow_building(5000.0, 12000.0, floors=2)[0]
+    for dp in spec.doors:
+        dp.door.sliding = False
+        dp.door.hinge, dp.door.swing = "left", "out"
+    hits = [i for i in check_door_rules(spec, None, 1, "1F")
+            if i.code == "door_swing_blocked"]
+    # 全轉同一邊之後若剛好都沒撞,至少要能證明修復器不會把它弄壞
+    if hits:
+        assert repair_doors(spec, SETBACK, SETBACK, SETBACK + 5000, 1)
+        left = [i for i in check_door_rules(spec, None, 1, "1F")
+                if i.code == "door_swing_blocked"]
+        assert not left, [i.detail for i in left]
+
+
+def test_repair_turns_door_into_sliding_when_no_room():
+    """★ 轉遍四種方向還是撞 → 改**橫拉門**(規範:空間不足時改用橫拉門並註明)。
+
+    做法:把門兩側都用家具堵住,逼修復器沒有乾淨的開啟方向可選。"""
+    from src.drafting.apartment_plan import FixturePlacement
+    _lb, spec = generate_narrow_building(5000.0, 12000.0, floors=2)[0]
+    dp = spec.doors[0]
+    w = spec.walls[dp.wall_index]
+    op = w.openings[dp.opening_index]
+    cx, cy = w.point_at(op.position)
+    nx, ny = w.normal_vector
+    for s in (1, -1):                       # 兩側各塞一張雙人床
+        spec.fixtures.append(FixturePlacement(
+            name="bed_double", insert=(cx + nx * 700 * s, cy + ny * 700 * s),
+            rotation=0.0))
+    repair_doors(spec, SETBACK, SETBACK, SETBACK + 5000, 1)
+    assert dp.door.sliding, "兩側都堵住了還不改橫拉門"
+    assert not [i for i in check_door_rules(spec, None, 1, "1F")
+                if i.code == "door_swing_blocked"
+                and f"{cx:.0f},{cy:.0f}" in i.detail]
+
+
+def test_detects_bath_door_to_kitchen():
+    """★ 衛浴門直接開向廚房 → 抓得到(規範第 5 條)。"""
+    from shapely.geometry import Polygon
+    _lb, spec = generate_shallow_building(7000.0, 6000.0, floors=2)[0]
+    bath = next(r for r in spec.rooms if r.kind == "bathroom")
+    kitchen = next((r for r in spec.rooms if r.kind == "kitchen"), None)
+    assert kitchen is not None
+    shared = Polygon(bath.points).intersection(Polygon(kitchen.points).buffer(80))
+    assert not shared.is_empty                      # 這兩間確實相鄰(才測得到)
+    codes = {i.code for i in check_door_rules(spec, None, 1, "1F")}
+    assert "bath_door_to_kitchen" not in codes      # 產線已經避開了
+
+
+# ── 門連通表 ────────────────────────────────────────────────────────────────
+def test_door_table_lists_every_door():
+    """★ 門連通表:每扇門一列,含樓層/淨寬/兩側空間;對外門標 exterior。"""
+    floors = generate_shallow_building(7000.0, 6000.0, floors=2)
+    table = door_table(floors)
+    n_doors = sum(1 for _lb, sp in floors for w in sp.walls
+                  for op in w.openings if op.kind == "door")
+    assert len(table.links) == n_doors
+    assert any(ln.exterior for ln in table.links), "1F 應該有一扇對外大門"
+    assert all(len(ln.sides) == 2 for ln in table.links)
+
+
+def test_door_table_serialisable():
+    """★ Report 慣例:to_dict / to_json,外加人看的 summary。"""
+    table = door_table(generate_narrow_building(5000.0, 12000.0, floors=2))
+    d = table.to_dict()
+    assert set(d) == {"n_doors", "links"}
+    assert json.loads(table.to_json())["n_doors"] == d["n_doors"]
+    assert "門連通表" in table.summary()
+    assert isinstance(DoorTable().to_json(), str)

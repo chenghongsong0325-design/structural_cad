@@ -110,12 +110,18 @@ class Door:
     width: 若指定則覆寫洞口寬(預設 None = 用洞口寬,自動對齊)。
     """
 
+    sliding: bool = False   # 橫拉門:門扇沿牆滑開,平面不畫開門弧(門前空間不足時用)
     hinge: str = "left"
     swing: str = "out"
     width: float | None = None
 
     def place_in_wall(self, msp, wall: Wall, opening: Opening, layers: dict[str, str]):
-        """把這扇門對齊放進 wall 的 opening,回傳插入的 blockref。"""
+        """把這扇門對齊放進 wall 的 opening,回傳插入的 blockref。
+
+        sliding=True 時畫**橫拉門**:門扇平行牆面畫在洞口旁,並註明「拉門」——
+        開門弧線撞牆/撞家具時的正解(門與動線規範:空間不足時改用橫拉門並註明)。"""
+        if self.sliding:
+            return self._place_sliding(msp, wall, opening, layers)
         create_door_block(msp.doc)
 
         w = self.width if self.width is not None else opening.width
@@ -152,6 +158,27 @@ class Door:
                 "rotation": latch_angle,
             },
         )
+
+
+    def _place_sliding(self, msp, wall: Wall, opening: Opening, layers: dict):
+        """橫拉門:門扇畫成貼著牆面、與洞口等寬的一條線 + 「拉門」字樣。"""
+        import math
+
+        d0, d1 = _opening_jambs(opening)
+        theta = math.radians(_wall_angle_deg(wall))
+        nx, ny = -math.sin(theta), math.cos(theta)      # 牆法線
+        off = wall.thickness / 2.0 + 30.0               # 門扇貼在牆的一側
+        side = 1.0 if self.swing == "out" else -1.0
+        p0 = wall.point_at(d0)
+        p1 = wall.point_at(d1)
+        a = (p0[0] + nx * off * side, p0[1] + ny * off * side)
+        b = (p1[0] + nx * off * side, p1[1] + ny * off * side)
+        line = msp.add_line(a, b, dxfattribs={"layer": layers["A-DOOR"]})
+        mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+        txt = msp.add_text("拉門", dxfattribs={"layer": layers.get("A-TEXT", layers["A-DOOR"]),
+                                               "height": 150})
+        txt.set_placement((mid[0] + nx * 180 * side, mid[1] + ny * 180 * side))
+        return line
 
 
 # ---------------------------------------------------------------------------
