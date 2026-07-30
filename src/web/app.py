@@ -235,9 +235,12 @@ def _ai_generate(brief_text: str, brief, client):
     # 圖面正確性檢查(硬規則):產線已在每層落實時把關,這裡再驗一次整棟並回報,
     # 讓使用者/我們看得到「這張圖過了哪些檢查」。
     from src.design.layout.design_loop import SETBACK as _SB   # 落實時用的退縮
+    from src.design.layout.code_check import check_code_building
     from src.design.layout.plan_check import check_building
     env = (_SB, _SB, _SB + bw, _SB + bd)
-    check = check_building([(lb, sp) for lb, sp, _s, _t in best["floors"]], env)
+    fl = [(lb, sp) for lb, sp, _s, _t in best["floors"]]
+    check = check_building(fl, env)
+    code = check_code_building(fl, env)          # 法規尺寸(樓梯/採光…)
 
     extra = {
         "engine": "ai",                         # 單一入口:回報實際用了哪個引擎
@@ -247,6 +250,7 @@ def _ai_generate(brief_text: str, brief, client):
         "ai_iter": best["iter"],
         "ai_fitness": round(best["fitness"], 1),
         "plan_check": check.to_dict(),          # 圖面檢查:ok / 錯誤數 / 警告數 / 明細
+        "code_check": code.to_dict(),           # 法規檢查:建築技術規則尺寸
     }
     return building, extra
 
@@ -287,13 +291,14 @@ def _generate_auto(brief_text: str, brief, client, force_ai: bool = False):
     building = generate_building_auto(brief)
     extra = {"engine": "rule"}
     try:                                            # 規則版也送圖面檢查(同一套標準)
+        from src.design.layout.code_check import check_code_building
         from src.design.layout.plan_check import check_building
         floors = [(f.label, f.spec) for f in building.floors]
-        xs = [p[0] for p in floors[0][1].site_boundary]
-        ys = [p[1] for p in floors[0][1].site_boundary]
-        sb = getattr(brief.typical, "setback", 2000.0)
-        env = (min(xs) + sb, min(ys) + sb, max(xs) - sb, max(ys) - sb)
-        extra["plan_check"] = check_building(floors, env).to_dict()
+        # 外框由各層 spec 自己推(env=None):深基地會**封頂建築、留前後院**,
+        # 用「基地−退縮」當外框會把大門/窗誤判成不在外牆上。
+        extra["plan_check"] = check_building(floors).to_dict()
+        extra["code_check"] = check_code_building(
+            floors, None, brief.floor_height).to_dict()
     except Exception:                               # 檢查本身不該擋出圖
         pass
     return building, extra

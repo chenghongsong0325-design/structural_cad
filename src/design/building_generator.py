@@ -195,9 +195,11 @@ def generate_building_auto(brief: BuildingBrief) -> BuildingSpec:
             generate_narrow_building,
         )
         if MIN_WIDTH <= bw <= MAX_WIDTH and bd >= MIN_DEPTH:
+            # seed → 設計變體(核在左/右、浴廁在南/北、後段配置、大門位置):
+            # 同一個需求換個 seed 就是**另一種格局**,不會每次都長一樣。
             floors = generate_narrow_building(
                 bw, bd, floors=max(1, brief.floors),
-                bedrooms=brief.typical.bedrooms)
+                bedrooms=brief.typical.bedrooms, seed=brief.typical.seed)
             return _narrow_to_building(floors, brief.floor_height)
     return generate_building(brief)
 

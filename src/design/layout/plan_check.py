@@ -177,8 +177,23 @@ def _room_graph_components(spec) -> list[set]:
 
 
 # ── 單層檢查 ────────────────────────────────────────────────────────────────
-def check_floor(spec, env, level: int, label: str = "") -> list[PlanIssue]:
-    """檢查一層,回問題清單(error + warning)。env=(x0,y0,x1,y1) 建築外框。"""
+def building_env(spec) -> tuple:
+    """從 spec 自己推建築外框(所有房間的外接矩形)。
+
+    為什麼需要:呼叫端習慣用「基地 − 退縮」當外框,但產生器會**封頂建築深度、
+    多的地留成院子**(窄透天深基地、兩帶式皆然)。那時基地框比建築框大,窗與大門
+    就會被誤判成「不在外牆上」→ 冒出假的 no_entry / 採光 0。"""
+    xs = [p[0] for r in spec.rooms for p in r.points]
+    ys = [p[1] for r in spec.rooms for p in r.points]
+    return (min(xs), min(ys), max(xs), max(ys)) if xs else (0.0, 0.0, 0.0, 0.0)
+
+
+def check_floor(spec, env=None, level: int = 1, label: str = "") -> list[PlanIssue]:
+    """檢查一層,回問題清單(error + warning)。
+
+    env=(x0,y0,x1,y1) 建築外框;**給 None 就由 spec 自己推**(建議),免得傳進
+    比建築大的基地框而誤判(見 building_env)。"""
+    env = building_env(spec) if env is None else env
     from src.design.layout.graph_layout import AREA_BAND
     from src.design.layout.room_circulation import analyze_room_circulation
 
@@ -292,8 +307,10 @@ def check_floor(spec, env, level: int, label: str = "") -> list[PlanIssue]:
     return issues
 
 
-def check_building(floors, env) -> PlanCheckReport:
-    """檢查整棟。floors = [(label, spec, ...)](多的欄位忽略)。"""
+def check_building(floors, env=None) -> PlanCheckReport:
+    """檢查整棟。floors = [(label, spec, ...)](多的欄位忽略)。
+
+    env=None → 每層各自由 spec 推建築外框(深基地封頂留院子時才不會誤判)。"""
     issues: list[PlanIssue] = []
     for item in floors:
         label, spec = item[0], item[1]

@@ -186,8 +186,8 @@ def test_sweep_rule_pipeline_never_emits_broken_plan():
         for bd in (11000.0, 14000.0):
             for n in (1, 3):
                 floors = generate_narrow_building(bw, bd, floors=n)
-                env = (SB, SB, SB + bw, SB + bd)
-                rep = check_building([(lb, sp) for lb, sp in floors], env)
+                # 外框讓 spec 自推:深基地會封頂建築、留前後院(見 building_env)
+                rep = check_building([(lb, sp) for lb, sp in floors])
                 if not rep.ok:
                     bad.append((bw, bd, n, [i.code for i in rep.errors]))
     assert not bad, f"規則版生出不合格圖:{bad}"

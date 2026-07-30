@@ -35,6 +35,8 @@ Phase 6 評分與 room_circulation 檢查。地下室/結構柱另議。
 from __future__ import annotations
 
 import itertools
+import random
+from dataclasses import dataclass
 
 from shapely.geometry import Point, Polygon
 
@@ -49,11 +51,33 @@ from src.design.layout.bsp_layout import rooms_to_spec
 SETBACK = 2000.0
 
 # 面寬 / 進深 合理範圍(mm)。窄面寬透天的定義域。
-# ⚠️ 下限 5m:此骨架每層要放「兩臥室 + 浴室 + 天井 + 樓梯」,實測 <5m 就塞不下
-# (浴室/後臥擠爆、動線斷)。真正 4~5m 的超窄透天是「單間進深串聯 + 浴室塞樓梯旁」
-# 的另一種更緊的骨架,列為之後的工作。
-MIN_WIDTH, MAX_WIDTH = 5000.0, 7000.0
-MIN_DEPTH = 11000.0             # 三段(前+核[含起步平台]+後)放得下的下限
+# ⚠️ 下限是**實測**出來的(掃描 3.0~7.0m × 8.0~12.0m,兩道關卡 plan_check +
+#    code_check 都過才算數),不是估的:
+#      * 寬 3.5m:再窄(3.0m)後段餐廳只剩 0.3㎡、前後段動線斷掉,是真的塞不下。
+#        3.5m 時服務格 1.5m + 樓梯間 2.0m,梯段淨寬 875mm(§33 要 ≥750),剛好卡住。
+#      * 深 9.5m:9.0m 仍過硬關卡,但臥室短邊 <1.8m(擺了床沒走道)會出警告;
+#        9.5m 起零錯誤零警告。8.0m 則硬斷(前後段互通不了)。
+#    舊下限 5×11m 是樓梯核改版前留下的保守值,不是幾何極限(2026-07-30 放寬)。
+# ⚠️ 3.5~4.0m 面寬的圖合法但很擠(客廳淨寬僅約 2.9m),屬老街屋尺度。
+MIN_WIDTH, MAX_WIDTH = 3500.0, 7000.0
+MIN_DEPTH = 9500.0              # 三段(前+核[含起步平台]+後)放得下的下限
+# 面寬越寬,後段房間就越「寬而淺」(像走廊),故 6m 以上的面寬要多留一點進深。
+WIDE_WIDTH, WIDE_MIN_DEPTH = 6000.0, 10500.0
+# ⚠️ 進深**上限**(超過就封頂 + 留前後院,不是報錯):前後段是單面採光,再深也
+#    只有臨路/臨後院那一面能開窗,窗開好開滿仍不足 §40 的 1/8 → 深房必然違規。
+#    實測 3.5m 面寬撐到 12m、4m 以上撐到 13.5m(南牆越長,窗才開得夠大)。
+NARROW_WIDTH = 4000.0
+MAX_DEPTH, NARROW_MAX_DEPTH = 13500.0, 12000.0
+
+
+def min_depth_for(width: float) -> float:
+    """該面寬的最小進深(mm)。"""
+    return WIDE_MIN_DEPTH if width > WIDE_WIDTH else MIN_DEPTH
+
+
+def max_depth_for(width: float) -> float:
+    """該面寬的最大**建築**進深(mm);基地更深時多的部分留成前後院。"""
+    return NARROW_MAX_DEPTH if width < NARROW_WIDTH else MAX_DEPTH
 
 # 樓梯:U 形折返梯(填滿樓梯間)。中段核只有 ~3.6m 深,單跑直梯爬一層會太陡
 # (需 ~4.7m 才緩);折返梯上一段+平台轉身+再上一段,同深度內每階升高正常(~178mm)。
@@ -106,10 +130,47 @@ _DOOR_NEIGHBOR_PREF = ("corridor", "foyer", "stair_hall", "living", "dining",
 #    ——天井取消後,核裡是衛浴/儲藏,再深只會變成一間深而無用的大空房。
 ZONES = [
     ("front", 0.5, 3300.0),
-    # 核最小深 = 牆縫 150 + 起步平台 900 + 梯跑 9×260 + 折返平台 ~900
-    ("core", 0.0, 4300.0),
+    # 核最小深 = 牆縫 150 + 起步平台 900 + 梯跑 9×260 + 折返平台 ≥梯段寬(§33)
+    ("core", 0.0, 4400.0),
     ("rear", 0.5, 3200.0),
 ]
+
+
+# ── 設計變體:同一套規則的合法選擇,抽樣後仍要過 plan_check / code_check ──────
+@dataclass(frozen=True)
+class NarrowVariant:
+    """一棟窄透天的設計選擇(不是亂數擾動,每個欄位都是設計師會做的決定)。
+
+    mirror      東西鏡射:樓梯核換到另一邊(整層左右翻)
+    bath_north  中段核服務格:浴廁在北(儲藏在南),預設浴廁在南
+    rear_swap   1F 後段:廚房在西、餐廳在東(預設相反)
+    entry_frac  臨路大門在南牆的位置比例(0.22 偏西 / 0.5 置中 / 0.78 偏東)
+    """
+
+    mirror: bool = False
+    bath_north: bool = False
+    rear_swap: bool = False
+    entry_frac: float = 0.22
+
+
+DEFAULT_VARIANT = NarrowVariant()
+_ENTRY_FRACS = (0.22, 0.5, 0.78)
+
+
+def variant_from_seed(seed: int) -> NarrowVariant:
+    """種子 → 設計變體(同種子同結果,方便重現與比較)。"""
+    rng = random.Random(seed)
+    return NarrowVariant(mirror=rng.random() < 0.5,
+                         bath_north=rng.random() < 0.5,
+                         rear_swap=rng.random() < 0.5,
+                         entry_frac=rng.choice(_ENTRY_FRACS))
+
+
+def all_variants() -> list:
+    """所有變體組合(24 種),給「挑差最多的 N 個方案」用。"""
+    return [NarrowVariant(m, b, r, f)
+            for m in (False, True) for b in (False, True)
+            for r in (False, True) for f in _ENTRY_FRACS]
 
 
 def _split_depth(total_d: float, zones) -> list[float]:
@@ -141,18 +202,22 @@ def _stair(x_west, x_east, y1, y2, label):
     210mm)把空間讓出來。"""
     total = max(4, -(-int(FLOOR_HEIGHT) // int(MAX_RISER)))      # ceil,爬完一層的總級數
     spf = max(2, -(-total // 2))                                 # 每段級數(向上取半)
-    usable = (y2 - y1) - 2 * WALL_GAP
-    landing = min(ENTRY_LANDING, max(0.0, usable - spf * MIN_TREAD - TURN_LANDING_MIN))
-    run_len = usable - landing                                   # 梯跑+折返平台的長度
-    tread = STAIR_TREAD
-    if spf * tread + TURN_LANDING_MIN > run_len:                 # 太擠 → 縮踏面(≥法定)
-        tread = max(MIN_TREAD, (run_len - TURN_LANDING_MIN) / spf)
     # 梯段靠**東側**擺,西側留通道(人不必踩階梯走過去);通道與梯段之間補一道導牆
     # (_add_stair_guard_walls),梯段兩側才都靠著牆。剩下的寬度不夠當通道時,梯段
     # 直接填滿整間 —— 寧可梯段寬一點,也不要有一側是空的。
     span = (x_east - x_west) - 2 * WALL_GAP
     flight_w = (STAIRWELL_W - 2 * WALL_GAP
                 if span - STAIRWELL_W >= PASSAGE_MIN else span)
+    # 建築技術規則施工編 §33:**平臺深度不得小於樓梯(梯段)寬度**。梯段越寬,
+    # 折返端的平台就要越深;不夠時先縮踏面(仍 ≥法定 210),再不夠就是樓梯間太淺。
+    one_flight = (flight_w - STAIR_WELL_GAP) / 2.0
+    need_turn = max(TURN_LANDING_MIN, one_flight)
+    usable = (y2 - y1) - 2 * WALL_GAP
+    landing = min(ENTRY_LANDING, max(0.0, usable - spf * MIN_TREAD - need_turn))
+    run_len = usable - landing                                   # 梯跑+折返平台的長度
+    tread = STAIR_TREAD
+    if spf * tread + need_turn > run_len:                        # 太擠 → 縮踏面(≥法定)
+        tread = max(MIN_TREAD, (run_len - need_turn) / spf)
     return UStair(origin=(x_east - WALL_GAP - flight_w, y1 + WALL_GAP + landing),
                   width=flight_w,
                   length=run_len, direction="north",
@@ -160,45 +225,128 @@ def _stair(x_west, x_east, y1, y2, label):
                   well_gap=STAIR_WELL_GAP, label=label)
 
 
-def _core(bx0, bx1, y1, y2, label, bath_name):
-    """中段核 → (房間清單, 樓梯);服務格(西:浴廁+儲藏)| 樓梯間(東)。
+def _core(bx0, bx1, y1, y2, label, bath_name, bath_north=False,
+          absorb_spare=False):
+    """中段核 → (房間清單, 樓梯, 讓出來的空格);服務格(西:浴廁)| 樓梯間(東)。
 
     樓梯間貼**東界牆**:梯段靠東牆、西側留通道,通道正對後段餐廳/後臥。核每層
-    同寬同位 → 樓梯 origin 固定 → 上下對齊。"""
+    同寬同位 → 樓梯 origin 固定 → 上下對齊。
+
+    ⚠️ **不設儲藏室**(使用者 2026-07-30 定調):服務格只放浴廁,浴廁吃不完的那
+    一小塊(1.5~2.4m 寬 × 約 1.8m)不另外隔成房間,而是回傳給呼叫端**併進隔壁
+    居室**(客廳/餐廳/臥室變成 L 形)——隔成儲藏室只會多一扇門、多一間沒人用的
+    小房;併進去則是實際可用的坪數。"""
     W, d = bx1 - bx0, y2 - y1
     svc, _sw = _core_widths(W)
     xs = bx0 + svc                      # 服務格東緣 = 樓梯間西牆
-    # 衛浴太寬就往淺切(面積封頂),剩下的深度給儲藏——免得核裡出現一間大空房。
-    bath_d = min(max(BATH_AREA_MAX / svc, BATH_MIN_D), BATH_MAX_D,
-                 d - STORE_MIN_D)
-    rooms = [("bathroom", bath_name, _rect(bx0, y1, xs, y1 + bath_d)),
-             ("storage", "儲藏", _rect(bx0, y1 + bath_d, xs, y2)),
-             ("stair_hall", "樓梯間", _rect(xs, y1, bx1, y2))]
-    return rooms, _stair(xs, bx1, y1, y2, label)
+    # 衛浴太寬就往淺切(面積封頂),免得核裡出現一間大空房;剩下的併給隔壁居室。
+    bath_d = min(max(BATH_AREA_MAX / svc, BATH_MIN_D), BATH_MAX_D, d)
+    if bath_north:                      # 變體:浴廁在北 → 空格在南(併給前室)
+        rooms = [("bathroom", bath_name, _rect(bx0, y2 - bath_d, xs, y2))]
+        spare = (bx0, y1, xs, y2 - bath_d)
+    else:                               # 預設:浴廁在南 → 空格在北(併給後室)
+        rooms = [("bathroom", bath_name, _rect(bx0, y1, xs, y1 + bath_d))]
+        spare = (bx0, y1 + bath_d, xs, y2)
+    if spare[3] - spare[1] < 1.0:       # 浴廁剛好吃滿 → 沒有空格
+        spare = None
+    if spare is not None and absorb_spare:
+        # 隔壁居室撐不住這塊空格(併上去會變走廊狀或採光不足)→ 併進**樓梯間**,
+        # 當樓梯前的緩衝空間(不需採光、也不怕細長,比硬塞給居室健康)。
+        sy0, sy1 = spare[1], spare[3]
+        hall = ([(bx0, y1), (bx1, y1), (bx1, y2), (xs, y2), (xs, sy1), (bx0, sy1)]
+                if bath_north else
+                [(xs, y1), (bx1, y1), (bx1, y2), (bx0, y2), (bx0, sy0), (xs, sy0)])
+        spare = None
+    else:
+        hall = _rect(xs, y1, bx1, y2)
+    rooms.append(("stair_hall", "樓梯間", hall))
+    return rooms, _stair(xs, bx1, y1, y2, label), spare
 
 
-def _floor_rooms(level, top, bx0, by0, bx1, by1):
-    """一層的房間矩形 + 樓梯。"""
+# 併了空格之後,接收的那間房長寬比不得超過這個(對齊 plan_check 的 room_skinny
+# 判準;此處不 import plan_check —— plan_check 反過來要 import 本模組)。
+SPARE_ASPECT_LIMIT = 2.5
+# 會被查長寬比的房間(對齊 plan_check:走道/豎井/陽台/儲藏本來就細長,不查)。
+SKINNY_CHECK_KINDS = {"living", "dining", "kitchen", "bedroom",
+                      "master_bedroom", "study", "elder_room", "bathroom"}
+
+
+def _spare_hosts_ok(spec) -> bool:
+    """這層把空格併進居室之後,那間房還健康嗎?
+
+    **實際量過才算數**(不用公式猜):併大了會有兩種病——變成走廊狀(長寬比 >2.5),
+    或大到前後外牆開不出 §40 要求的窗(透天只有前後能開窗)。任一種出現,呼叫端就
+    改把空格併進樓梯間重生一次。"""
+    for room in spec.rooms:
+        poly = Polygon(room.points)
+        x0, y0, x1, y1 = poly.bounds
+        long_s, short_s = max(x1 - x0, y1 - y0), max(min(x1 - x0, y1 - y0), 1.0)
+        if room.kind in SKINNY_CHECK_KINDS and long_s / short_s > SPARE_ASPECT_LIMIT:
+            return False
+        if room.kind in WINDOW_KINDS:
+            have = sum(op.width for w in spec.walls for op in w.openings
+                       if op.kind == "window"
+                       and poly.exterior.distance(
+                           Point(*w.point_at(op.position))) < 60)
+            if have < _need_window_width(room) - 1.0:
+                return False
+    return True
+
+
+def _with_spare(x0, y0, x1, y1, spare):
+    """矩形房間 + 貼在它南/北側的空格(核裡浴廁沒吃完的西半塊)→ L 形多邊形。
+
+    取消儲藏室後多出來的那一塊併進隔壁居室,房間因此變成 L 形(真實平面很常見:
+    客廳往浴廁旁邊凹進去一塊)。空格不貼著就原樣回傳矩形。"""
+    if spare is None:
+        return _rect(x0, y0, x1, y1)
+    _sx0, sy0, sx1, sy1 = spare
+    if abs(sy1 - y0) < 1.0:                     # 空格在房間南側
+        return [(x0, sy0), (sx1, sy0), (sx1, y0), (x1, y0), (x1, y1), (x0, y1)]
+    if abs(sy0 - y1) < 1.0:                     # 空格在房間北側
+        return [(x0, y0), (x1, y0), (x1, y1), (sx1, y1), (sx1, sy1), (x0, sy1)]
+    return _rect(x0, y0, x1, y1)
+
+
+def _floor_rooms(level, top, bx0, by0, bx1, by1, variant=DEFAULT_VARIANT,
+                 force_absorb=False, force_bath_south=False):
+    """一層的房間矩形 + 樓梯(依設計變體微調服務格與後段配置)。
+
+    force_absorb:取消儲藏室後多出來的空格,改併進樓梯間而不是隔壁居室
+    (由 _build_floor 量過發現居室吃不下時重跑一次)。
+    force_bath_south:連併進樓梯間都讓整層斷開時的最後手段——浴廁搬回南側,
+    樓梯間北端才是完整一條(門開得出去);此時 bath_north 變體失效。"""
     d_front, d_core, _ = _split_depth(by1 - by0, ZONES)
     y1, y2 = by0 + d_front, by0 + d_front + d_core
     label = "下" if level == top else "上"
 
     # 核每層同構(服務格+樓梯間)→ 樓梯上下對齊。
     if level == 1:                                  # 1F:客廳 / 核 / 餐廳|廚房
-        core, stair = _core(bx0, bx1, y1, y2, label, "浴廁")
+        bath_north = variant.bath_north and not force_bath_south
+        core, stair, spare = _core(bx0, bx1, y1, y2, label, "浴廁", bath_north,
+                                   absorb_spare=force_absorb)
         # 後段左右分:切在**樓梯旁通道**的東緣(=梯段導牆中心線),讓通道正對餐廳 →
         # 前後段那扇門開得成,且門洞離導牆自動有牆角淨距(切在幾何中線時,通道與餐廳
         # 只重疊一小段,門塞不下,整層就會被判走不通)。
         xm = min(max(stair.origin[0] - GUARD_WALL_T / 2.0, bx0 + 2000.0),
                  bx1 - 2000.0)
-        rooms = [("living", "客廳", _rect(bx0, by0, bx1, y1)), *core,
-                 ("dining", "餐廳", _rect(bx0, y2, xm, by1)),
-                 ("kitchen", "廚房", _rect(xm, y2, bx1, by1))]
+        west, east = ((("kitchen", "廚房"), ("dining", "餐廳"))
+                      if variant.rear_swap
+                      else (("dining", "餐廳"), ("kitchen", "廚房")))
+        # 儲藏室取消後多出來的空格 → 併進緊鄰的那間居室(南=客廳、北=後段西室)
+        rooms = [("living", "客廳",
+                  _with_spare(bx0, by0, bx1, y1, spare)), *core,
+                 (west[0], west[1], _with_spare(bx0, y2, xm, by1, spare)),
+                 (east[0], east[1], _rect(xm, y2, bx1, by1))]
         return rooms, stair
 
-    core, stair = _core(bx0, bx1, y1, y2, label, f"浴室{level}F")
-    return [("bedroom", f"前臥室{level}F", _rect(bx0, by0, bx1, y1)), *core,
-            ("bedroom", f"後臥室{level}F", _rect(bx0, y2, bx1, by1))], stair
+    core, stair, spare = _core(bx0, bx1, y1, y2, label, f"浴室{level}F",
+                               variant.bath_north and not force_bath_south,
+                               absorb_spare=force_absorb)
+    return [("bedroom", f"前臥室{level}F",
+             _with_spare(bx0, by0, bx1, y1, spare)), *core,
+            ("bedroom", f"後臥室{level}F",
+             _with_spare(bx0, y2, bx1, by1, spare))], stair
 
 
 # ── 開口收尾:去界牆窗 / 去天井門 / 浴室單門 / 加前門 ────────────────────────
@@ -257,7 +405,8 @@ def _remove_openings(spec, targets: set):
 _BATH_DOOR_PREF = ("stair_hall", "corridor", "living", "dining", "kitchen")
 
 
-def _fix_openings(spec, bx0, by0, bx1, level, party_walls: bool = True):
+def _fix_openings(spec, bx0, by0, bx1, level, party_walls: bool = True,
+                  entry_frac: float = 0.22):
     """去重複門、去界牆窗、去天井門、浴室只留 1 門;1F 補臨路前門。
 
     party_walls:東西外牆是不是與鄰房共用的界牆(透天=True,不開窗)。獨棟(中庭
@@ -316,12 +465,12 @@ def _fix_openings(spec, bx0, by0, bx1, level, party_walls: bool = True):
 
     _remove_openings(spec, remove)
 
-    if level == 1:                                  # 臨路大門:南向外牆西段
-        _add_front_door(spec, bx0, by0, bx1)
+    if level == 1:                                  # 臨路大門:南向外牆
+        _add_front_door(spec, bx0, by0, bx1, entry_frac)
 
 
-def _add_front_door(spec, bx0, by0, bx1):
-    """在南向(臨路)外牆上加一扇大門,避開既有洞口。"""
+def _add_front_door(spec, bx0, by0, bx1, entry_frac=0.22):
+    """在南向(臨路)外牆上加一扇大門,避開既有洞口。entry_frac=偏好位置比例。"""
     for wi, w in enumerate(spec.walls):
         (sx, sy), (ex, ey) = w.start, w.end
         if abs(sy - by0) > 50 or abs(ey - by0) > 50 or abs(sx - ex) < 1:
@@ -332,7 +481,8 @@ def _add_front_door(spec, bx0, by0, bx1):
         # 先試慣用比例,再沿牆掃描 → 一定落在「不撞洞口 且 離每間房角落夠遠」的位置。
         step = 100.0
         n = max(1, int(length / step))
-        cands = [length * 0.22, length * 0.78, length * 0.5]
+        cands = [length * entry_frac, length * 0.22,
+                 length * 0.78, length * 0.5]
         cands += [i * step for i in range(1, n)]
         for clear in DOOR_CLEAR_STEPS:              # 先求舒適淨距,不行再放寬
             for pos in cands:
@@ -367,6 +517,53 @@ _DOOR_FRACS = (0.5, 0.35, 0.65, 0.25, 0.75, 0.45, 0.55,
 # (房內可站區是牆內縮半個通行寬,門離角落太近就接不上那塊 → 判動線不通)。
 DOOR_CLEAR_STEPS = (350.0, 250.0, 150.0, 100.0)
 DOOR_CORNER_MIN = 90.0          # 檢查器判定「卡死在角落」的門檻(動線下限 ~67mm)
+
+
+def _stair_free_spans(spec, wall, lo, hi):
+    """牆段 [lo,hi](沿牆方向的世界座標)扣掉「梯段正對的那幾段」→ 可用區間。
+
+    ⚠️ 這是「樓梯間的門開在哪」的關鍵:樓梯間只有起步平台那一小段開得了門,靠
+    `_DOOR_FRACS` 等距掃描是**碰運氣**(合法窗口常常只有幾十 mm,掃描點差一點就
+    全落在階梯上 → 整層判成樓梯沒有門)。這裡直接算出可用區間、拿中點當首選。"""
+    (sx, sy), (ex, ey) = wall.start, wall.end
+    vertical = abs(sx - ex) < 1.0
+    spans = [(min(lo, hi), max(lo, hi))]
+    for b in _stair_boxes(spec):
+        bx0, by0, bx1, by1 = b.bounds
+        if vertical:
+            if not (bx0 - STAIR_DOOR_CLEAR < sx < bx1 + STAIR_DOOR_CLEAR):
+                continue                       # 這座梯不在門前的可站空間裡
+            t0, t1 = by0, by1
+        else:
+            if not (by0 - STAIR_DOOR_CLEAR < sy < by1 + STAIR_DOOR_CLEAR):
+                continue
+            t0, t1 = bx0, bx1
+        out = []
+        for a, c in spans:
+            if t1 <= a or t0 >= c:
+                out.append((a, c))
+                continue
+            if t0 > a:
+                out.append((a, t0))
+            if t1 < c:
+                out.append((t1, c))
+        spans = out
+    return sorted(spans, key=lambda t: -(t[1] - t[0]))
+
+
+def _door_candidates(spec, wall, lo, hi):
+    """開門位置候選(世界座標,沿牆方向):先梯段沒擋住那幾段,再等距掃描。
+
+    每段給三個點:中點 + **緊貼兩端**。貼端點很重要——樓梯間的合法窗口常常只有
+    幾十 mm(門要同時「北端不碰到第一階」且「南端離牆角夠遠」),那個位置一定
+    在可用段的端點上,中點會差幾十 mm 就開不成。"""
+    half = INTERIOR_DOOR_WIDTH / 2.0
+    pts = []
+    for a, c in _stair_free_spans(spec, wall, lo, hi):
+        if c - a < INTERIOR_DOOR_WIDTH:
+            continue
+        pts += [(a + c) / 2, c - half, a + half]
+    return pts + [min(lo, hi) + abs(hi - lo) * f for f in _DOOR_FRACS]
 
 
 def _room_edge_span(room_poly, wall, along_start):
@@ -541,80 +738,135 @@ WINDOW_KINDS = {"living", "dining", "kitchen", "bedroom", "master_bedroom",
                 "study", "elder_room", "bathroom"}
 
 
-def _ensure_room_windows(spec, bx0, by0, bx1, by1, party_walls: bool = True) -> int:
-    """保證居室有窗:沒窗的房間在「前後外牆」或「天井側」補一扇。
+# 補窗參數。單一扇窗的下限/上限與離牆角、離其他洞口的淨距(mm)。
+WINDOW_MIN_W, WINDOW_MAX_W = 600.0, 3600.0
+WINDOW_EDGE_CLEAR, WINDOW_GAP = 300.0, 200.0
 
-    為什麼需要:透天是共壁,東西外牆不能開窗(_fix_openings 會刪),但配窗時是挑
-    「最長的外牆邊」——深長的客廳最長邊正是東側共壁,窗開了又被刪 → 房間全暗。
-    這裡在刪窗收尾後補回:優先前後外牆(真採光面),其次開向天井(台灣透天的
-    標準做法:內側廚衛靠天井採光通風)。回補了幾扇窗。"""
-    from src.design.layout.bsp_layout import MIN_EDGE_FOR_WINDOW, WINDOW_WIDTH
+
+def _window_segments(spec, room, bx0, by0, bx1, by1, party_walls):
+    """這間房可以開窗的牆段 → [(rank, wi, lo, hi, along)],rank 小的優先。
+
+    rank 0 = 真正的採光面(對外牆);rank 1 = 天井側(舊圖仍可能有天井)。內牆不列。"""
+    from src.design.layout.bsp_layout import MIN_EDGE_FOR_WINDOW
+    patios = [Polygon(r.points) for r in spec.rooms if r.kind == "patio"]
+    poly = Polygon(room.points)
+    rx0, ry0, rx1, ry1 = poly.bounds
+    out = []
+    for wi, w in enumerate(spec.walls):
+        (sx, sy), (ex, ey) = w.start, w.end
+        if abs(sx - ex) < 1.0:                          # 垂直牆(東西向外牆)
+            if not (abs(sx - rx0) < 60 or abs(sx - rx1) < 60):
+                continue
+            lo, hi, along = max(min(sy, ey), ry0), min(max(sy, ey), ry1), sy
+            on_ext = (not party_walls
+                      and (abs(sx - bx0) < 60 or abs(sx - bx1) < 60))
+            mid_pt = lambda m: (sx, m)                  # noqa: E731
+        elif abs(sy - ey) < 1.0:                        # 水平牆(前後外牆)
+            if not (abs(sy - ry0) < 60 or abs(sy - ry1) < 60):
+                continue
+            lo, hi, along = max(min(sx, ex), rx0), min(max(sx, ex), rx1), sx
+            on_ext = abs(sy - by0) < 60 or abs(sy - by1) < 60
+            mid_pt = lambda m: (m, sy)                  # noqa: E731
+        else:
+            continue
+        if hi - lo < MIN_EDGE_FOR_WINDOW:
+            continue
+        if on_ext:
+            rank = 0
+        else:
+            mx, my = mid_pt((lo + hi) / 2)              # 牆另一側是不是天井?
+            near = [Point(mx + dx, my + dy)
+                    for dx, dy in ((250, 0), (-250, 0), (0, 250), (0, -250))]
+            if any(p.contains(q) for p in patios for q in near):
+                rank = 1
+            else:
+                continue                                # 內牆:開窗無意義
+        out.append((rank, wi, lo, hi, along))
+    out.sort(key=lambda t: (t[0], -(t[3] - t[2])))      # 先真採光面,再長邊
+    return out
+
+
+def _free_intervals(wall, lo, hi, along):
+    """牆段 [lo,hi](世界座標)扣掉既有洞口 → 沿牆座標的可用區間 [(a,b)]。"""
+    a0, b0 = abs(lo - along), abs(hi - along)
+    a0, b0 = min(a0, b0) + WINDOW_EDGE_CLEAR, max(a0, b0) - WINDOW_EDGE_CLEAR
+    free = [(a0, b0)] if b0 > a0 else []
+    for op in wall.openings:
+        t0, t1 = op.position - op.width / 2 - WINDOW_GAP,             op.position + op.width / 2 + WINDOW_GAP
+        nxt = []
+        for a, b in free:
+            if t1 <= a or t0 >= b:
+                nxt.append((a, b))
+                continue
+            if t0 > a:
+                nxt.append((a, min(b, t0)))
+            if t1 < b:
+                nxt.append((max(a, t1), b))
+        free = [(a, b) for a, b in nxt if b - a > 0]
+    return sorted(free, key=lambda t: -(t[1] - t[0]))
+
+
+def _need_window_width(room) -> float:
+    """這間房要多寬的窗(mm)。
+
+    居室依 §40「採光開口 ≥ 樓地板面積 1/8」回推(窗高以 1.2m 估);廚房/浴室不是
+    居室,給一扇標準窗就好。"""
+    from src.design.layout.code_check import (
+        DAYLIGHT_RATIO, HABITABLE_KINDS, WINDOW_H_ASSUMED,
+    )
+    from src.design.layout.bsp_layout import WINDOW_WIDTH
+    if room.kind not in HABITABLE_KINDS:
+        return WINDOW_WIDTH
+    area = Polygon(room.points).area                    # mm²
+    return max(WINDOW_WIDTH, area * DAYLIGHT_RATIO / WINDOW_H_ASSUMED)
+
+
+def _ensure_room_windows(spec, bx0, by0, bx1, by1, party_walls: bool = True) -> int:
+    """保證居室採光:窗開得**夠大**(§40 樓地板 1/8),不是有一扇就算。
+
+    為什麼要自己補:透天是共壁,東西外牆不能開窗(_fix_openings 會刪),但配窗時是挑
+    「最長的外牆邊」——深長的客廳最長邊正是東側共壁,窗開了又被刪 → 房間全暗。這裡在
+    刪窗收尾後補回,並且**依面積把窗加寬/加開第二扇**,直到滿足 1/8(牆面不夠長就
+    盡量開,由 code_check 回報)。回補了幾扇窗。"""
     from src.drafting.apartment_plan import WindowPlacement
     from src.drafting.door_window import Window
 
-    patios = [Polygon(r.points) for r in spec.rooms if r.kind == "patio"]
     added = 0
     for room in spec.rooms:
         if room.kind not in WINDOW_KINDS:
             continue
         poly = Polygon(room.points)
-        if any(op.kind == "window"
-               and poly.exterior.distance(Point(*w.point_at(op.position))) < 60
-               for w in spec.walls for op in w.openings):
-            continue                                    # 已有窗
-        rx0, ry0, rx1, ry1 = poly.bounds
-        best = None                                     # (rank, -邊長, wi, lo, hi, along)
-        for wi, w in enumerate(spec.walls):
-            (sx, sy), (ex, ey) = w.start, w.end
-            vertical = abs(sx - ex) < 1.0
-            if vertical:
-                if not (abs(sx - rx0) < 60 or abs(sx - rx1) < 60):
-                    continue
-                lo, hi, along = (max(min(sy, ey), ry0), min(max(sy, ey), ry1), sy)
-                # 透天:東西向=共壁不開窗;獨棟:東西外牆也是採光面
-                on_ext_ns = (not party_walls
-                             and (abs(sx - bx0) < 60 or abs(sx - bx1) < 60))
-                mid_pt = lambda m: (sx, m)              # noqa: E731
-            else:
-                if not (abs(sy - ry0) < 60 or abs(sy - ry1) < 60):
-                    continue
-                lo, hi, along = (max(min(sx, ex), rx0), min(max(sx, ex), rx1), sx)
-                on_ext_ns = abs(sy - by0) < 60 or abs(sy - by1) < 60
-                mid_pt = lambda m: (m, sy)              # noqa: E731
-            if hi - lo < MIN_EDGE_FOR_WINDOW:
-                continue
-            if on_ext_ns:
-                rank = 0                                # 前後外牆:真正的採光面
-            else:
-                mx, my = mid_pt((lo + hi) / 2)          # 牆另一側是不是天井?
-                near = [Point(mx + dx, my + dy)
-                        for dx, dy in ((250, 0), (-250, 0), (0, 250), (0, -250))]
-                if any(p.contains(q) for p in patios for q in near):
-                    rank = 1                            # 天井側:內間的採光通風井
-                else:
-                    continue                            # 內牆:開窗無意義
-            cand = (rank, -(hi - lo), wi, lo, hi, along)
-            if best is None or cand[:2] < best[:2]:
-                best = cand
-        if best is None:
-            continue                                    # 真的沒採光面(內間,由 critique 回報)
-        _rank, _l, wi, lo, hi, along = best
-        w = spec.walls[wi]
-        taken = [(op.position - op.width / 2, op.position + op.width / 2)
-                 for op in w.openings]
-        for frac in (0.5, 0.35, 0.65, 0.25, 0.75):
-            m = lo + (hi - lo) * frac
-            pos = abs(m - along)
-            a, b = pos - WINDOW_WIDTH / 2, pos + WINDOW_WIDTH / 2
-            if a < 0 or b > w.length:
-                continue
-            if all(b < t0 or a > t1 for t0, t1 in taken):
-                w.openings.append(Opening(pos, WINDOW_WIDTH, "window"))
+        segs = _window_segments(spec, room, bx0, by0, bx1, by1, party_walls)
+        if not segs:
+            continue                                    # 真的沒採光面(內間)
+        have = sum(op.width for w in spec.walls for op in w.openings
+                   if op.kind == "window"
+                   and poly.exterior.distance(Point(*w.point_at(op.position))) < 60)
+        deficit = _need_window_width(room) - have
+        for _rank, wi, lo, hi, along in segs:
+            if deficit <= 1.0:
+                break
+            w = spec.walls[wi]
+            while deficit > 1.0:
+                free = _free_intervals(w, lo, hi, along)
+                if not free:
+                    break
+                a, b = free[0]
+                # 差額不足一扇窗的下限時,仍開一扇最小窗(寧可略大於法定,也不要
+                # 差 5cm 就判不合格)。
+                width = min(max(deficit, WINDOW_MIN_W), b - a, WINDOW_MAX_W)
+                if width < WINDOW_MIN_W:
+                    break
+                pos = (a + b) / 2 if b - a <= width + 1 else a + width / 2
+                if pos - width / 2 < 0 or pos + width / 2 > w.length:
+                    break
+                w.openings.append(Opening(pos, width, "window"))
                 spec.windows.append(
                     WindowPlacement(wi, len(w.openings) - 1, Window()))
                 added += 1
-                break
+                deficit -= width
     return added
+
 
 
 def _door_touching_rooms(spec, wall, op, polys):
@@ -685,8 +937,7 @@ def _open_door_on_wall(spec, wi, start_along, a, b) -> bool:
     taken = [(op.position - op.width / 2, op.position + op.width / 2)
              for op in w.openings]
     for clear in DOOR_CLEAR_STEPS:                  # 連通是硬需求,淨距可分級退讓
-        for frac in _DOOR_FRACS:
-            m = a + (b - a) * frac
+        for m in _door_candidates(spec, w, a, b):
             pos = abs(m - start_along)
             lo, hi = pos - INTERIOR_DOOR_WIDTH / 2, pos + INTERIOR_DOOR_WIDTH / 2
             if lo < 0 or hi > w.length:
@@ -802,8 +1053,7 @@ def _add_interior_door(spec, room, bx0, by0, bx1, level):
                  for op in w.openings]
         pos = None
         for clear in DOOR_CLEAR_STEPS:
-            for frac in _DOOR_FRACS:
-                m = lo + (hi - lo) * frac
+            for m in _door_candidates(spec, w, lo, hi):
                 p = abs(m - start_along)
                 a, b = p - INTERIOR_DOOR_WIDTH / 2, p + INTERIOR_DOOR_WIDTH / 2
                 if not all(b < t0 or a > t1 for t0, t1 in taken):
@@ -843,30 +1093,60 @@ def _add_interior_door(spec, room, bx0, by0, bx1, level):
     spec.doors.append(DoorPlacement(wi, len(w.openings) - 1, Door()))
 
 
-def _build_floor(level, top, W, D, floor_label, furnish=True):
-    """組一層 spec(房間 → 牆/門/窗 + 樓梯 + 開口收尾 + 家具)。"""
-    bx0 = by0 = SETBACK
-    bx1, by1 = SETBACK + W, SETBACK + D
-    site_w, site_d = W + 2 * SETBACK, D + 2 * SETBACK
-    rooms, stair = _floor_rooms(level, top, bx0, by0, bx1, by1)
+def _floor_connected(spec) -> bool:
+    """整層室內連不連通(與 plan_check 的 floor_split 同一套判準)。"""
+    from src.design.layout.plan_check import _room_graph_components
+    return len(_room_graph_components(spec)) <= 1
+
+
+def _build_floor(level, top, W, D, floor_label, furnish=True,
+                 variant=DEFAULT_VARIANT, force_absorb=False,
+                 force_bath_south=False):
+    """組一層 spec(房間 → 牆/門/窗 + 樓梯 + 開口收尾 + 家具)。
+
+    D 超過該面寬的上限時,**建築封頂**、多出來的地留成前後院(置中)——與兩帶式
+    產線同一個做法。硬蓋滿只會生出採光不足的深房間(§40)。
+
+    取消儲藏室後多出來的空格預設併進隔壁居室;併完若那間房變走廊狀或窗開不夠
+    (_spare_hosts_ok 實際量),就改併進樓梯間重生一次(force_absorb)。"""
+    build_d = min(D, max_depth_for(W))
+    yard = (D - build_d) / 2.0
+    bx0 = SETBACK
+    by0 = SETBACK + yard
+    bx1, by1 = SETBACK + W, by0 + build_d
+    site_w, site_d = W + 2 * SETBACK, D + 2 * SETBACK   # ⚠️ 基地用原始 D,不是封頂後的
+    rooms, stair = _floor_rooms(level, top, bx0, by0, bx1, by1, variant,
+                                force_absorb, force_bath_south)
     spec = rooms_to_spec(rooms, (bx0, by0, bx1, by1), site_w, site_d,
                          setback=SETBACK)
     spec.stairs = [stair]                            # 先掛樓梯:開口收尾才避得開梯段
     _add_stair_guard_walls(spec)                     # 梯段兩側都要有牆(不能一側懸空)
-    _fix_openings(spec, bx0, by0, bx1, level)
+    _fix_openings(spec, bx0, by0, bx1, level,
+                  entry_frac=variant.entry_frac)
     _ensure_floor_connected(spec)                    # 從大門走得到每一間房
     _ensure_room_doors(spec, bx0, by0, bx1, level)   # 保證每房都有門(不管尺寸)
     _ensure_room_windows(spec, bx0, by0, bx1, by1)   # 居室補窗(前後外牆/天井側)
+    if not force_absorb and not _spare_hosts_ok(spec):   # 居室吃不下空格 → 給樓梯間
+        return _build_floor(level, top, W, D, floor_label, furnish, variant,
+                            force_absorb=True)
+    if force_absorb and not force_bath_south and not _floor_connected(spec):
+        # 空格併在樓梯間南端時,樓梯間北端只剩梯段 → 後段接不上。浴廁搬回南側。
+        return _build_floor(level, top, W, D, floor_label, furnish, variant,
+                            force_absorb=True, force_bath_south=True)
     spec.floor_label = floor_label
     # 建築外框當「單跨」記進格線(不放柱):讓 metrics/摘要讀得到建築尺寸與院深。
     spec.x_spacings = [W]
-    spec.y_spacings = [D]
+    spec.y_spacings = [build_d]                  # 建築(封頂後)的進深,不含院子
     spec.grid_origin = (bx0, by0)
     if furnish:                                     # 家具:沿用 Phase 6 擺位(必合法)
         from src.design.layout.auto_furnish import furnish_spec
         from src.design.layout.graph_layout import _declutter_for_circulation
         furnish_spec(spec)
         _declutter_for_circulation(spec)            # 擋動線的家具移掉(與 AI 產線同一套)
+    if variant.mirror:                              # 整層東西鏡射(樓梯核換邊)
+        from src.design.layout_generator import _mirror_spec
+        spec = _mirror_spec(spec, True, False)
+        spec.floor_label = floor_label
     return spec
 
 
@@ -875,14 +1155,17 @@ def _check_dims(W, D):
         raise ValueError(
             f"窄面寬透天面寬需 {MIN_WIDTH/1000:.1f}~{MAX_WIDTH/1000:.1f}m,收到 "
             f"{W/1000:.1f}m(更寬請用一般兩帶式產生器)")
-    if D < MIN_DEPTH:
+    need = min_depth_for(W)
+    if D < need:
         raise ValueError(
-            f"窄面寬透天進深需 ≥{MIN_DEPTH/1000:.1f}m,收到 {D/1000:.1f}m")
+            f"窄面寬透天({W/1000:.1f}m 面寬)進深需 ≥{need/1000:.1f}m,"
+            f"收到 {D/1000:.1f}m")
 
 
 def generate_narrow_building(building_w_mm: float, building_d_mm: float, *,
                              floors: int = 3, bedrooms: int = 3,
-                             furnish: bool = True):
+                             furnish: bool = True, variant=None,
+                             seed=None):
     """窄面寬透天多層 → [(樓層標示, FloorPlanSpec)]。
 
     每層共用同一垂直核(天井+樓梯間[+浴室]),樓梯上下對齊,並配家具(Phase 6 擺位)。
@@ -890,7 +1173,10 @@ def generate_narrow_building(building_w_mm: float, building_d_mm: float, *,
     W, D = float(building_w_mm), float(building_d_mm)
     _check_dims(W, D)
     floors = max(1, int(floors))
-    return [(f"{lv}F", _build_floor(lv, floors, W, D, f"{lv}F", furnish))
+    if variant is None:
+        variant = DEFAULT_VARIANT if seed is None else variant_from_seed(seed)
+    return [(f"{lv}F",
+             _build_floor(lv, floors, W, D, f"{lv}F", furnish, variant))
             for lv in range(1, floors + 1)]
 
 

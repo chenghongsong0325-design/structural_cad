@@ -219,7 +219,7 @@ function renderAiPanel(data) {
   const box = $("ai-panel");
   if (!data) { box.classList.add("hidden"); box.innerHTML = ""; return; }
   if (!data.ai_design) {                    // 規則引擎:只顯示圖面檢查結果
-    const html = renderPlanCheck(data.plan_check);
+    const html = renderPlanCheck(data.plan_check) + renderCodeCheck(data.code_check);
     box.innerHTML = html;
     box.classList.toggle("hidden", !html);
     return;
@@ -233,7 +233,8 @@ function renderAiPanel(data) {
     : `<div class="ai-problems ok">✅ 收斂後無明顯問題</div>`;
   box.innerHTML =
     `<div class="ai-head">🤖 AI 設計師:設計 → 落實 → 挑毛病 → 重設計,擇優</div>` +
-    `<div class="ai-traj">${traj}</div>` + renderPlanCheck(data.plan_check) + probs;
+    `<div class="ai-traj">${traj}</div>` + renderPlanCheck(data.plan_check) +
+    renderCodeCheck(data.code_check) + probs;
   box.classList.remove("hidden");
 }
 
@@ -248,6 +249,20 @@ function renderPlanCheck(c) {
   }
   return `<div class="ai-problems"><b>圖面檢查未過(${items.length}):</b>` +
          items.map((i) => `<div>· ${i.floor}${i.room ? "/" + i.room : ""}:${i.detail}</div>`)
+              .join("") + `</div>`;
+}
+
+// ── 法規檢查(建築技術規則):樓梯尺寸/居室採光…──────────────────────────
+function renderCodeCheck(c) {
+  if (!c) return "";
+  const items = (c.issues || []).filter((i) => i.severity === "violation");
+  if (c.ok) {
+    return `<div class="ai-problems ok">✅ 法規檢查通過:樓梯級高級深/梯段寬/平臺深` +
+           `(施工編§33)、居室採光開口 ≥1/8(§40)` +
+           (c.n_warnings ? `(另有 ${c.n_warnings} 項慣例建議)` : "") + `</div>`;
+  }
+  return `<div class="ai-problems"><b>法規檢查未過(${items.length}):</b>` +
+         items.map((i) => `<div>· [${i.article}] ${i.floor}${i.room ? "/" + i.room : ""}:${i.detail}</div>`)
               .join("") + `</div>`;
 }
 

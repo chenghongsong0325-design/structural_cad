@@ -77,10 +77,11 @@ LABEL = {
 
 Rect = tuple[float, float, float, float]      # (x0, y0, x1, y1),mm
 
-# 垂直核(每層同位 → 樓梯/管道間/天井上下對齊)與結構柱。
+# 垂直核(每層同位 → 樓梯/管道間上下對齊)與結構柱。
 # 樓梯間進深:牆縫 150 + **起步平台 900**(門開進來先站平地再上階)+ 梯跑 9×260
-# + 折返平台 ~900。少了起步平台就會「開門即踏step」——門扇掃到階梯、人沒落腳處。
-STAIR_DEPTH = 4300.0
+# + **折返平台 ≥梯段寬**(施工編 §33,核寬 2.6m 時梯段 1175 → 平台也要 1175)。
+# 少了起步平台就會「開門即踏step」——門扇掃到階梯、人沒落腳處。
+STAIR_DEPTH = 4600.0
 # 管道間(機電豎管:給排水/電氣)= SHAFT_W×SHAFT_D(寬 40~80cm、深 40~60cm,
 # 使用者 2026-07-29 定調)。**不做天井**:住宅一律不設採光天井,原本天井那塊面積
 # 還給房間;管道帶剩下的長度做成壁櫃(房間要鋪滿建築,牆才推得出來)。
@@ -533,12 +534,17 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
     stair_rect, shaft_rect, closet_rect, seed, _cw, core_xlines = core
     # LLM 若提了樓梯,用它的 id 讓相鄰邊還能評分;沒提就補一個(不影響對齊)。
     # 天井一律不做(使用者 2026-07-29 定調):LLM 提了也丟掉,不佔核、不佔房間數。
+    # 儲藏室同樣不做(使用者 2026-07-30 定調:住宅不需要獨立儲藏室)——LLM 提了
+    # 也丟掉,那些坪數留給居室,不會憑空多一間沒人用的小房。
     g_stair = next((r for r in rooms if r["kind"] == "stair"), None)
-    free = [r for r in rooms if r["kind"] not in ("stair", "patio")]
+    free = [r for r in rooms
+            if r["kind"] not in ("stair", "patio", "storage", "utility")]
     stair_room = g_stair or {"id": f"stair_{floor_label}", "kind": "stair",
                              "wants_daylight": False}
+    # 管道帶剩下的 60cm 深長條是**壁櫃**(開門拿東西的櫥櫃),不是儲藏室;
+    # kind 仍用 storage(動線/細長檢查的豁免都掛在這個 kind 上),只改圖上的字。
     closet_room = {"id": f"closet_{floor_label}", "kind": "storage",
-                   "wants_daylight": False}
+                   "label": "壁櫃", "wants_daylight": False}
     shaft_room = {"id": f"shaft_{floor_label}", "kind": "pipe_shaft",
                   "wants_daylight": False}
     m = len(free)
@@ -577,7 +583,7 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
     for k, r in enumerate(rooms_full):
         x0, y0, x1, y1 = allcells[pf[k]]
         named.append((KIND_MAP.get(r["kind"], r["kind"]),
-                      LABEL.get(r["kind"], r["kind"]),
+                      r.get("label") or LABEL.get(r["kind"], r["kind"]),
                       [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]))
 
     setback = env[0]

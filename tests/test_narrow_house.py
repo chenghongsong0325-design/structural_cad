@@ -52,8 +52,17 @@ def test_dims_are_building_not_site():
 
 def test_1f_is_front_to_back_sequence():
     kinds = [r.kind for r in generate_narrow_house(W, D).rooms]
-    assert kinds == ["living", "bathroom", "storage", "stair_hall",
-                     "dining", "kitchen"]
+    assert kinds == ["living", "bathroom", "stair_hall", "dining", "kitchen"]
+
+
+def test_no_storage_room_at_any_size():
+    """★★ 住宅一律不設儲藏室(使用者 2026-07-30 定調):浴廁吃不完的那一小塊
+    併進隔壁居室(變 L 形)或併進樓梯間,不隔成一間沒人用的小房。"""
+    for bw in (3500.0, 5000.0, 7000.0):
+        for bd in (10500.0, 12000.0, 16000.0):
+            for lb, spec in generate_narrow_building(bw, bd, floors=3):
+                assert not [r for r in spec.rooms if r.kind == "storage"], (
+                    bw, bd, lb)
 
 
 def test_1f_has_front_entry_door():
@@ -204,6 +213,64 @@ def test_too_wide_is_rejected():
 def test_too_shallow_is_rejected():
     with pytest.raises(ValueError):
         generate_narrow_house(W, 6000)                         # 進深不足
+
+
+def test_too_narrow_is_rejected():
+    """★ 面寬下限:3.0m(<MIN_WIDTH)後段只剩不到 1㎡、前後段動線斷,該擋。"""
+    with pytest.raises(ValueError):
+        generate_narrow_house(3000, D)
+
+
+def test_min_depth_depends_on_width():
+    """★ 面寬越寬,後段房間越「寬而淺」(像走廊)→ 6m 以上的面寬要多留進深。
+
+    窄的 3.5m 在 9.5m 進深就成立;7m 面寬同樣進深會生出長寬比 3.9 的後臥室。"""
+    from src.design.layout.narrow_house import min_depth_for
+    assert min_depth_for(3500) == 9500.0
+    assert min_depth_for(7000) == 10500.0
+    generate_narrow_house(3500, 9500)                      # 窄的可以
+    with pytest.raises(ValueError):
+        generate_narrow_house(7000, 9500)                  # 寬的不行
+
+
+def test_deep_lot_caps_building_and_leaves_yards():
+    """★★ 基地很深 → **建築封頂 + 前後留院**,不是硬蓋到底。
+
+    硬蓋滿會生出單面採光的深房間,窗開好開滿也達不到 §40 的 1/8(以前 7×16 就是
+    這樣默默生出違規圖)。封頂上限依面寬而定(窄面寬南牆短、窗開不大 → 更早封頂)。"""
+    from src.design.layout.narrow_house import max_depth_for
+    spec = generate_narrow_house(5000, 18000)
+    ys = [p[1] for r in spec.rooms for p in r.points]
+    built = max(ys) - min(ys)
+    assert abs(built - max_depth_for(5000)) < 1.0          # 建築封頂
+    assert min(ys) > spec.setback + 1000                   # 前面留了院子
+    site_d = max(p[1] for p in spec.site_boundary)
+    assert site_d == 18000 + 2 * spec.setback              # 基地仍是原尺寸
+
+
+# ── 定義域全掃描:下限放寬(5×11 → 3.5×9.5)後,整個定義域仍要零錯誤零警告 ──
+@pytest.mark.parametrize("bw", [3500.0, 4000.0, 5000.0, 6000.0, 7000.0])
+@pytest.mark.parametrize("bd", [11000.0, 13000.0, 18000.0])
+def test_whole_domain_passes_both_gates(bw, bd):
+    """★★ 定義域內每個尺寸都要過**兩道關卡**,而且不得有「太小」類的警告。
+
+    下限是實測出來的、不是估的:再窄(3.0m)或再淺(9.0m)就會出臥室短邊不足、
+    房間細長這類警告 —— 這條測試就是那條線的看門人,誰把常數再往下調就會紅。
+    (room_oversize「房間過大」是另一個方向的設計警告,與下限無關,不在此列。)"""
+    from src.design.layout.code_check import check_code_building
+    from src.design.layout.plan_check import check_building
+    from src.design.layout.narrow_house import MIN_DEPTH, MIN_WIDTH
+    assert (MIN_WIDTH, MIN_DEPTH) == (3500.0, 9500.0)
+
+    floors = generate_narrow_building(bw, bd, floors=3)
+    plan = check_building(floors)            # 外框由 spec 自推(深基地封頂留院子)
+    code = check_code_building(floors)
+    assert plan.ok, [i.code for i in plan.errors]
+    assert code.ok, [i.code for i in code.violations]
+    too_small = {"bedroom_side", "bedroom_area", "room_skinny",
+                 "room_no_daylight", "corridor_width"}
+    got = {i.code for i in plan.warnings} | {i.code for i in code.warnings}
+    assert not (got & too_small), sorted(got & too_small)
 
 
 # ── 房間不重疊、鋪滿建築 ────────────────────────────────────────────────────
