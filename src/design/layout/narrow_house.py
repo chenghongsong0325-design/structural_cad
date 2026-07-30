@@ -18,8 +18,8 @@ y 大的北側。使用者給的是**建築物尺寸**(不是基地);基地=建�
 骨架:
   * 前室(客廳 / 前臥,滿面寬,南向採光)
   * 中段核 = 服務格(西:浴廁 + 上方儲藏)+ 樓梯間(東:折返梯貼東界牆、西側留通道)
-  * 後段 = 管道柱(西:管道間 + 上方儲藏)+ 後室(1F=餐廳+廚房;樓上=後臥)
-  * 中段核與管道柱**每層同位** → 樓梯/給排水豎管天生上下對齊(符合柱網原則)
+  * 後室(滿面寬;1F=餐廳+廚房,樓上=後臥)
+  * 中段核**每層同位** → 樓梯天生上下對齊(符合柱網原則)
 
 收尾修正(_fix_openings):去界牆窗、浴室只留 1 門、1F 加臨路前門。
 
@@ -78,14 +78,14 @@ MAX_RISER = 190.0                                   # 每階升高上限(住宅�
 MIN_TREAD = 210.0                                   # 踏面下限(建築技術規則:住宅 ≥21cm)
 TURN_LANDING_MIN = 700.0                            # 折返端平台最小深(轉身用)
 
-# 管道間(給排水/電氣豎管):真實住宅常見尺寸 寬 40~80cm、深 40~60cm
-#(使用者 2026-07-29 定調)。擺在後段西側、緊貼中段核的衛浴 → 給排水直落。
-# 取各自的上限(80×60cm):管道柱上段是收納櫃,寬 60cm 扣掉兩側牆只剩 48cm 淨寬、
-# 人站不進去;深 60cm 則是讓「管道間北側那道牆」離樓梯夠遠,門開得下(見 graph_layout
-# 的核:500 深時門前站人的空間會踩到折返平台)。兩條產線共用這組尺寸。
+# 管道間(給排水/電氣豎管)尺寸:真實住宅常見 寬 40~80cm、深 40~60cm(使用者
+# 2026-07-29 定調)。⚠️ **窄透天不放管道間**(使用者 2026-07-29 決定:5~7m 面寬
+# 的房子多切一根管道柱,只會在西牆邊留一條 80cm×3.2m 的長條收納,礙眼又佔地);
+# 這組常數是給 graph_layout(AI 版)的核用的,尺寸定義放這裡當單一來源。
+# 取各自的上限(80×60cm):管道帶剩下的長度做成壁櫃,寬 60cm 扣掉兩側牆只剩 48cm
+# 淨寬、人站不進去;深 60cm 則是讓「管道帶北側那道牆」離樓梯夠遠,門開得下
+#(500 深時門前站人的空間會踩到折返平台)。
 SHAFT_W, SHAFT_D = 800.0, 600.0
-# 切出管道柱後,後段房間至少還要這麼寬;不足就不切(房間優先)。
-SHAFT_COL_MIN_REST = 2500.0
 
 # 中段核服務格(浴廁):面寬吃剩的都給它,但太寬就往淺切(免得變一間大空房)。
 BATH_MIN_W, BATH_MAX_W = 1500.0, 2400.0
@@ -177,43 +177,28 @@ def _core(bx0, bx1, y1, y2, label, bath_name):
     return rooms, _stair(xs, bx1, y1, y2, label)
 
 
-def _shaft_column(bx0, bx1, y2, by1):
-    """後段西側管道柱 → (房間清單, 後段房間的西緣 x)。
-
-    管道間貼在中段核衛浴的正北 → 給排水直落、每層同位(真實住宅的做法);上方
-    補一條收納櫃把柱子填滿(房間要鋪滿建築,牆才推得出來)。後段太窄就不切。"""
-    if (bx1 - bx0) - SHAFT_W < SHAFT_COL_MIN_REST:
-        return [], bx0
-    xs = bx0 + SHAFT_W
-    return [("pipe_shaft", "管道間", _rect(bx0, y2, xs, y2 + SHAFT_D)),
-            ("storage", "收納", _rect(bx0, y2 + SHAFT_D, xs, by1))], xs
-
-
 def _floor_rooms(level, top, bx0, by0, bx1, by1):
     """一層的房間矩形 + 樓梯。"""
     d_front, d_core, _ = _split_depth(by1 - by0, ZONES)
     y1, y2 = by0 + d_front, by0 + d_front + d_core
     label = "下" if level == top else "上"
 
-    # 核每層同構(服務格+樓梯間)→ 樓梯上下對齊;後段西側管道柱亦每層同位。
-    shaft, xr = _shaft_column(bx0, bx1, y2, by1)
-
+    # 核每層同構(服務格+樓梯間)→ 樓梯上下對齊。
     if level == 1:                                  # 1F:客廳 / 核 / 餐廳|廚房
         core, stair = _core(bx0, bx1, y1, y2, label, "浴廁")
         # 後段左右分:切在**樓梯旁通道**的東緣(=梯段導牆中心線),讓通道正對餐廳 →
         # 前後段那扇門開得成,且門洞離導牆自動有牆角淨距(切在幾何中線時,通道與餐廳
         # 只重疊一小段,門塞不下,整層就會被判走不通)。
-        xm = min(max(stair.origin[0] - GUARD_WALL_T / 2.0, xr + 1800.0),
-                 bx1 - 1800.0)
-        rooms = [("living", "客廳", _rect(bx0, by0, bx1, y1)), *core, *shaft,
-                 ("dining", "餐廳", _rect(xr, y2, xm, by1)),
+        xm = min(max(stair.origin[0] - GUARD_WALL_T / 2.0, bx0 + 2000.0),
+                 bx1 - 2000.0)
+        rooms = [("living", "客廳", _rect(bx0, by0, bx1, y1)), *core,
+                 ("dining", "餐廳", _rect(bx0, y2, xm, by1)),
                  ("kitchen", "廚房", _rect(xm, y2, bx1, by1))]
         return rooms, stair
 
     core, stair = _core(bx0, bx1, y1, y2, label, f"浴室{level}F")
     return [("bedroom", f"前臥室{level}F", _rect(bx0, by0, bx1, y1)), *core,
-            *shaft,
-            ("bedroom", f"後臥室{level}F", _rect(xr, y2, bx1, by1))], stair
+            ("bedroom", f"後臥室{level}F", _rect(bx0, y2, bx1, by1))], stair
 
 
 # ── 開口收尾:去界牆窗 / 去天井門 / 浴室單門 / 加前門 ────────────────────────

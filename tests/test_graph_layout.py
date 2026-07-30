@@ -97,6 +97,20 @@ def test_core_and_shaft_aligned(floors):
                 if r.kind == "patio"]
 
 
+def test_pipe_shaft_is_realistic_size(floors):
+    """★ 管道間是真實尺寸(寬 40~80cm、深 40~60cm),不是一整條核那麼大。
+
+    使用者 2026-07-29 定調;原本是「橫跨整個核 2.0~2.6m 寬 × 0.7m 深」的一條帶。"""
+    from shapely.geometry import Polygon
+    for _lb, sp, _a, _b in floors:
+        shafts = [r for r in sp.rooms if r.kind == "pipe_shaft"]
+        assert shafts
+        for r in shafts:
+            x0, y0, x1, y1 = Polygon(r.points).bounds
+            assert 400 <= x1 - x0 <= 800, (x1 - x0)
+            assert 400 <= y1 - y0 <= 600, (y1 - y0)
+
+
 def test_structural_columns_aligned(floors):
     """★ 結構柱網每層相同(規則等距、上下對齊);進深至少兩跨(≤~6m 經濟跨度)。"""
     grids = {(sp.grid_origin, tuple(sp.x_spacings), tuple(sp.y_spacings))
