@@ -251,6 +251,7 @@ def test_deep_lot_caps_building_and_leaves_yards():
 # ── 定義域全掃描:下限放寬(5×11 → 3.5×9.5)後,整個定義域仍要零錯誤零警告 ──
 @pytest.mark.parametrize("bw", [3500.0, 4000.0, 5000.0, 6000.0, 7000.0])
 @pytest.mark.parametrize("bd", [11000.0, 13000.0, 18000.0])
+@pytest.mark.slow
 def test_whole_domain_passes_both_gates(bw, bd):
     """★★ 定義域內每個尺寸都要過**兩道關卡**,而且不得有「太小」類的警告。
 

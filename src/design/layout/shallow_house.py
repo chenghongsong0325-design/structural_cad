@@ -206,6 +206,9 @@ def _build_floor(level, top, W, D, floor_label, furnish=True, cap=None,
     _fix_openings(spec, bx0, by0, bx1, level)       # 去重複門/界牆窗;1F 補臨路大門
     _ensure_floor_connected(spec)                   # 從大門走得到每一間房
     _ensure_room_doors(spec, bx0, by0, bx1, level)  # 每房都有門
+    from src.design.layout.balcony import add_balconies
+    # 2F 以上挑陽台;北側是梯帶(樓梯間不配陽台),實際上只會生出南向前陽台。
+    add_balconies(spec, level, env=(bx0, by0, bx1, by1))
     _ensure_room_windows(spec, bx0, by0, bx1, by1)  # 居室補窗(§40 依面積補到 1/8)
     from src.design.layout.door_rules import check_door_rules, repair_doors
     repair_doors(spec, bx0, by0, bx1, level)        # 門與動線規範:改門(不改切法)

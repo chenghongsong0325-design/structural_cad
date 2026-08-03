@@ -7,6 +7,7 @@
   3. Report 可序列化(to_dict/to_json),照專案慣例。
 """
 import json
+import pytest
 import sys
 from pathlib import Path
 
@@ -31,6 +32,7 @@ W, D = 7000.0, 12000.0
 ENV = (SB, SB, SB + W, SB + D)
 
 
+@pytest.mark.slow
 def test_every_variant_passes_both_gates():
     """★★ 24 種變體全部要過 plan_check(圖面)+ code_check(法規)。
 

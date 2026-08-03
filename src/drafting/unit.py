@@ -157,7 +157,8 @@ def place_unit(
             base + dp.wall_index, dp.opening_index,
             Door(hinge=dp.door.hinge,
                  swing=_t_swing(mirrored, dp.door.swing),
-                 width=dp.door.width),
+                 width=dp.door.width,
+                 sliding=dp.door.sliding),      # 橫拉門(陽台落地門)要跟著翻
         ))
     for wp in unit.windows:
         target.windows.append(WindowPlacement(
@@ -214,12 +215,21 @@ def one_room_unit() -> UnitSpec:
     walls = [
         # 0 南牆(走廊側,RC150):入口門(玄關段,偏東讓開浴廁)
         Wall((0, 0), (4000, 0), EXT, openings=[Opening(2900, 900, "door")]),
-        # 1 北牆(對外,RC150):窗(中央)
-        Wall((0, 6000), (4000, 6000), EXT, openings=[Opening(2000, 1500, "window")]),
+        # 1 北牆(對外,RC150):**陽台落地拉門(西)+ 起居室窗(東)**。
+        #    ⚠️ 以前這面牆只有一扇 2m 的窗,工作陽台沒有門 —— 陽台只能從窗戶爬出去,
+        #    是真實圖面不會有的錯誤(現由 plan_check 的 balcony_no_door 擋)。
+        #    §40 採光:落地門本身就是採光開口(見 code_check),門 1.2 + 窗 1.2 =
+        #    2.4m > 起居室 18㎡ 需要的 1.9m。門擺西側是因為東側正對床頭(bed_double
+        #    佔 x 2100~3700),門開在那裡人走不到陽台。
+        Wall((0, 6000), (4000, 6000), EXT,
+             openings=[Opening(1300, 1200, "door"), Opening(2800, 1200, "window")]),
         # 2 西分戶牆(磚120)
         Wall((0, 0), (0, 6000), INT),
-        # 3 浴廁東牆(磚120):浴廁門(從玄關進浴廁)
-        Wall((1800, 0), (1800, 2000), INT, openings=[Opening(1000, 750, "door")]),
+        # 3 浴廁東牆(磚120):浴廁門(從玄關進浴廁)。
+        #    ⚠️ 位置要**落在玄關那一段(y 0~1100)之內**:玄關只有 1.1m 深,門開在
+        #    牆中點(1000)會有一半跑到起居室那段,門洞離玄關角落只剩 25mm,
+        #    plan_check 判 door_in_corner(人走不進那個角)。550 = 玄關段的中點。
+        Wall((1800, 0), (1800, 2000), INT, openings=[Opening(550, 750, "door")]),
         # 4 浴廁北牆(磚120)
         Wall((0, 2000), (1800, 2000), INT),
     ]
@@ -237,9 +247,10 @@ def one_room_unit() -> UnitSpec:
     ]
     doors = [
         DoorPlacement(0, 0, Door(hinge="left", swing="out")),   # 入口,開向室內(+n)
+        DoorPlacement(1, 0, Door(sliding=True)),                # 陽台落地拉門
         DoorPlacement(3, 0, Door(hinge="left", swing="out")),   # 浴廁門,開向浴廁
     ]
-    windows = [WindowPlacement(1, 0)]
+    windows = [WindowPlacement(1, 1)]
     fixtures = [
         FixturePlacement("toilet", (60, 1200), 270),     # 貼西牆,朝 +X
         FixturePlacement("basin", (900, 1940), 180),     # 貼浴廁北牆,朝 -Y
@@ -250,7 +261,8 @@ def one_room_unit() -> UnitSpec:
         Counter(start=(3940, 1300), end=(3940, 2500), sink=True),
     ]
     # 對外(北)側工作陽台:放冷氣/曬衣,貼北牆(南邊不畫牆),外推 1.2m。
-    balconies = [Balcony(origin=(800, 6000), width=2400, depth=1200, attach="south")]
+    # 範圍要**罩住落地門**(門 x 700~1900),人推開門才踩得到陽台地板。
+    balconies = [Balcony(origin=(400, 6000), width=1900, depth=1200, attach="south")]
     return UnitSpec(name="套房", width=4000, depth=6000, walls=walls,
                     rooms=rooms, doors=doors, windows=windows, fixtures=fixtures,
                     balconies=balconies)
@@ -272,15 +284,21 @@ def one_bed_unit() -> UnitSpec:
     )
 
     walls = [
-        # 0 南牆(走廊側 RC150):入口門(玄關段,偏東讓開浴廁/鞋櫃)
-        Wall((0, 0), (6000, 0), EXT, openings=[Opening(2900, 900, "door")]),
-        # 1 北牆(對外 RC150):客廳窗(西)+ 臥室窗(東)
+        # 0 南牆(走廊側 RC150):入口門開在**玄關段的中央**(玄關 x 1800~3400)。
+        #    偏東到 2900 時門洞離玄關東角只剩 50mm,plan_check 判 door_in_corner。
+        Wall((0, 0), (6000, 0), EXT, openings=[Opening(2600, 900, "door")]),
+        # 1 北牆(對外 RC150):客廳窗(西)+ **陽台落地拉門**(中)+ 臥室窗(東)
+        #    §40:客廳約 20㎡ 要 2.1m 採光開口 —— 窗 1.2 + 落地門 1.2 = 2.4m 夠
+        #    (落地門是採光開口,見 code_check);臥室 10㎡ → 1.5m 的窗夠。
+        #    門靠客廳東端但離臥室隔間牆(x=3400)留 300,免得門洞卡在客廳牆角。
         Wall((0, 6000), (6000, 6000), EXT,
-             openings=[Opening(1700, 1500, "window"), Opening(4700, 1500, "window")]),
+             openings=[Opening(1150, 1200, "window"), Opening(2500, 1200, "door"),
+                       Opening(4700, 1500, "window")]),
         # 2 西分戶牆(磚120)
         Wall((0, 0), (0, 6000), INT),
-        # 3 浴廁北牆(磚120):浴廁門(開向客廳)
-        Wall((0, 2200), (1800, 2200), INT, openings=[Opening(900, 750, "door")]),
+        # 3 浴廁北牆(磚120):浴廁門(開向客廳)。門偏西、洗手台偏東,兩者錯開
+        #    ——門開在牆中央(900)時洗手台就正對門口,人進不去(circulation_blocked)。
+        Wall((0, 2200), (1800, 2200), INT, openings=[Opening(700, 750, "door")]),
         # 4 浴廁東牆(磚120,無洞:面玄關/客廳)
         Wall((1800, 0), (1800, 2200), INT),
         # 5 臥室西牆(磚120):臥室門(南端,開向客廳)
@@ -303,13 +321,16 @@ def one_bed_unit() -> UnitSpec:
     ]
     doors = [
         DoorPlacement(0, 0, Door(hinge="left", swing="out")),   # 入口,開向室內
+        DoorPlacement(1, 1, Door(sliding=True)),                # 客廳→陽台落地拉門
         DoorPlacement(3, 0, Door(hinge="left", swing="out")),   # 浴廁門,小浴外開讓開潔具
         DoorPlacement(5, 0, Door(hinge="left", swing="in")),    # 臥室門,開向臥內
     ]
-    windows = [WindowPlacement(1, 0), WindowPlacement(1, 1)]     # 客廳窗、臥室窗
+    windows = [WindowPlacement(1, 0), WindowPlacement(1, 2)]     # 客廳窗、臥室窗
     fixtures = [
-        FixturePlacement("toilet", (60, 1400), 270),     # 浴廁,貼西牆朝東
-        FixturePlacement("basin", (900, 2140), 180),     # 浴廁,貼北牆朝南
+        # 馬桶往南挪(1400→900):原位置正在門(北牆 x=700)的正前方,馬桶頂到牆面
+        # 只剩 550mm 淨寬,人進不去(circulation_blocked)。挪完門前有 1m 可站。
+        FixturePlacement("toilet", (60, 900), 270),      # 浴廁,貼西牆朝東
+        FixturePlacement("basin", (1450, 2140), 180),    # 浴廁,貼北牆朝南(讓開門口)
         FixturePlacement("shoe_cabinet", (1860, 600), 270),  # 玄關,貼浴廁東牆朝東
         FixturePlacement("sofa3", (75, 4200), 270),      # 客廳沙發,背貼西牆朝東
         FixturePlacement("bed_double", (4400, 5925), 180),   # 臥室,床頭貼北牆
@@ -317,7 +338,9 @@ def one_bed_unit() -> UnitSpec:
         # 開放式廚房:一字型流理台貼東牆(客廳餐廚區,玄關東側),含水槽。
         Counter(start=(5940, 300), end=(5940, 1900), sink=True),
     ]
-    balconies = [Balcony(origin=(700, 6000), width=2000, depth=1200, attach="south")]
+    # 工作陽台罩住落地門(門 x 1900~3100),掛在客廳這一側;臥室窗仍直接對外。
+    balconies = [Balcony(origin=(1750, 6000), width=1650, depth=1200,
+                         attach="south")]
     return UnitSpec(name="一房一廳", width=6000, depth=6000, walls=walls,
                     rooms=rooms, doors=doors, windows=windows, fixtures=fixtures,
                     balconies=balconies)

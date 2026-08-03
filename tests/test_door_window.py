@@ -210,3 +210,42 @@ def test_door_window_with_prefix() -> None:
     # A-DOOR / A-GLAZ 都經別名對應到規範圖層 DW(開口門窗)。
     assert door.dxf.layer == "2F建築底圖$0$DW"
     assert window.dxf.layer == "2F建築底圖$0$DW"
+
+
+# ---------------------------------------------------------------------------
+# 5) 中文字形:所有中文一律用 STRUCT 樣式
+# ---------------------------------------------------------------------------
+def test_sliding_door_label_uses_cjk_text_style(doc_and_layers) -> None:
+    """★ 橫拉門的「拉門」字樣要用 STRUCT 樣式。
+
+    預設的 Standard 樣式用 txt.shx,沒有中文字形 —— AutoCAD 會把「拉門」畫成
+    「??」(2026-08-03 打開圖才看到)。這種錯誤在程式裡完全看不出來,只有在
+    真的 CAD 裡開圖才會現形,所以寫成測試釘住。"""
+    doc, layers = doc_and_layers
+    msp = doc.modelspace()
+    op = Opening(position=2000, width=1200)
+    wall = Wall(start=(0, 0), end=(4000, 0), thickness=150, openings=[op])
+
+    Door(sliding=True).place_in_wall(msp, wall, op, layers)
+    txts = [e for e in msp.query("TEXT") if e.dxf.text == "拉門"]
+    assert txts and all(t.dxf.style == "STRUCT" for t in txts)
+
+
+def test_whole_floor_plan_has_no_missing_glyph_text() -> None:
+    """★★ 整張圖掃一遍:任何含中文的字都不能用非 STRUCT 樣式。
+
+    比上一條更強 —— 以後任何模組新增中文標註,漏掉 style 就會被這條擋下來。"""
+    from src.design.layout.narrow_house import generate_narrow_building
+    from src.drafting.apartment_plan import draw_floor_plan
+
+    bad = []
+    for _lb, spec in generate_narrow_building(7000, 12000, floors=2):
+        doc = new_document()
+        layers = apply_standard(doc, load_standard())
+        msp = doc.modelspace()
+        draw_floor_plan(msp, spec, layers)
+        for e in list(msp.query("TEXT")) + list(msp.query("MTEXT")):
+            s = e.dxf.text if e.dxftype() == "TEXT" else e.text
+            if any(ord(c) > 127 for c in s) and e.dxf.style != "STRUCT":
+                bad.append((s, e.dxf.style))
+    assert not bad, f"這些中文字沒用 STRUCT 樣式,CAD 裡會變成問號:{bad}"

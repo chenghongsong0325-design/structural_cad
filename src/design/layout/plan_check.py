@@ -14,6 +14,7 @@
     door_in_corner      門洞卡在房間角落(人走不進那個角)
     stair_blocks_door   門直接開在階梯上(缺起步平台,門扇會掃到踏step)
     stair_side_open     梯段有一側沒牆(人走上去會從旁邊掉下去)
+    balcony_no_door     陽台沒有門通到(畫了一塊到不了的地)
     entry_door_narrow   對外大門淨寬 <90cm(門與動線規範)
     room_door_narrow    居室門 <80cm / 衛浴門 <75cm(同上)
     door_swing_blocked  門的開啟弧線撞到牆/柱/家具/另一扇門(同上)
@@ -151,22 +152,27 @@ def _on_envelope(x: float, y: float, env) -> bool:
 
 
 def _room_graph_components(spec) -> list[set]:
-    """靠門互通的房間分群(豎井/天井不算)。斷成多塊 = 室內走不通。"""
+    """靠門/開放通道互通的房間分群(豎井/天井不算)。斷成多塊 = 室內走不通。
+
+    ⚠️ 兩間房之間**沒畫牆**也是通的(集合住宅的玄關↔起居室就是這樣做),
+    只認門會把開放格局誤判成走不通。"""
     import itertools
+
+    from src.design.layout.room_circulation import _open_passages
 
     polys = [(r, Polygon(r.points)) for r in spec.rooms]
     live = [i for i, (r, _p) in enumerate(polys) if r.kind not in VOID_KINDS]
     adj = {i: set() for i in live}
-    for w in spec.walls:
-        for op in w.openings:
-            if op.kind != "door":
-                continue
-            p = Point(*w.point_at(op.position))
-            touch = [i for i in live
-                     if polys[i][1].exterior.distance(p) < EDGE_TOL]
-            for a, b in itertools.combinations(touch, 2):
-                adj[a].add(b)
-                adj[b].add(a)
+    pts = [Point(*w.point_at(op.position)) for w in spec.walls
+           for op in w.openings if op.kind == "door"]
+    for i in live:                                  # 開放通道:邊界上沒牆的缺口
+        pts += _open_passages(spec, polys[i][1])
+    for p in pts:
+        touch = [i for i in live
+                 if polys[i][1].exterior.distance(p) < EDGE_TOL]
+        for a, b in itertools.combinations(touch, 2):
+            adj[a].add(b)
+            adj[b].add(a)
     comps, seen = [], set()
     for i in live:
         if i in seen:
@@ -210,13 +216,14 @@ def check_floor(spec, env=None, level: int = 1, label: str = "") -> list[PlanIss
     polys = [(r, Polygon(r.points)) for r in spec.rooms]
     patios = [p for r, p in polys if r.kind == "patio"]
 
-    # ① 每間可進入的房間都要有門
+    # ① 每間可進入的房間都要有門(或**開放通道**:兩間房之間根本沒畫牆也算通)
+    from src.design.layout.room_circulation import _room_openings
     for r, poly in polys:
         if r.kind in VOID_KINDS:
             continue
-        if not _openings_of(spec, poly, "door"):
+        if not _room_openings(spec, poly):
             issues.append(PlanIssue("error", "room_no_door", lb, r.name,
-                                    "沒有門,進不去"))
+                                    "沒有門也沒有開放通道,進不去"))
 
     # ② 同層室內要連通(不能要繞到室外)
     comps = _room_graph_components(spec)
@@ -226,14 +233,26 @@ def check_floor(spec, env=None, level: int = 1, label: str = "") -> list[PlanIss
                                 f"室內斷成 {len(comps)} 塊,彼此走不通:{groups}"))
 
     # ③ 對外門:1F 恰一扇、樓上不得有
+    #    ⚠️ 樓上外牆的門**通往陽台就不算**——那正是陽台存在的意義(落地門出去有地
+    #    可站);沒有陽台接著的樓上外門才是「門通往空中」。
+    from src.design.layout.balcony import balcony_doors, door_opens_to_balcony
     ext = [(w, op) for w in spec.walls for op in w.openings
-           if op.kind == "door" and _on_envelope(*w.point_at(op.position), env)]
+           if op.kind == "door" and _on_envelope(*w.point_at(op.position), env)
+           and not door_opens_to_balcony(spec, w, op)]
     if level == 1 and not ext:
         issues.append(PlanIssue("error", "no_entry", lb, "",
                                 "沒有對外大門,進不了建築"))
     if level != 1 and ext:
         issues.append(PlanIssue("error", "entry_upstairs", lb, "",
                                 f"樓上外牆開了 {len(ext)} 扇門(門會通往空中)"))
+
+    # ③b 每座陽台都要有門進得去(畫了一塊到不了的地,是真實圖面不會有的錯誤)
+    for bal in getattr(spec, "balconies", None) or []:
+        if not balcony_doors(spec, bal):
+            x0, y0 = bal.origin
+            issues.append(PlanIssue(
+                "error", "balcony_no_door", lb, "陽台",
+                f"陽台({x0:.0f},{y0:.0f})沒有門通到,進不去"))
 
     # ④ 家具不得嵌進牆體
     from src.design.collision.geometry import fixture_obstacles

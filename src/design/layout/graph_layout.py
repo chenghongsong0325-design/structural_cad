@@ -483,7 +483,81 @@ def _assign_core(free, fixed, allcells, cell_adj, env, entry_id, edges):
 DECLUTTER_SKIP = ("patio", "parking", "garage", "stair", "balcony")
 
 
-def _declutter_for_circulation(spec, max_removals: int = 20) -> int:
+def _nudge_into_room(spec, room, fx, step: float = 100.0, span: float = 600.0) -> bool:
+    """把擋路的家具沿房間的兩軸小幅平移,找一個讓這間房走得通的位置。
+
+    只挪不轉、也不出房間;挪完仍走不通就回 False(由呼叫端決定要不要移除)。"""
+    from src.design.layout.room_circulation import analyze_room
+
+    move = getattr(fx, "insert", None)
+    if move is None:                                # 流理台(Counter)不挪:它必須貼牆
+        return False
+    ox, oy = move
+    offsets = [(dx, dy)
+               for r in range(1, int(span / step) + 1)
+               for dx, dy in ((r * step, 0), (-r * step, 0),
+                              (0, r * step), (0, -r * step))]
+    from shapely.geometry import Polygon
+
+    from src.design.collision.geometry import fixture_obstacles
+    rpoly = Polygon(room.points)
+    for dx, dy in offsets:
+        fx.insert = (ox + dx, oy + dy)
+        here = next((o for o in fixture_obstacles(spec) if o.ref is fx), None)
+        if here is None or not rpoly.contains(here.poly.buffer(-1.0)):
+            continue                                # 挪出房間了,不算
+        if _blocks_a_door(spec, here.poly):
+            continue                            # 挪去擋到門的迴轉,等於沒解決
+        if _hits_wall(spec, here.poly):
+            continue                            # 挪進牆裡 = 畫出來穿牆
+        if any(o.ref is not fx and o.poly.intersection(here.poly).area > 1000.0
+               for o in fixture_obstacles(spec)):
+            continue                            # 撞到別的家具,也不算解決
+        if analyze_room(spec, room).ok:
+            return True
+    fx.insert = (ox, oy)
+    return False
+
+
+def _hits_wall(spec, poly) -> bool:
+    """家具在新位置會不會嵌進牆體(房間多邊形是牆**中心線**,不能只看在不在房內)。"""
+    from src.design.layout.fixture_fix import OVERLAP_TOL, _wall_union
+    bodies = _wall_union(spec)
+    return bodies is not None and poly.intersection(bodies).area > OVERLAP_TOL
+
+
+def _blocks_a_door(spec, poly) -> bool:
+    """這件家具在新位置會不會擋住任何一扇門的迴轉空間。
+
+    ⚠️ 用的是 **validate_spec 的同一塊方形**(門寬 × 門寬,開啟側),不是門扇掃過的
+    扇形——判準要跟最後把關的那道一致,否則這裡放行、validate 照樣擋圖。"""
+    from shapely.geometry import Polygon as _P
+    for dp in getattr(spec, "doors", None) or []:
+        try:
+            w = spec.walls[dp.wall_index]
+            op = w.openings[dp.opening_index]
+        except (IndexError, AttributeError):
+            continue
+        if op.kind != "door":
+            continue
+        cx, cy = w.point_at(op.position)
+        ux, uy = w.unit_vector
+        nx, ny = w.normal_vector
+        sgn = 1.0 if getattr(dp.door, "swing", "out") == "out" else -1.0
+        h, e = op.width / 2.0, op.width
+        square = _P([
+            (cx - ux * h, cy - uy * h),
+            (cx + ux * h, cy + uy * h),
+            (cx + ux * h + sgn * nx * e, cy + uy * h + sgn * ny * e),
+            (cx - ux * h + sgn * nx * e, cy - uy * h + sgn * ny * e),
+        ])
+        if square.intersection(poly).area > 100.0:
+            return True
+    return False
+
+
+def _declutter_for_circulation(spec, max_removals: int = 20,
+                               allow_remove: bool = True) -> int:
     """furnish 後修復動線:哪間房被家具擋住,移掉該房最占空間的家具再驗,直到走得通。
 
     擋路的通常就是那件過大的(穿越型餐廳的餐桌、擠爆浴室的浴缸);寧可少一件也要
@@ -514,6 +588,13 @@ def _declutter_for_circulation(spec, max_removals: int = 20) -> int:
             if not cands:
                 continue                             # 沒家具還不通 = 房間本身太小
             victim = max(cands, key=lambda o: o.poly.area)
+            # 先試「挪一下」再談移除:餐桌常常只是偏了 10~20cm,導致一側的
+            # 通道剩 50cm(差 10cm 就走不過去)。挪得動就別丟——真實圖也是這樣。
+            if _nudge_into_room(spec, room, victim.ref):
+                did = True
+                continue
+            if not allow_remove:                 # 只挪不丟(收尾第二輪用)
+                continue
             try:
                 spec.fixtures.remove(victim.ref)
             except ValueError:
@@ -631,7 +712,9 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
 
     if furnish:
         from src.design.layout.auto_furnish import furnish_spec
+        from src.design.layout.fixture_fix import push_fixtures_out_of_walls
         furnish_spec(spec)
+        push_fixtures_out_of_walls(spec)          # 貼牆家具嵌進牆面 → 推回室內
         _declutter_for_circulation(spec)          # 移掉擋動線的家具 → 每房走得通
     # 門與動線規範:轉門/改橫拉門、衛浴門不朝廚房、補一扇門直通公共動線。
     # 要在家具擺完之後——開啟弧線會不會撞到家具,擺完才知道。

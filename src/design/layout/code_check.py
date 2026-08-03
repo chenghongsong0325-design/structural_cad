@@ -140,10 +140,13 @@ def _stair_dims(stair, floor_height: float):
         total = spf * 2
         width = getattr(stair, "flight_width", None)
         landing = getattr(stair, "landing_depth", None)
-    elif steps:                                 # Stair:單跑
+    elif steps:                                 # Stair:單跑直梯
         total = steps
         width = getattr(stair, "width", None)
-        landing = getattr(stair, "length", 0.0) - steps * (tread or 0.0)
+        # ⚠️ 單跑直梯**沒有折返平臺**:頂端那段只是梯段與牆之間的空隙,不是 §33
+        #    講的「平臺」(平臺深 ≥梯段寬 是針對轉向/折返處)。拿空隙去比梯段寬,
+        #    會把每一座直梯都誤判成違規(實測兩帶式透天全中)。故回 None = 不檢查。
+        landing = None
     else:
         return None
     if not total or not tread or not width:
@@ -194,6 +197,14 @@ def check_code_floor(spec, env=None, level: int = 1, label: str = "",
         poly = Polygon(room.points)
         win_w = sum(op.width for w, op in _openings_on_room(spec, poly, "window")
                     if _is_exterior(w, env))
+        # §40 講的是「採光用窗**或開口**」:通往陽台的落地玻璃門就是實務上最主要的
+        # 採光開口(客廳落地窗)。不算的話,4m 面寬的套房北牆要同時塞 1.9m 的窗與
+        # 0.9m 的門,只剩 10cm 的牆垛 —— 那不是設計問題,是判準漏了一項。
+        # ⚠️ §41 對「開口外側有陽台」另有採光面積折減,本專案**未實作**;陽台進深
+        #    一律壓在 2m 以內(見 layout/balcony.py)以避開深陽台的折減爭議。
+        from src.design.layout.balcony import door_opens_to_balcony
+        win_w += sum(op.width for w, op in _openings_on_room(spec, poly, "door")
+                     if door_opens_to_balcony(spec, w, op))
         area = poly.area / 1e6                              # ㎡
         win_area = win_w * WINDOW_H_ASSUMED / 1e6
         if win_area < area * DAYLIGHT_RATIO - 1e-9:

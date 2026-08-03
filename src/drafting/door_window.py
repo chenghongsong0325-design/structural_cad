@@ -175,8 +175,12 @@ class Door:
         b = (p1[0] + nx * off * side, p1[1] + ny * off * side)
         line = msp.add_line(a, b, dxfattribs={"layer": layers["A-DOOR"]})
         mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
-        txt = msp.add_text("拉門", dxfattribs={"layer": layers.get("A-TEXT", layers["A-DOOR"]),
-                                               "height": 150})
+        # ⚠️ 中文一定要指定 style="STRUCT":預設的 Standard 樣式用 txt.shx,沒有
+        #    中文字形,AutoCAD 會把「拉門」畫成「??」(2026-08-03 在圖上看到)。
+        txt = msp.add_text("拉門", height=150,
+                           dxfattribs={"layer": layers.get("A-TEXT",
+                                                           layers["A-DOOR"]),
+                                       "style": "STRUCT"})
         txt.set_placement((mid[0] + nx * 180 * side, mid[1] + ny * 180 * side))
         return line
 

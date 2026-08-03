@@ -133,6 +133,10 @@ WET_W = 2000                           # 透天濕區開間寬(1F/2F 衛浴、B1
 HALL_DEPTH = 1200                      # 單戶走道進深(臥室帶與公共帶之間,C1.5b)
 PASSAGE_WIDTH = 1500                   # 走道↔客廳的開放通道寬(正對大門軸線)
 WALL_SNAP_TOL = 600                    # 隔間牆距軸線小於此值就吸附坐樑(C1.5c)
+# 客廳|餐廳 分界吸附軸線的容許距離。比一般隔牆寬鬆(2.5m):這條分界沒吸到軸線時,
+# 柱會卡在餐廳南外牆中間,把可開窗的牆切成兩小段 → §40 採光不足、整張圖不合格。
+# 寧可讓餐廳面積偏離目標一點,也要保住「窗開得下」。
+DINING_SNAP_TOL = 2500
 DAYLIGHT_DEPTH_MAX = 6000              # 居室採光深度上限(距窗最遠 6m,C1.5c)
 # 建築深度上限(深基地收斂用):兩帶式格局 = 北帶臥室(≤NORTH_BAND_RANGE 上限)
 # + 南帶客廳/起居(只靠南牆採光,深度 ≤DAYLIGHT_DEPTH_MAX)。基地更深時房間
@@ -513,6 +517,29 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
     merged_dining = (dining_w < MIN_DINING_WIDTH
                      or wl_zone - dining_w < requirement("living").min_width)
     living_e = sx if merged_dining else sx - dining_w
+    if not merged_dining:
+        # 客廳|餐廳 的分界同樣吸附柱軸線(C1.5c 隔間坐樑)。
+        # ⚠️ 這不只是好看:分界不落在軸線上時,那根柱就卡在**餐廳南外牆的中間**,
+        #    把可開窗的牆切成兩小段(柱兩側各要留 30cm 淨距),窗開不到 §40 要求的
+        #    1/8 → 整張圖不合格。實測 16m 面寬時就是這樣掛掉的。
+        # 餐廳南外牆開得出 §40 要求的窗嗎?開不出來就併成「客餐廳」——
+        # 併完是一個大開放空間,窗可以分散在整面南牆上(避開柱),就開得夠了。
+        # 先試著把分界吸到柱軸線(柱藏牆內 → 南外牆整段乾淨,窗開得下);
+        # 吸不到才判斷「這面牆到底夠不夠開窗」,不夠就併成客餐廳。
+        for _g in sorted(grid_x, key=lambda v: abs(v - living_e)):
+            if abs(_g - living_e) > DINING_SNAP_TOL:
+                break
+            if (0 < abs(_g - living_e) and sx - _g >= MIN_DINING_WIDTH
+                    and _g - bx0 >= requirement("living").min_width):
+                living_e = _g
+                break
+        _need = (sx - living_e) * ds / 8.0 / 1200.0     # 面積/8 ÷ 窗高 1.2m
+        _cols = [g for g in grid_x if living_e + 1 < g < sx - 1]
+        # 300 是理想淨距,補窗器不夠時會放寬到 150(見 narrow_house._ensure_room_windows)
+        _usable = (sx - living_e) - 2 * 150.0 - len(_cols) * (col + 2 * 300.0)
+        if _usable < _need:
+            merged_dining = True
+            living_e = sx
     # 浴廁進深:同樣由面積目標回推(浴廁與廚房上下疊在服務核裡,共用寬 ws)。
     bath_d = _clamp(plan.area_of("bathroom") * 1_000_000 / ws,
                     *BATH_DEPTH_RANGE)
@@ -614,13 +641,14 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
 
     # 主臥套房衛浴(C1.5a:≥3 房自動加,位於主臥西南角)——先算範圍,
     # 臥室門/西窗要讓開它。
-    has_ensuite = brief.bedrooms >= 3
+    # 主臥放得下套衛才做套房;放不下就**改成共用衛浴**,不再報錯把整份設計退掉。
+    # 這是設計師的做法:小坪數本來就不做套房(硬塞會讓主臥剩不到 2.7m 寬,
+    # 床邊連走道都沒有)。南帶那間浴廁本來就在,全家共用即可。
+    has_ensuite = (brief.bedrooms >= 3
+                   and dn >= ENSUITE_D + 2200
+                   and bed_w[0] >= ENSUITE_W + 2700)
     ex1 = ey1 = 0.0
     if has_ensuite:
-        if dn < ENSUITE_D + 2200 or bed_w[0] < ENSUITE_W + 2700:
-            raise ValueError(
-                f"主臥({bed_w[0]/1000:.1f}m 寬 × {dn/1000:.1f}m 深)放不下"
-                f"套房衛浴({ENSUITE_W/1000:.1f}×{ENSUITE_D/1000:.1f}m),請加大基地")
         ex1, ey1 = bx0 + ENSUITE_W, yd + ENSUITE_D
 
     # 臥室:門在帶分界牆(有走道時門要落在走道正面 x ≤ x_he;主臥的門
@@ -846,6 +874,22 @@ def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
         dim_chains=True, sheet=False,
         floor_label=brief.floor_label, north_arrow=True,
     )
+    # 收尾(四條產線共用的三件事):
+    #   1. 家具貼牆是照牆中心線算的 → 碰到 150 的外牆會嵌進牆面 → 推回室內。
+    #   2. 居室的窗要滿足 §40(樓地板 1/8);帶狀切法算不到,統一補到夠。
+    #   3. 門與動線規範:轉門/改橫拉門、衛浴門不朝廚房、補門直通公共動線。
+    from src.design.layout.door_rules import repair_doors
+    from src.design.layout.fixture_fix import push_fixtures_out_of_walls
+    from src.design.layout.graph_layout import _declutter_for_circulation
+    from src.design.layout.narrow_house import _ensure_room_windows
+    from src.design.layout.plan_check import building_env
+    push_fixtures_out_of_walls(spec)
+    # ⚠️ 外框要用**房間實際的外接矩形**:兩帶式的南牆不見得貼在 by0(帶深由面積
+    #    分配決定),用名目的建築框會找不到任何可開窗的外牆 → 補窗整個不作用。
+    ex0, ey0, ex1, ey1 = building_env(spec)
+    _ensure_room_windows(spec, ex0, ey0, ex1, ey1, party_walls=False)
+    repair_doors(spec, ex0, ey0, ex1, 1)
+    _declutter_for_circulation(spec)    # 擋死動線的家具移掉(與其他三條產線同一套)
     return spec
 
 
@@ -951,7 +995,10 @@ def _corridor_shell(brief: CorridorBrief, unit_list: list[UnitSpec],
     ]
 
     # 折返梯 × 2(每端一座,靠梯間北牆,入口在南、留出門的迴轉):
-    # 11 級 × 260 = 2860 run + 平台 1200 = 4060 深。
+    # 10 級 × 260 = 2600 run + 平台 1460 = 4060 深。
+    # ⚠️ 級數是由 **§33「平臺深不得小於梯段寬」** 反推的:梯段填滿核寬後淨寬 1425,
+    #    平臺就要 ≥1425;11 級時平臺只剩 1200(違規),10 級才夠。
+    #    10 級 × 2 段 = 20 階,層高 3.2m → 每階 160mm,仍在舒適與法規範圍內。
     # ⚠️ 梯段**填滿梯間淨寬**(兩側各離牆中心線 75 = 貼著牆面):梯段旁邊不能留空
     #    ——人走在階梯上,側邊是空的會掉下去(與窄透天/AI 產線同一條規則)。
     stair_len = 4060
@@ -959,10 +1006,10 @@ def _corridor_shell(brief: CorridorBrief, unit_list: list[UnitSpec],
     stairs = [
         UStair(origin=(x0 + 75, by1 - 75 - stair_len),
                width=stair_w, length=stair_len, direction="north",
-               steps_per_flight=11, tread=260, label="上"),
+               steps_per_flight=10, tread=260, label="上"),
         UStair(origin=(xe + 75, by1 - 75 - stair_len),
                width=stair_w, length=stair_len, direction="north",
-               steps_per_flight=11, tread=260, label="上"),
+               steps_per_flight=10, tread=260, label="上"),
     ]
     # 電梯(西核,貼分戶牆;門開西面通電梯廳,電梯廳與走廊開放連通)。
     elevators = [Elevator(origin=(xw - 1400, y_hall), width=1400, depth=2200,
@@ -1008,6 +1055,10 @@ def _generate_corridor(brief: CorridorBrief) -> FloorPlanSpec:
     for u, ux in zip(unit_list, g.unit_x):
         place_unit(spec, u, origin=(ux, g.y_top))                  # 上排
         place_unit(spec, u, origin=(ux, g.y0), mirror_y=True)      # 下排(對排)
+    # 單元樣板的家具是照「牆厚 120」貼的,碰到 150 的界牆/外牆就會嵌進牆面 15mm
+    # (圖上就是櫃子穿牆)→ 統一往室內推回來。
+    from src.design.layout.fixture_fix import push_fixtures_out_of_walls
+    push_fixtures_out_of_walls(spec)
     return spec
 
 
@@ -1079,6 +1130,9 @@ def _validate_or_raise(spec: FloorPlanSpec, what: str) -> None:
     # (移動/丟裝飾),沒碰撞完全不動;修不動的留給 validate 報錯(安全網)。
     # 放在這個共用閘門 → 涵蓋透天各層(經 _finish_house)與集合住宅地下室。
     resolve_collisions(spec)
+    # ⚠️ 碰撞修復會**搬動家具**,搬完可能又擋住動線或門的迴轉 → 收尾要在它之後
+    #    再跑一次(冪等:沒問題就完全不動)。
+    _house_finishing_pass(spec)
     problems = validate_spec(spec)
     if problems:
         raise ValueError(f"{what} 未通過檢核:\n  - " + "\n  - ".join(problems))
@@ -1097,8 +1151,36 @@ def _finish_house(spec: FloorPlanSpec, f: SimpleNamespace,
     """
     if f.v.mx or f.v.my:
         spec = _mirror_spec(spec, f.v.mx, f.v.my)
+    _house_finishing_pass(spec)
     _validate_or_raise(spec, what)
     return spec
+
+
+def _house_finishing_pass(spec: FloorPlanSpec) -> None:
+    """透天各層(含多層變體)共用的收尾三件事,與窄透天/淺透天/AI 版同一套:
+
+      1. 家具貼牆是照**牆中心線**算的 → 碰到 150 的外牆會嵌進牆面 → 推回室內。
+      2. 居室的窗補到 §40 的 1/8(帶狀切法算不到,統一補;會避開柱)。
+      3. 門與動線規範:轉門/改橫拉門、衛浴門不朝廚房、門不卡牆角、補門通公共動線。
+      4. 擋死動線的家具移掉。
+
+    ⚠️ 一定要在鏡射之後、validate 之前跑:鏡射會動座標,先做會白做。
+    """
+    from src.design.layout.door_rules import repair_doors
+    from src.design.layout.fixture_fix import push_fixtures_out_of_walls
+    from src.design.layout.graph_layout import _declutter_for_circulation
+    from src.design.layout.narrow_house import _ensure_room_windows
+    from src.design.layout.plan_check import building_env
+
+    push_fixtures_out_of_walls(spec)
+    ex0, ey0, ex1, ey1 = building_env(spec)
+    _ensure_room_windows(spec, ex0, ey0, ex1, ey1, party_walls=False)
+    level = int(spec.floor_label[:-1]) if spec.floor_label[:-1].isdigit() else 1
+    repair_doors(spec, ex0, ey0, ex1, level)
+    # 擋死動線的家具:先挪,挪不動才移除(碰撞修復可能把家具搬到通道上)。
+    # ⚠️ 之前為了保住餐桌把移除關掉,結果集合住宅有 4 間房動線卡死 —— 真正的
+    #    元凶是「推出牆」那一步太早放棄(已改成多方向嘗試),不是這裡。
+    _declutter_for_circulation(spec)
 
 
 def _slot(desired: float, widths: list[float], lo: float, hi: float,
@@ -2707,7 +2789,10 @@ def _mirror_spec(spec: FloorPlanSpec, mx: bool, my: bool) -> FloorPlanSpec:
     doors = [DoorPlacement(dp.wall_index, dp.opening_index,
                            Door(hinge=dp.door.hinge,
                                 swing=_t_swing(mirrored, dp.door.swing),
-                                width=dp.door.width))
+                                width=dp.door.width,
+                                # 橫拉門要跟著翻過去,否則鏡射後又變回平開門,
+                                # 原本「門前不夠開弧線」才改拉門的修復就白做了。
+                                sliding=dp.door.sliding))
              for dp in spec.doors]
     windows = [WindowPlacement(wp.wall_index, wp.opening_index,
                                Window(lines=wp.window.lines, width=wp.window.width))
@@ -2734,10 +2819,14 @@ def _mirror_spec(spec: FloorPlanSpec, mx: bool, my: bool) -> FloorPlanSpec:
 
     # 樓梯:翻位置與行進方向(梯井左右手是畫圖寫死的,示意平面不強求)。
     stairs = [_mirror_stair(st, sx2, sy2, mx, my) for st in spec.stairs]
+    # 陽台:矩形要翻(origin 是最小角,翻完最小角換成另一端),貼建築的那一邊也要
+    # 跟著換邊。不翻的話陽台會留在原地、落地門卻跟著整層翻走 → 門外變成空中。
+    balconies = [_mirror_balcony(b, sx2, sy2, mx, my) for b in spec.balconies]
 
     return replace(
         spec, walls=walls, doors=doors, windows=windows, rooms=rooms,
         fixtures=fixtures, column_centers=col_centers, stairs=stairs,
+        balconies=balconies,
         x_spacings=list(reversed(spec.x_spacings)) if mx else spec.x_spacings,
         y_spacings=list(reversed(spec.y_spacings)) if my else spec.y_spacings,
     )
@@ -2767,6 +2856,22 @@ def _mirror_stair(st, sx2: float, sy2: float, mx: bool, my: bool):
     return replace(st, origin=(xext[0], yext[0]), direction=d)
 
 
+def _mirror_balcony(bal, sx2: float, sy2: float, mx: bool, my: bool):
+    """陽台左右/上下鏡射:重算最小角 origin,並把 attach(貼建築的那一邊)換邊。"""
+    x0, y0 = bal.origin
+    xext, yext = (x0, x0 + bal.width), (y0, y0 + bal.depth)
+    if mx:
+        xext = (sx2 - xext[1], sx2 - xext[0])
+    if my:
+        yext = (sy2 - yext[1], sy2 - yext[0])
+    a = bal.attach
+    if mx and a in ("east", "west"):
+        a = "west" if a == "east" else "east"
+    if my and a in ("north", "south"):
+        a = "south" if a == "north" else "north"
+    return replace(bal, origin=(xext[0], yext[0]), attach=a)
+
+
 def generate_floor_plan(brief: Brief) -> FloorPlanSpec:
     """需求 → FloorPlanSpec(已通過 validate_spec,可直接餵 draw_floor_plan)。"""
     if isinstance(brief, HouseBrief):
@@ -2783,6 +2888,7 @@ def generate_floor_plan(brief: Brief) -> FloorPlanSpec:
     # 走 _finish_house→_validate_or_raise,這條(generate_floor_plan)直接呼叫
     # validate_spec,故在此補上同一個 resolve(有碰撞才動,沒碰撞不動)。
     resolve_collisions(spec)
+    _house_finishing_pass(spec)   # 碰撞修復後再收尾一次(同 _validate_or_raise)
     problems = validate_spec(spec)
     if problems:
         raise ValueError("產生的設計未通過檢核:\n  - " + "\n  - ".join(problems))

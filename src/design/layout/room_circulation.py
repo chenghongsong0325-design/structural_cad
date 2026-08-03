@@ -30,9 +30,10 @@
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
-from shapely.geometry import MultiPolygon, Point, Polygon
+from shapely.geometry import LineString, MultiPolygon, Point, Polygon
 from shapely.ops import unary_union
 
 from src.design.collision.geometry import fixture_obstacles
@@ -106,8 +107,49 @@ class CirculationReport(JsonReport):
 
 
 # ── 目標點:門內側 + 家具使用點 ─────────────────────────────────────────────
+# 邊界上沒有牆的那一段要這麼寬,才算「走得過去的開放通道」(mm)。
+OPEN_PASSAGE_MIN = 750.0
+
+
+def _open_passages(spec, room_poly: Polygon) -> list:
+    """房間邊界上**根本沒有牆**的開口 → 開放通道中心點。
+
+    為什麼需要:集合住宅的玄關與起居室之間是開放的(兩者之間不畫牆),
+    這種連通不掛門扇、也沒有 Opening 物件,只認門的話會把開放起居室誤判成
+    「沒門進不去」——實測 4 戶/排的標準層有 8 間起居室中招。
+
+    只算「另一側是別的房間」的缺口:外牆上的缺口是外面,不是通道。"""
+    from shapely.ops import unary_union
+
+    walls = getattr(spec, "walls", None) or []
+    if not walls:
+        return []
+    bodies = unary_union([
+        LineString([w.start, w.end]).buffer(w.thickness / 2.0 + 5.0,
+                                            cap_style=2, join_style=2)
+        for w in walls])
+    free = room_poly.exterior.difference(bodies)
+    others = [Polygon(r.points) for r in getattr(spec, "rooms", [])
+              if Polygon(r.points).equals(room_poly) is False]
+    cx, cy = room_poly.centroid.x, room_poly.centroid.y
+    out = []
+    for geom in getattr(free, "geoms", [free]):
+        if geom.is_empty or geom.length < OPEN_PASSAGE_MIN:
+            continue
+        mid = geom.interpolate(0.5, normalized=True)
+        dx, dy = mid.x - cx, mid.y - cy
+        n = math.hypot(dx, dy) or 1.0
+        outside = Point(mid.x + dx / n * 200.0, mid.y + dy / n * 200.0)
+        if any(p.contains(outside) for p in others):
+            out.append(mid)
+    return out
+
+
 def _room_openings(spec, room_poly: Polygon) -> list:
-    """房間邊界上的門/通道中心點(世界座標)。kind=="door" 含掛門扇與開放通道。"""
+    """房間邊界上的門/通道中心點(世界座標)。
+
+    含三種:掛門扇的門、Opening(kind=="door")的開放通道、以及**沒有牆**的
+    開放邊界(見 _open_passages)。「進不進得去」全專案以這個為準。"""
     pts = []
     for w in spec.walls:
         for op in w.openings:
@@ -116,7 +158,7 @@ def _room_openings(spec, room_poly: Polygon) -> list:
             cx, cy = w.point_at(op.position)
             if room_poly.exterior.distance(Point(cx, cy)) < ON_BOUNDARY_TOL:
                 pts.append(Point(cx, cy))
-    return pts
+    return pts + _open_passages(spec, room_poly)
 
 
 def _room_furniture(spec, room_poly: Polygon) -> list:

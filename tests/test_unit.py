@@ -65,7 +65,7 @@ def test_place_unit_counts_and_offsets() -> None:
     place_unit(spec, unit, origin=(2000, 9800))
 
     assert len(spec.walls) == 1 + 5
-    assert len(spec.doors) == 2
+    assert len(spec.doors) == 3                    # 入口 + 陽台落地拉門 + 浴廁門
     assert len(spec.windows) == 1
     assert len(spec.rooms) == 3                    # 浴廁 + 玄關 + 起居室
     assert len(spec.fixtures) == 6                 # 衛浴2 + 鞋櫃 + 床 + 衣櫃 + 流理台
@@ -124,8 +124,8 @@ def test_place_unit_balcony_translate() -> None:
     place_unit(spec, one_room_unit(), origin=(2000, 9800))
     assert len(spec.balconies) == 1
     bal = spec.balconies[0]
-    assert bal.origin == (2800, 15800)      # (2000+800, 9800+6000)
-    assert (bal.width, bal.depth) == (2400, 1200)
+    assert bal.origin == (2400, 15800)      # (2000+400, 9800+6000)
+    assert (bal.width, bal.depth) == (1900, 1200)
     assert bal.attach == "south"            # 貼北牆(南邊不畫牆),外推向北
 
 
@@ -134,9 +134,9 @@ def test_place_unit_balcony_mirror_y_flips_attach() -> None:
     spec = _empty_spec()
     place_unit(spec, one_room_unit(), origin=(2000, 2000), mirror_y=True)
     bal = spec.balconies[0]
-    assert bal.origin == (2800, 800)        # 外推向南,底 y=800
+    assert bal.origin == (2400, 800)        # 外推向南,底 y=800
     assert bal.attach == "north"            # 貼南牆,北邊(y=2000)接建築
-    assert (bal.width, bal.depth) == (2400, 1200)
+    assert (bal.width, bal.depth) == (1900, 1200)
 
 
 def test_same_unit_reusable() -> None:
@@ -181,7 +181,7 @@ def test_demo_corridor_counts() -> None:
     assert len([r for r in spec.rooms if r.name == "玄關"]) == 8      # 每戶玄關
     assert len([r for r in spec.rooms if r.name == "走廊"]) == 1
     assert len(spec.walls) == 2 + 8 * 5
-    assert len(spec.doors) == 16
+    assert len(spec.doors) == 24        # 每戶 入口+陽台落地門+浴廁門
     assert len(spec.windows) == 8
     assert len(spec.fixtures) == 48         # 8 戶 × 6 件
     assert len(spec.balconies) == 8         # 每戶一座對外陽台

@@ -34,6 +34,7 @@ TOO_SMALL = {"bedroom_side", "bedroom_area", "room_skinny", "room_no_daylight",
 # ── 定義域全掃描 ────────────────────────────────────────────────────────────
 @pytest.mark.parametrize("bw", [5000.0, 6000.0, 7000.0, 9000.0])
 @pytest.mark.parametrize("bd", [5000.0, 6000.0, 8000.0])
+@pytest.mark.slow
 def test_domain_passes_both_gates(bw, bd):
     """★★ 5~9m × 5~8m 全部要過 plan_check + code_check,且無「太小」類警告。"""
     floors = generate_shallow_building(bw, bd, floors=3)

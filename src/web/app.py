@@ -11,6 +11,12 @@
                                    dxf}], "zip"}
     GET  /api/jobs/{id}/{file}  下載該次生成的 DXF / 全部打包 zip
 
+離線示範(發表/口試用):
+
+    DEMO_MODE=1 → LLM 呼叫改讀 samples/ai_demo.json 的錄音回放(產線照跑),
+    Gemini 免費額度用完或斷網也能完整演示 AI 設計師模式;回應帶 demo=true,
+    前端會標示「示範模式・離線回放」。
+
 安全(放上公網的最低配備):
     * ACCESS_CODE 環境變數:設了之後,generate 要帶對通行碼才會動——
       防止路人亂打 API 燒你的 Gemini 額度。沒設就完全開放(本機開發用)。
@@ -25,6 +31,7 @@
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import random
@@ -71,6 +78,11 @@ _JOB_ID_RE = re.compile(r"[0-9a-f]{12}")
 _FILENAME_RE = re.compile(r"[A-Za-z0-9_]+\.(dxf|zip|pdf)")   # 白名單:擋路徑跳脫
 
 HISTORY_LIMIT = 20            # /api/history 最多回幾筆(新→舊)
+# 回應裡最多內嵌這麼多位元組的 DXF(base64 前的原始大小)。
+# 為什麼要內嵌:Render 免費方案的硬碟是**暫時的**,每次部署/閒置休眠就清空,
+# output/web/<job_id> 會消失 → 舊頁面的下載連結 404(使用者實際遇到過)。
+# 把 DXF 直接放進回應,下載就不再依賴伺服器硬碟;job_id 連結仍保留當備援。
+INLINE_DXF_BUDGET = 8 * 1024 * 1024
 
 
 class GenerateRequest(BaseModel):
@@ -150,6 +162,10 @@ def _summary(brief, building: BuildingSpec) -> str:
             yard_bits.append(f"兩側院各約 {side:.0f} 米")
         if yard_bits:
             parts.append("、".join(yard_bits) + "(庭園/停車)")
+        bals = [b for f in building.floors for b in (f.spec.balconies or [])]
+        if bals:                                  # 二樓以上的前後陽台(挑出式)
+            parts.append(f"二樓以上前後陽台 {len(bals)} 座"
+                         f"(挑出 {bals[0].depth / 1000:.1f} 米)")
     return " · ".join(parts)
 
 
@@ -241,6 +257,7 @@ def _ai_generate(brief_text: str, brief, client):
     fl = [(lb, sp) for lb, sp, _s, _t in best["floors"]]
     check = check_building(fl, env)
     code = check_code_building(fl, env)          # 法規尺寸(樓梯/採光…)
+    from src.design.layout.balcony import balcony_report
     from src.design.layout.door_rules import door_table
     doors = door_table(fl)                       # 門連通表(房間→門→通往哪裡)
 
@@ -254,6 +271,7 @@ def _ai_generate(brief_text: str, brief, client):
         "ai_fitness": round(best["fitness"], 1),
         "plan_check": check.to_dict(),          # 圖面檢查:ok / 錯誤數 / 警告數 / 明細
         "code_check": code.to_dict(),           # 法規檢查:建築技術規則尺寸
+        "balconies": balcony_report(fl).to_dict(),   # 陽台清單(AI 版目前不配)
     }
     return building, extra
 
@@ -273,6 +291,84 @@ def _ai_applicable(brief) -> bool:
     return AI_MIN_WIDTH <= bw <= AI_MAX_WIDTH and bd >= AI_MIN_DEPTH
 
 
+# 硬錯誤代碼 → 給使用者看的白話說明(圖面/法規/門與動線三道關卡共用)。
+_ERROR_HELP = {
+    "room_no_door": "有房間沒有門,進不去",
+    "floor_split": "同一層的室內被切成好幾塊,彼此走不通",
+    "no_entry": "一樓沒有對外大門",
+    "entry_upstairs": "樓上的外牆開了門(門會通往空中)",
+    "furniture_in_wall": "家具嵌進牆裡(畫出來是穿牆)",
+    "door_in_corner": "門卡在房間角落,人走不進那個角",
+    "stair_blocks_door": "門直接開在階梯上,門前沒有站人的平地",
+    "stair_side_open": "樓梯有一側沒有牆,走上去會從旁邊掉下去",
+    "circulation_blocked": "房間走不進去,或家具擋死動線",
+    "entry_door_narrow": "對外大門淨寬不足 90 公分",
+    "room_door_narrow": "房門淨寬不足(居室 80 公分、衛浴 75 公分)",
+    "door_swing_blocked": "門打開會撞到牆、柱、家具或另一扇門",
+    "bath_door_to_kitchen": "衛浴的門直接開向廚房",
+    "through_bedroom": "有空間要穿過別人的臥室才進得去",
+    "stair_wrapped": "樓梯被房間包住,上下樓要穿過私人房間",
+    "stair_riser": "樓梯級高超過法規上限(20 公分)",
+    "stair_tread": "樓梯級深不足法規下限(21 公分)",
+    "stair_width": "梯段淨寬不足法規下限(75 公分)",
+    "stair_landing": "樓梯平臺深度小於梯段寬(轉身空間不足)",
+    "daylight_area": "居室採光開口不足樓地板面積的 1/8",
+    "vent_area": "居室通風開口不足樓地板面積的 1/20",
+}
+
+
+def _supported_sizes(setback: float = 2000.0) -> str:
+    """目前**保證生得出合格圖**的建築尺寸(從各產線常數算,不要寫死)。"""
+    from src.design.layout.narrow_house import (
+        MAX_WIDTH as NW_MAX, MIN_WIDTH as NW_MIN, min_depth_for)
+    from src.design.layout.shallow_house import (
+        MAX_WIDTH as SH_MAX, MIN_DEPTH as SH_MIN_D, MIN_WIDTH as SH_MIN)
+    sb = setback / 1000.0
+    return (
+        "目前保證生得出合格圖的是**單戶透天**,建築尺寸:\n"
+        f"  ・淺進深型:{SH_MIN/1000:g}~{SH_MAX/1000:g} 米寬 × "
+        f"{SH_MIN_D/1000:g} 米以上深\n"
+        f"  ・一般透天:{NW_MIN/1000:g}~{NW_MAX/1000:g} 米寬 × "
+        f"{min_depth_for(NW_MIN)/1000:g}~{min_depth_for(NW_MAX)/1000:g} 米以上深"
+        "(面寬越寬,要求的進深越大)\n"
+        f"講「基地」尺寸的話,再加上四周退縮各 {sb:g} 米。"
+    )
+
+
+def _reject_if_broken(extra: dict, brief) -> None:
+    """圖面檢查沒過就**不出圖**——寧可講清楚,也不要給一張走不通的平面圖。
+
+    這裡只擋 error(換個切法就能解的硬錯誤);warning 是設計取捨,照樣出圖。"""
+    rep = extra.get("plan_check") or {}
+    code = extra.get("code_check") or {}
+    errors = [i for i in rep.get("issues", []) if i.get("severity") == "error"]
+    # 法規違規(§33/§40/§43)同樣不出圖:那是「不合法」,比畫錯更嚴重。
+    errors += [i for i in code.get("issues", [])
+               if i.get("severity") == "violation"]
+    if not errors:
+        return
+    seen, lines = set(), []
+    for i in errors:
+        key = (i.get("floor", ""), i.get("code", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        who = i.get("floor", "")
+        if i.get("room"):
+            who += "/" + i["room"]
+        lines.append(f"  ・{who}:{_ERROR_HELP.get(i.get('code'), i.get('code'))}")
+        if len(lines) >= 6:
+            break
+    more = ("\n  ・(還有其他問題,先修上面這幾項)"
+            if len(errors) > len(lines) else "")
+    setback = getattr(getattr(brief, "typical", None), "setback", 2000.0)
+    raise HTTPException(
+        422,
+        "這個尺寸目前生不出合格圖,所以不出圖(出了也是不能用的平面圖)。\n"
+        "檢查沒過的地方:\n" + "\n".join(lines) + more + "\n\n"
+        + _supported_sizes(setback))
+
+
 def _generate_auto(brief_text: str, brief, client, force_ai: bool = False):
     """**單一入口**:自動挑引擎生圖 → (BuildingSpec, 額外回應欄位)。
 
@@ -281,14 +377,23 @@ def _generate_auto(brief_text: str, brief, client, force_ai: bool = False):
     **自動退回規則產生器**——使用者不必知道有幾種引擎,也不會因為 AI 掛掉就沒圖。
 
     force_ai=True:明確要求 AI(不合用時照樣報錯,方便測試/除錯)。
+
+    ⚠️ 兩條路徑最後都會過 _reject_if_broken:圖面檢查有硬錯誤就**不出圖**,
+       改回 422 + 白話說明 + 目前生得出來的尺寸範圍。
     """
     if force_ai:
-        return _ai_generate(brief_text, brief, client)
+        building, extra = _ai_generate(brief_text, brief, client)
+        _reject_if_broken(extra, brief)
+        return building, extra
 
     if _ai_applicable(brief):
         try:
-            return _ai_generate(brief_text, brief, client)
-        except Exception:                           # 額度/網路/落實失敗 → 退回規則版
+            building, extra = _ai_generate(brief_text, brief, client)
+            _reject_if_broken(extra, brief)          # AI 的圖也要過關卡
+            return building, extra
+        except Exception:
+            # 不合格 / 額度用完 / 斷網 / 落實失敗 → 都退回規則版再試一次。
+            # (規則版的圖最後同樣會過 _reject_if_broken,不會因此漏出壞圖。)
             pass
 
     building = generate_building_auto(brief)
@@ -302,15 +407,26 @@ def _generate_auto(brief_text: str, brief, client, force_ai: bool = False):
         extra["plan_check"] = check_building(floors).to_dict()
         extra["code_check"] = check_code_building(
             floors, None, brief.floor_height).to_dict()
+        from src.design.layout.balcony import balcony_report
         from src.design.layout.door_rules import door_table
         extra["door_table"] = door_table(floors).to_dict()   # 房間→門→通往哪裡
-    except Exception:                               # 檢查本身不該擋出圖
+        extra["balconies"] = balcony_report(floors).to_dict()   # 二樓以上的前後陽台
+    except Exception:                               # 檢查本身壞掉不該擋出圖
         pass
+    _reject_if_broken(extra, brief)                 # 有硬錯誤 → 422,不出壞圖
     return building, extra
 
 
 def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI:
-    """建立應用。client_factory 注入假 Gemini client(測試用);None = 真的。"""
+    """建立應用。client_factory 注入假 Gemini client(測試用);None = 真的。
+
+    DEMO_MODE=1 且沒有注入 client 時,改用**離線回放**的錄音客戶端
+    (src/web/demo_client):產線照跑,只有 LLM 的回覆是錄好的 —— 免費額度用完
+    或斷網也能完整示範 AI 設計師模式。回應會帶 demo=True,前端要標示出來。"""
+    from src.web.demo_client import DemoClient, demo_enabled
+
+    if client_factory is None and demo_enabled():
+        client_factory = DemoClient
     app = FastAPI(title="自動建築平面圖生成器")
 
     @app.get("/api/config")
@@ -318,6 +434,7 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
         return {
             "needs_code": bool(os.environ.get("ACCESS_CODE")),
             "has_api_key": _has_api_key() or client_factory is not None,
+            "demo": demo_enabled(),             # 前端顯示「示範模式(離線回放)」
         }
 
     @app.post("/api/generate")
@@ -369,15 +486,22 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
         job_dir = JOBS_DIR / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
-        out_sheets = []
+        out_sheets, budget, inline_n = [], INLINE_DXF_BUDGET, 0
         for s in sheets:
-            s.doc.saveas(job_dir / s.filename)
-            out_sheets.append({
+            path = job_dir / s.filename
+            s.doc.saveas(path)
+            item = {
                 "label": s.label,
                 "kind": s.kind,
                 "svg": sheet_svg(s),
-                "dxf": f"/api/jobs/{job_id}/{s.filename}",
-            })
+                "dxf": f"/api/jobs/{job_id}/{s.filename}",   # 備援(硬碟還在時)
+            }
+            raw = path.read_bytes()
+            if len(raw) <= budget:                  # 內嵌到預算用完為止
+                item["dxf_b64"] = base64.b64encode(raw).decode("ascii")
+                budget -= len(raw)
+                inline_n += 1
+            out_sheets.append(item)
         with zipfile.ZipFile(job_dir / "all_dxf.zip", "w",
                              zipfile.ZIP_DEFLATED) as zf:
             for s in sheets:
@@ -402,8 +526,13 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             "brief_data": data,                          # 多輪修改的底(E4)
             "suggestions": ([] if ai_extra.get("ai_design")
                             else _suggestions(brief, building)),
+            "demo": demo_enabled(),                      # 這次是不是離線回放
             "sheets": out_sheets,
             "zip": f"/api/jobs/{job_id}/all_dxf.zip",
+            # 有幾張圖的 DXF 直接內嵌在這份回應裡(其餘要走 job_id 連結,
+            # 而那條在伺服器重新部署後可能失效)。
+            "dxf_inline": inline_n,
+            "dxf_inline_all": inline_n == len(out_sheets),
             "pdf": f"/api/jobs/{job_id}/pdf",            # 點了才產生(懶生成)
             **ai_extra,                                  # AI 模式:收斂軌跡/剩餘問題
         }

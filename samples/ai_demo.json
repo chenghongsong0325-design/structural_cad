@@ -1,0 +1,248 @@
+{
+ "note": "離線示範(DEMO_MODE=1)的錄音:第 1 則是需求解析,之後是房間關係圖(LLM 設計師)。產線照跑(關係圖→搜尋落實→收斂→出圖→兩道關卡),只有 LLM 的回覆是錄好的。尺寸選 12×12 米:AI 引擎在這個尺度最穩(實測兩道關卡全過)。",
+ "request": "透天三層,建築物12×12米,三房",
+ "responses": [
+  {
+   "brief_type": "house",
+   "site_width_m": 12,
+   "site_depth_m": 12,
+   "bedrooms": 3,
+   "units_per_row": null,
+   "corridor_width_m": null,
+   "floor_label": null,
+   "master_corner": null,
+   "kitchen_side": null,
+   "floors_above": 3,
+   "basements": null,
+   "dimension_basis": "building"
+  },
+  {
+   "rooms": [
+    {
+     "id": "living",
+     "kind": "living",
+     "floor": 1,
+     "wants_daylight": true
+    },
+    {
+     "id": "kitchen",
+     "kind": "kitchen",
+     "floor": 1,
+     "wants_daylight": true
+    },
+    {
+     "id": "toilet1",
+     "kind": "toilet",
+     "floor": 1,
+     "wants_daylight": false
+    },
+    {
+     "id": "stair1",
+     "kind": "stair",
+     "floor": 1,
+     "wants_daylight": false
+    },
+    {
+     "id": "bedA",
+     "kind": "bedroom",
+     "floor": 2,
+     "wants_daylight": true
+    },
+    {
+     "id": "bedB",
+     "kind": "bedroom",
+     "floor": 2,
+     "wants_daylight": true
+    },
+    {
+     "id": "bath2",
+     "kind": "bathroom",
+     "floor": 2,
+     "wants_daylight": false
+    },
+    {
+     "id": "stair2",
+     "kind": "stair",
+     "floor": 2,
+     "wants_daylight": false
+    },
+    {
+     "id": "master",
+     "kind": "master_bedroom",
+     "floor": 3,
+     "wants_daylight": true
+    },
+    {
+     "id": "bath3",
+     "kind": "bathroom",
+     "floor": 3,
+     "wants_daylight": false
+    },
+    {
+     "id": "stair3",
+     "kind": "stair",
+     "floor": 3,
+     "wants_daylight": false
+    }
+   ],
+   "adjacencies": [
+    {
+     "a": "living",
+     "b": "kitchen",
+     "connection": "open"
+    },
+    {
+     "a": "living",
+     "b": "toilet1",
+     "connection": "door"
+    },
+    {
+     "a": "living",
+     "b": "stair1",
+     "connection": "door"
+    },
+    {
+     "a": "stair2",
+     "b": "bedA",
+     "connection": "door"
+    },
+    {
+     "a": "stair2",
+     "b": "bedB",
+     "connection": "door"
+    },
+    {
+     "a": "stair2",
+     "b": "bath2",
+     "connection": "door"
+    },
+    {
+     "a": "stair3",
+     "b": "master",
+     "connection": "door"
+    },
+    {
+     "a": "master",
+     "b": "bath3",
+     "connection": "door"
+    }
+   ],
+   "entry": "living",
+   "rationale": "離線示範用:每層 3~4 間,全部貼前後外牆,不製造內間。"
+  },
+  {
+   "rooms": [
+    {
+     "id": "living",
+     "kind": "living",
+     "floor": 1,
+     "wants_daylight": true
+    },
+    {
+     "id": "kitchen",
+     "kind": "kitchen",
+     "floor": 1,
+     "wants_daylight": true
+    },
+    {
+     "id": "toilet1",
+     "kind": "toilet",
+     "floor": 1,
+     "wants_daylight": false
+    },
+    {
+     "id": "stair1",
+     "kind": "stair",
+     "floor": 1,
+     "wants_daylight": false
+    },
+    {
+     "id": "bedA",
+     "kind": "bedroom",
+     "floor": 2,
+     "wants_daylight": true
+    },
+    {
+     "id": "bedB",
+     "kind": "bedroom",
+     "floor": 2,
+     "wants_daylight": true
+    },
+    {
+     "id": "bath2",
+     "kind": "bathroom",
+     "floor": 2,
+     "wants_daylight": false
+    },
+    {
+     "id": "stair2",
+     "kind": "stair",
+     "floor": 2,
+     "wants_daylight": false
+    },
+    {
+     "id": "master",
+     "kind": "master_bedroom",
+     "floor": 3,
+     "wants_daylight": true
+    },
+    {
+     "id": "bath3",
+     "kind": "bathroom",
+     "floor": 3,
+     "wants_daylight": false
+    },
+    {
+     "id": "stair3",
+     "kind": "stair",
+     "floor": 3,
+     "wants_daylight": false
+    }
+   ],
+   "adjacencies": [
+    {
+     "a": "living",
+     "b": "kitchen",
+     "connection": "open"
+    },
+    {
+     "a": "living",
+     "b": "toilet1",
+     "connection": "door"
+    },
+    {
+     "a": "living",
+     "b": "stair1",
+     "connection": "door"
+    },
+    {
+     "a": "stair2",
+     "b": "bedA",
+     "connection": "door"
+    },
+    {
+     "a": "stair2",
+     "b": "bedB",
+     "connection": "door"
+    },
+    {
+     "a": "stair2",
+     "b": "bath2",
+     "connection": "door"
+    },
+    {
+     "a": "stair3",
+     "b": "master",
+     "connection": "door"
+    },
+    {
+     "a": "master",
+     "b": "bath3",
+     "connection": "door"
+    }
+   ],
+   "entry": "living",
+   "rationale": "離線示範用:每層 3~4 間,全部貼前後外牆,不製造內間。"
+  }
+ ]
+}

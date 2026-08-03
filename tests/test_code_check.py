@@ -8,6 +8,7 @@
   * **產線掃描**:規則版窄透天在定義域內不得有法規違規。
 """
 import json
+import pytest
 import sys
 from pathlib import Path
 
@@ -30,6 +31,7 @@ def _floors(bw=W, bd=D, n=3):
 
 
 # ── 產線合規 ────────────────────────────────────────────────────────────────
+@pytest.mark.slow
 def test_rule_pipeline_is_code_compliant():
     """★ 規則版窄透天(面寬 5~7m × 進深 11~14m)不得有法規違規。
 

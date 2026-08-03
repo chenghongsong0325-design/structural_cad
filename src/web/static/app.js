@@ -165,7 +165,8 @@ function applyResult(data) {
   $("layout-score").classList.add("hidden");   // 新方案 → 舊評分卡收起
   lastBriefData = data.brief_data || null;
   lastSeed = (data.seed === undefined) ? null : data.seed;
-  $("summary").textContent = data.summary;
+  // 示範模式(DEMO_MODE):LLM 的回覆是錄好的回放,要明講,不能讓人以為當場打了 Gemini。
+  $("summary").textContent = (data.demo ? "【示範模式・離線回放】" : "") + data.summary;
   $("design-note").textContent = data.design_note
     ? "本案設計:" + data.design_note : "";
   renderAiPanel(data);
@@ -356,8 +357,29 @@ function showSheet(i) {
     svg.removeAttribute("height");
   }
   $("canvas").replaceChildren(pane);
-  $("dxf").href = sheets[i].dxf;
+  setDxfLink(sheets[i]);
   resetView();
+}
+
+// DXF 下載:優先用回應裡內嵌的檔案(dxf_b64)。
+// 為什麼:伺服器(Render 免費方案)的硬碟是暫時的,重新部署或閒置休眠就清空,
+// /api/jobs/... 那條連結會 404;內嵌的這份在瀏覽器裡,關掉分頁前都還在。
+let dxfObjectUrl = null;
+function setDxfLink(sheet) {
+  const a = $("dxf");
+  if (dxfObjectUrl) { URL.revokeObjectURL(dxfObjectUrl); dxfObjectUrl = null; }
+  if (sheet.dxf_b64) {
+    const bin = atob(sheet.dxf_b64);
+    const buf = new Uint8Array(bin.length);
+    for (let k = 0; k < bin.length; k++) buf[k] = bin.charCodeAt(k);
+    dxfObjectUrl = URL.createObjectURL(new Blob([buf],
+      { type: "application/dxf" }));
+    a.href = dxfObjectUrl;
+    a.download = (sheet.label || "plan") + ".dxf";
+  } else {                          // 沒內嵌(檔案太大)→ 退回伺服器連結
+    a.href = sheet.dxf;
+    a.removeAttribute("download");
+  }
 }
 
 // ── 縮放/平移(滾輪縮放、拖曳平移、雙擊還原)───────────────────────

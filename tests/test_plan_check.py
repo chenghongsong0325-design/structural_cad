@@ -8,6 +8,7 @@
   * **隨機掃描**:多種尺寸 × 多份隨機關係圖 × 多個種子,硬錯誤必須是 0。
 """
 import random
+import pytest
 import sys
 from pathlib import Path
 
@@ -161,6 +162,7 @@ def _random_graph(rng, n_floors):
     return {"rooms": rooms, "adjacencies": adj, "entry": "entry"}
 
 
+@pytest.mark.slow
 def test_sweep_ai_pipeline_never_emits_broken_plan():
     """★★ 隨機掃描:各種建築尺寸 × 隨機關係圖 × 隨機種子,硬錯誤一律 0。
 
@@ -179,6 +181,7 @@ def test_sweep_ai_pipeline_never_emits_broken_plan():
     assert not bad, f"這些尺寸生出不合格圖:{bad}"
 
 
+@pytest.mark.slow
 def test_sweep_rule_pipeline_never_emits_broken_plan():
     """★★ 規則版窄透天(不同寬/深/層數)同樣不得有硬錯誤。"""
     bad = []

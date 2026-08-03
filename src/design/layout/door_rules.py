@@ -48,6 +48,8 @@ PUBLIC_KINDS = {"corridor", "foyer", "living", "dining", "stair_hall", "kitchen"
 # 衛浴門不得直接開向這些空間。
 BATH_DOOR_FORBIDDEN = {"kitchen", "shrine"}
 BATH_KINDS = {"bathroom", "toilet"}
+# 這些不是居室(不住人),門與衛浴同級 75cm 即可。
+SERVICE_KINDS = {"storage", "utility", "pipe_shaft"}
 
 
 # ── 門連通表 ────────────────────────────────────────────────────────────────
@@ -228,7 +230,8 @@ def check_door_rules(spec, env=None, level: int = 1, label: str = "") -> list:
                         "error", "entry_door_narrow", lb, "",
                         f"對外大門淨寬 {op.width:.0f} < {ENTRY_DOOR_MIN:.0f}"))
                 continue
-            need = BATH_DOOR_MIN if kinds & BATH_KINDS else ROOM_DOOR_MIN
+            need = (BATH_DOOR_MIN if kinds & (BATH_KINDS | SERVICE_KINDS)
+                    else ROOM_DOOR_MIN)
             if op.width < need - 1.0:
                 who = "/".join(sorted(r.name for r in sides if r))
                 issues.append(PlanIssue(
@@ -344,6 +347,8 @@ def repair_doors(spec, bx0, by0, bx1, level) -> bool:
             if op.kind != "door" or getattr(dp.door, "sliding", False):
                 continue
             obs = _swing_obstacles(spec, w, op) + _other_door_sectors(spec, dp)
+            corridors = [Polygon(r.points) for r in spec.rooms
+                         if r.kind == "corridor"]
             best = None
             for hinge in ("left", "right"):
                 for swing in ("out", "in"):
@@ -351,16 +356,124 @@ def repair_doors(spec, bx0, by0, bx1, level) -> bool:
                                                              swing=swing))
                     hit = sum(sec.intersection(o).area
                               for o in obs if o.intersects(sec))
-                    if best is None or hit < best[0]:
-                        best = (hit, hinge, swing)
+                    # 門不要往走道開:走道是共用動線,門扇一開就把 1.2m 的走道
+                    # 夾成 15cm(walkway 會判整條被擋)。往房間裡開才是常規做法。
+                    into_corridor = sum(sec.intersection(c).area
+                                        for c in corridors)
+                    score = hit + into_corridor
+                    if best is None or score < best[0]:
+                        best = (score, hinge, swing, hit)
             if best is None:
                 continue
-            hit, hinge, swing = best
+            _score, hinge, swing, hit = best
             if (hinge, swing) != (dp.door.hinge, dp.door.swing):
                 dp.door.hinge, dp.door.swing = hinge, swing
                 changed = True
             if hit > SWING_OVERLAP_TOL:             # 轉遍了還是撞 → 橫拉門
                 dp.door.sliding = True
+                changed = True
+
+    # ①b 門卡在房間角落 → 沿著同一道牆挪到合法位置。
+    #     ⚠️ 兩個底線:①挪完還要連通**同樣的兩間房**(不然臥室的門會挪到通廚房);
+    #     ②不能壓柱(兩帶式/集合住宅有柱)。做不到就別挪,留給關卡擋。
+    from src.design.layout.narrow_house import (
+        DOOR_CLEAR_STEPS, _column_blocks, _door_candidates, _door_pos_ok,
+    )
+    def dp_of(target_op):
+        """這個洞口掛的門扇;**開放通道(沒掛門扇)回 None**。
+
+        沒有門扇就沒有開啟弧線 —— 那種洞口不必檢查「會不會打到家具」,
+        否則客餐之間 1.8m 的開放通道永遠修不動(周圍本來就擺著沙發餐桌)。"""
+        for dp in getattr(spec, "doors", None) or []:
+            try:
+                if spec.walls[dp.wall_index].openings[dp.opening_index] is target_op:
+                    return dp.door
+            except (IndexError, AttributeError):
+                continue
+        return None
+
+    for w in spec.walls:
+        (sx, sy), (ex, ey) = w.start, w.end
+        vertical = abs(sx - ex) < 1.0
+        along = sy if vertical else sx
+        lo = min(sy, ey) if vertical else min(sx, ex)
+        hi = max(sy, ey) if vertical else max(sx, ex)
+        for op in w.openings:
+            if op.kind != "door" or _door_pos_ok(spec, w, op.position, op.width):
+                continue
+            _sides_raw, _is_ext = _door_sides(spec, w, op, polys, env)
+            sides0 = [r for r in _sides_raw if r]
+            want = {id(r) for r in sides0}
+            # 候選位置限制在**兩側房間共有的那一段牆**內:整道牆可能橫跨 12m、
+            # 接了五六間房,在別段開門會連到別的房間(那是換設計,不是修門)。
+            seg_lo, seg_hi = lo, hi
+            for r in sides0:
+                rx0, ry0, rx1, ry1 = Polygon(r.points).bounds
+                seg_lo = max(seg_lo, ry0 if vertical else rx0)
+                seg_hi = min(seg_hi, ry1 if vertical else rx1)
+            if seg_hi - seg_lo < op.width:
+                seg_lo, seg_hi = lo, hi         # 退回整道牆(至少試試看)
+            taken = [(o.position - o.width / 2 - 100.0,
+                      o.position + o.width / 2 + 100.0)
+                     for o in w.openings if o is not op]
+            taken += _column_blocks(spec, w, along)
+            keep, keep_w = op.position, op.width
+            kinds0 = {r.kind for r in sides0}
+            floor_w = (ENTRY_DOOR_MIN if _is_ext          # 對外大門不得 <90cm
+                       else BATH_DOOR_MIN if kinds0 & (BATH_KINDS | SERVICE_KINDS)
+                       else ROOM_DOOR_MIN)
+            # 寬度也可以讓:牆段被柱吃掉之後,900 的門怎麼挪都卡角落,
+            # 縮到該房型的法定下限(儲藏/衛浴 750、居室 800)才放得下。
+            # 寬度候選:原寬 → 剛好塞進這段牆的寬 → 該房型的法定下限。
+            # 中間那個是為了 1.8m 的客餐通道:牆段只有 2m 時原寬放不下,
+            # 但也不必一路縮到 0.8m 的房門(通道越寬越好走)。
+            fit = (seg_hi - seg_lo) - 2 * DOOR_CLEAR_STEPS[-1]
+            widths = [op.width]
+            if floor_w < fit < op.width:
+                widths.append(fit)
+            if op.width > floor_w + 1:
+                widths.append(floor_w)
+            found = None
+            for width in widths:
+                for clear in DOOR_CLEAR_STEPS:
+                    # 候選位置:①既有的候選(中點/貼齊/三七分)②**各段空牆的中點**
+                    #   —— 牆被柱切成好幾段時,只有第②種才找得到位置。
+                    from src.design.layout.narrow_house import _free_intervals
+                    others = [o for o in w.openings if o is not op]
+                    keep_all = list(w.openings)
+                    w.openings = others
+                    free = _free_intervals(w, seg_lo, seg_hi, along,
+                                           _column_blocks(spec, w, along), clear)
+                    w.openings = keep_all
+                    extra = [along + (a + b) / 2.0 for a, b in free
+                             if b - a >= width]
+                    cands = sorted(_door_candidates(spec, w, seg_lo, seg_hi) + extra,
+                                   key=lambda m: abs(abs(m - along) - keep))
+                    for m in cands:              # 離原位最近的先試(別把門搬到對面)
+                        pos = abs(m - along)
+                        a, b = pos - width / 2, pos + width / 2
+                        if a < 0 or b > w.length:
+                            continue
+                        if not all(b < t0 or a > t1 for t0, t1 in taken):
+                            continue
+                        if not _door_pos_ok(spec, w, pos, width, clear):
+                            continue
+                        leaf = dp_of(op)
+                        if leaf is not None and _swing_hits_furniture(
+                                spec, w, pos, width, leaf):
+                            continue            # 挪過去門就打到家具,等於沒解決
+                        op.position, op.width = pos, width   # 試放,確認還是同兩間
+                        same = {id(r) for r in _door_sides(spec, w, op, polys, env)[0] if r}
+                        op.position, op.width = keep, keep_w
+                        if same == want:
+                            found = (pos, width)
+                            break
+                    if found is not None:
+                        break
+                if found is not None:
+                    break
+            if found is not None:
+                op.position, op.width = found
                 changed = True
 
     # ② 只能穿臥室才進得去的空間 → 補一扇門直通公共動線
@@ -375,8 +488,35 @@ def repair_doors(spec, bx0, by0, bx1, level) -> bool:
     return changed
 
 
+def _swing_hits_furniture(spec, wall, pos, width, door) -> bool:
+    """門挪到這個位置後,開啟時會不會打到家具。
+
+    用的是 validate_spec 的同一塊方形(門寬 × 門寬,開啟側),判準才一致。"""
+    from shapely.geometry import Polygon as _P
+
+    from src.design.collision.geometry import fixture_obstacles
+    cx, cy = wall.point_at(pos)
+    ux, uy = wall.unit_vector
+    nx, ny = wall.normal_vector
+    sgn = 1.0 if getattr(door, "swing", "out") == "out" else -1.0
+    h = width / 2.0
+    square = _P([
+        (cx - ux * h, cy - uy * h),
+        (cx + ux * h, cy + uy * h),
+        (cx + ux * h + sgn * nx * width, cy + uy * h + sgn * ny * width),
+        (cx - ux * h + sgn * nx * width, cy - uy * h + sgn * ny * width),
+    ])
+    return any(square.intersection(o.poly).area > 100.0
+               for o in fixture_obstacles(spec))
+
+
 def _door_neighbors(spec, polys, env, room):
-    """這個房間透過門連到的其他空間(對外門的另一側回 None)。"""
+    """這個房間連到的其他空間(對外門的另一側回 None)。
+
+    ⚠️ 「連到」包含**開放通道**:兩間房之間沒畫牆(客餐廳↔走道、玄關↔起居室)
+    也是走得過去的,只認門會把開放格局判成到不了。"""
+    from src.design.layout.room_circulation import _open_passages
+
     poly = Polygon(room.points)
     out = []
     for w in spec.walls:
@@ -390,6 +530,10 @@ def _door_neighbors(spec, polys, env, room):
             for r in sides:
                 if r is not room:
                     out.append(r)
+    for p in _open_passages(spec, poly):            # 沒有牆的開放邊界
+        for r, other in polys:
+            if r is not room and other.exterior.distance(p) < EDGE_TOL:
+                out.append(r)
     return out
 
 

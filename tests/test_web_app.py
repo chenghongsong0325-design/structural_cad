@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -42,7 +43,10 @@ class _FakeClient:
 
 
 def _payload(**over) -> dict:
-    base = {"brief_type": "house", "site_width_m": 16, "site_depth_m": 14,
+    # ⚠️ 預設用**窄面寬透天**的尺寸(基地 11×16 → 建築 7×12):
+    #    兩帶式產線(建築 ≥10m 寬)目前生出來的圖過不了 plan_check,網站會擋下不出圖
+    #    (見 _reject_if_broken)。兩帶式修好之前,端點測試一律用生得出合格圖的尺寸。
+    base = {"brief_type": "house", "site_width_m": 11, "site_depth_m": 16,
             "bedrooms": 3, "units_per_row": None, "corridor_width_m": None,
             "floor_label": None, "master_corner": None, "kitchen_side": None,
             "floors_above": None, "basements": None}
@@ -118,13 +122,21 @@ _GRAPH_PAYLOAD = {
 }
 
 
+_AI_DEMO_GRAPH = json.loads(
+    (Path(__file__).resolve().parents[1] / "samples" / "ai_demo.json")
+    .read_text(encoding="utf-8"))["responses"][1]
+
+
 def test_generate_ai_design_narrow_townhouse() -> None:
-    """★ AI 設計師模式:窄透天走混合式收斂管線,回收斂軌跡 + 多層真圖。"""
-    brief = _payload(site_width_m=7, site_depth_m=12,
+    """★ AI 設計師模式:透天走混合式收斂管線,回收斂軌跡 + 多層真圖。
+
+    ⚠️ 尺寸用 12×12:網站現在會擋下不合法規的圖(§40 採光),而 7×12 配上這張
+    每層 5 間的關係圖會生出內間/過大居室 → 被擋是**正確行為**,不是這條要驗的事。"""
+    brief = _payload(site_width_m=12, site_depth_m=12,
                      dimension_basis="building", floors_above=3)
-    c = _seq_client([brief, _GRAPH_PAYLOAD, _GRAPH_PAYLOAD, _GRAPH_PAYLOAD])
+    c = _seq_client([brief, _AI_DEMO_GRAPH, _AI_DEMO_GRAPH, _AI_DEMO_GRAPH])
     r = c.post("/api/generate",
-               json={"text": "透天三層,建築物7×12米,三房", "ai_design": True})
+               json={"text": "透天三層,建築物12×12米,三房", "ai_design": True})
     assert r.status_code == 200, r.text
     data = r.json()
     assert data.get("ai_design") is True
@@ -138,11 +150,11 @@ def test_generate_ai_design_narrow_townhouse() -> None:
 
 def test_ai_design_returns_plan_check() -> None:
     """★ AI 模式回應要帶「圖面正確性檢查」結果:合格且明細可讀(上線後看得到)。"""
-    brief = _payload(site_width_m=7, site_depth_m=12,
+    brief = _payload(site_width_m=12, site_depth_m=12,
                      dimension_basis="building", floors_above=3)
-    c = _seq_client([brief, _GRAPH_PAYLOAD, _GRAPH_PAYLOAD, _GRAPH_PAYLOAD])
+    c = _seq_client([brief, _AI_DEMO_GRAPH, _AI_DEMO_GRAPH, _AI_DEMO_GRAPH])
     r = c.post("/api/generate",
-               json={"text": "透天三層,建築物7×12米,三房", "ai_design": True})
+               json={"text": "透天三層,建築物12×12米,三房", "ai_design": True})
     assert r.status_code == 200, r.text
     pc = r.json().get("plan_check")
     assert pc is not None
@@ -152,24 +164,26 @@ def test_ai_design_returns_plan_check() -> None:
 
 def test_single_entry_auto_picks_ai_for_townhouse() -> None:
     """★ 單一入口:不必勾任何模式,窄透天自動走 AI 設計師。"""
-    brief = _payload(site_width_m=7, site_depth_m=12,
+    brief = _payload(site_width_m=12, site_depth_m=12,
                      dimension_basis="building", floors_above=3)
-    c = _seq_client([brief, _GRAPH_PAYLOAD, _GRAPH_PAYLOAD, _GRAPH_PAYLOAD])
-    r = c.post("/api/generate", json={"text": "透天三層,建築物7×12米,三房"})
+    c = _seq_client([brief, _AI_DEMO_GRAPH, _AI_DEMO_GRAPH, _AI_DEMO_GRAPH])
+    r = c.post("/api/generate", json={"text": "透天三層,建築物12×12米,三房"})
     assert r.status_code == 200, r.text
     data = r.json()
     assert data.get("engine") == "ai"                 # 自動選了 AI
     assert data["plan_check"]["ok"] is True
 
 
-def test_single_entry_falls_back_to_rule_for_wide_site() -> None:
-    """★ 單一入口:寬基地(AI 引擎不合用)自動走規則版,使用者不會看到錯誤。"""
+def test_wide_site_uses_two_band_and_passes_gates() -> None:
+    """★★ 寬基地(建築 ≥10m → 兩帶式產線)出得了圖,而且兩道關卡都過。
+
+    2026-08-02 之前這條產線每張圖都有 floor_split/家具穿牆/採光不足,是這次修好的。"""
     c = _client(_payload(site_width_m=19, site_depth_m=13, floors_above=2))
     r = c.post("/api/generate", json={"text": "透天二層,基地19×13米,三房"})
     assert r.status_code == 200, r.text
     data = r.json()
-    assert data.get("engine") == "rule"               # 自動退回規則版
-    assert data["sheets"]                             # 照樣有圖
+    assert data["engine"] == "rule"
+    assert data["plan_check"]["ok"] and data["code_check"]["ok"]
 
 
 def test_single_entry_falls_back_when_ai_fails() -> None:
@@ -212,7 +226,7 @@ def test_ai_design_site_basis_no_side_setback() -> None:
     「基地9×14」= 建築 9×12(僅退前院),舊版會誤算成 5×10 被擋;新版接受並生圖。
     """
     brief = _payload(site_width_m=9, site_depth_m=14, floors_above=3)
-    c = _seq_client([brief, _GRAPH_PAYLOAD, _GRAPH_PAYLOAD, _GRAPH_PAYLOAD])
+    c = _seq_client([brief, _AI_DEMO_GRAPH, _AI_DEMO_GRAPH, _AI_DEMO_GRAPH])
     r = c.post("/api/generate",
                json={"text": "透天三層,基地9×14米,三房", "ai_design": True})
     assert r.status_code == 200, r.text
@@ -256,39 +270,55 @@ def test_generate_single_floor_house() -> None:
     assert c.get(data["zip"]).status_code == 200
 
 
-def test_generate_multifloor_house_with_basement() -> None:
-    c = _client(_payload(site_width_m=19, site_depth_m=13,
-                         floors_above=3, basements=1))
-    r = c.post("/api/generate", json={"text": "透天三層,地下一層", "seed": 5})
-    assert r.status_code == 200
+def test_generate_multifloor_house() -> None:
+    """三層透天:每層一張 + 剖面 + 立面,並回設計說明與 seed。"""
+    c = _client(_payload(site_width_m=11, site_depth_m=16, floors_above=3))
+    r = c.post("/api/generate", json={"text": "透天三層", "seed": 5})
+    assert r.status_code == 200, r.text
     data = r.json()
     assert ([s["label"] for s in data["sheets"]]
-            == ["B1F", "1F", "2F", "3F", "剖面", "立面"])
+            == ["1F", "2F", "3F", "剖面", "立面"])
     assert {s["kind"] for s in data["sheets"]} == {"floor", "section",
                                                    "elevation"}
-    assert "地上 3 層 + 地下 1 層" in data["summary"]
+    assert "地上 3 層" in data["summary"]
     assert data["seed"] == 5
     assert "樓梯" in data["design_note"] and "廚房" in data["design_note"]
+
+
+def test_basement_needs_the_two_band_pipeline() -> None:
+    """★ 地下室只有兩帶式產線做得出來:窄透天(11×16)不含地下室,
+    寬基地(19×13)才生得出 B1F。"""
+    c = _client(_payload(site_width_m=11, site_depth_m=16,
+                         floors_above=3, basements=1))
+    labels = [s["label"] for s in
+              c.post("/api/generate", json={"text": "透天三層,地下一層"}).json()["sheets"]]
+    assert "B1F" not in labels                      # 窄透天沒有地下室
+
+    c2 = _client(_payload(site_width_m=19, site_depth_m=13,
+                          floors_above=3, basements=1))
+    r = c2.post("/api/generate", json={"text": "透天三層,地下一層,基地19×13米"})
+    assert r.status_code == 200, r.text
+    assert "B1F" in [s["label"] for s in r.json()["sheets"]]   # 兩帶式才有地下室
 
 
 def test_suggestions_offer_site_upgrades() -> None:
     """設計建議:告訴使用者基地還放得下什麼,每則附完整需求句(可點擊
     重新生成)。19×13 無地下室 → 至少建議「加地下車庫」;文字要能直接
     當需求送(含基地尺寸)。"""
-    c = _client(_payload(site_width_m=19, site_depth_m=13, floors_above=2))
-    r = c.post("/api/generate", json={"text": "透天二層,基地19×13米,三房"})
+    c = _client(_payload(site_width_m=11, site_depth_m=16, floors_above=2))
+    r = c.post("/api/generate", json={"text": "透天二層,基地11×16米,三房"})
     assert r.status_code == 200
     sugg = r.json()["suggestions"]
     labels = [s["label"] for s in sugg]
     assert "加地下車庫" in labels
     for s in sugg:
-        assert "基地19×13米" in s["text"]     # 完整需求句,點了能直接重生成
+        assert "基地11×16米" in s["text"]     # 完整需求句,點了能直接重生成
         assert s["note"]
 
 
 def test_seed_reproducible_and_random(monkeypatch) -> None:
     """同 seed → 同方案(同設計說明);不帶 seed → 伺服器隨機抽,會給回 seed。"""
-    payload = _payload(site_width_m=19, site_depth_m=13,
+    payload = _payload(site_width_m=11, site_depth_m=16,
                        floors_above=3, basements=1)
     c = _client(payload)
     a = c.post("/api/generate", json={"text": "透天三層", "seed": 3}).json()
@@ -302,6 +332,60 @@ def test_seed_reproducible_and_random(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 # 2) 下載端點的白名單
 # ---------------------------------------------------------------------------
+def test_dxf_is_inlined_in_response() -> None:
+    """★★ DXF 直接內嵌回應(base64),下載不再依賴伺服器硬碟。
+
+    Render 免費方案的硬碟每次部署/休眠就清空,/api/jobs/... 會 404
+    ——使用者實際遇過。內嵌這份在瀏覽器裡,伺服器怎麼重啟都還在。"""
+    import base64
+
+    c = _client(_payload(floors_above=2))
+    data = c.post("/api/generate", json={"text": "透天二層"}).json()
+    assert data["dxf_inline"] == len(data["sheets"])
+    assert data["dxf_inline_all"] is True
+    for sheet in data["sheets"]:
+        raw = base64.b64decode(sheet["dxf_b64"])
+        assert raw[:20].lstrip().startswith(b"0"), raw[:20]   # DXF 以 group code 0 開頭
+        assert b"SECTION" in raw[:2000]
+
+
+def test_dxf_download_survives_disk_wipe(tmp_path, monkeypatch) -> None:
+    """★ 伺服器硬碟被清掉之後,內嵌的那份仍然拿得到(這就是內嵌的目的)。"""
+    import base64
+    import shutil
+
+    from src.web import app as app_mod
+
+    monkeypatch.setattr(app_mod, "JOBS_DIR", tmp_path / "jobs")
+    c = _client(_payload(floors_above=1))
+    data = c.post("/api/generate", json={"text": "透天一層"}).json()
+    shutil.rmtree(tmp_path / "jobs")                       # 模擬 Render 重新部署
+    assert c.get(data["sheets"][0]["dxf"]).status_code == 404   # 舊連結果然掛了
+    assert base64.b64decode(data["sheets"][0]["dxf_b64"])       # 內嵌那份還在
+
+
+def test_demo_mode_runs_ai_without_api_key(monkeypatch) -> None:
+    """★★ DEMO_MODE=1:沒有 API key、沒有網路也能完整跑 AI 設計師模式。
+
+    發表當天 Gemini 免費額度(約 20 次/日,AI 模式一次吃 2~3 次)很可能用完 ——
+    這條保證那時還演示得出來:產線照跑,只有 LLM 的回覆是錄好的回放。"""
+    monkeypatch.setenv("DEMO_MODE", "1")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
+    c = TestClient(create_app())                    # 不注入 client → 走錄音回放
+    assert c.get("/api/config").json()["demo"] is True
+
+    r = c.post("/api/generate",
+               json={"text": "透天三層,建築物12×12米,三房", "ai_design": True})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["engine"] == "ai" and data["demo"] is True
+    assert data["plan_check"]["ok"] and data["code_check"]["ok"]
+    assert [s["label"] for s in data["sheets"]][:3] == ["1F", "2F", "3F"]
+    assert data["door_table"]["n_doors"] > 0        # 門連通表照樣產得出來
+
+
 def test_download_rejects_bad_names() -> None:
     c = _client(_payload())
     assert c.get("/api/jobs/abcdef123456/..%2Fsecret.dxf").status_code == 404
@@ -364,12 +448,13 @@ def test_index_page_served() -> None:
 # ---------------------------------------------------------------------------
 def test_generate_returns_metrics_and_brief_data() -> None:
     """回應要帶關鍵數字(建蔽/容積/造價)與 brief_data(多輪修改的底)。"""
-    c = _client(_payload(site_width_m=19, site_depth_m=13,
+    # 19×13(兩帶式)目前生不出合格圖會被擋 → 用窄透天尺寸驗多層+地下室
+    c = _client(_payload(site_width_m=11, site_depth_m=16,
                          floors_above=3, basements=1))
     data = c.post("/api/generate",
                   json={"text": "透天三層,地下一層", "seed": 5}).json()
     m = data["metrics"]
-    assert m["site_area_m2"] == pytest.approx(247, abs=0.5)
+    assert m["site_area_m2"] == pytest.approx(176, abs=0.5)
     assert 0 < m["coverage_pct"] <= 100
     assert m["far_pct"] > m["coverage_pct"]      # 三層 → 容積率 > 建蔽率
     assert m["est_cost_wan"] > 0

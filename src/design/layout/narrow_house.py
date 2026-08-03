@@ -749,6 +749,11 @@ WINDOW_KINDS = {"living", "dining", "kitchen", "bedroom", "master_bedroom",
 
 # 補窗參數。單一扇窗的下限/上限與離牆角、離其他洞口的淨距(mm)。
 WINDOW_MIN_W, WINDOW_MAX_W = 600.0, 3600.0
+# 最後一小段的例外下限:§40 只差幾公分,牆上卻沒有 60cm 的空檔了 —— 這時開一扇窄
+# 高窗把它補滿,比整間房被判違規好(真實圖面也有 45~60cm 的小窗/高側窗)。
+WINDOW_LAST_MIN = 450.0
+WINDOW_PIER_MIN = 600.0         # 兩個洞口之間的牆垛至少這麼寬(結構;細長牆垛會裂)
+WINDOW_MARGIN = 20.0            # 補窗時多給的餘裕(避免「剛好等於法定」被浮點誤差判掉)
 WINDOW_EDGE_CLEAR, WINDOW_GAP = 300.0, 200.0
 
 
@@ -795,13 +800,72 @@ def _window_segments(spec, room, bx0, by0, bx1, by1, party_walls):
     return out
 
 
-def _free_intervals(wall, lo, hi, along):
-    """牆段 [lo,hi](世界座標)扣掉既有洞口 → 沿牆座標的可用區間 [(a,b)]。"""
+COLUMN_CLEARANCE = 300.0        # 洞口與柱面的最小淨距(對齊 layout_generator 的檢核)
+
+
+def _column_centers(spec) -> list:
+    """這份 spec 的柱心座標。
+
+    與 apartment_plan.resolve_columns 同一套規則:column_centers 有給就用它
+    (窄透天/淺透天給空清單 = 不放柱);給 None 代表「放在每個軸網交點」,
+    要從 grid_origin + x/y_spacings 推回來。"""
+    centers = getattr(spec, "column_centers", None)
+    if centers is not None:
+        return list(centers)
+    xs = getattr(spec, "x_spacings", None) or []
+    ys = getattr(spec, "y_spacings", None) or []
+    ox, oy = getattr(spec, "grid_origin", (0.0, 0.0))
+    gx, gy, acc = [ox], [oy], ox
+    for d in xs:
+        acc += d
+        gx.append(acc)
+    acc = oy
+    for d in ys:
+        acc += d
+        gy.append(acc)
+    return [(x, y) for x in gx for y in gy]
+
+
+def _column_blocks(spec, wall, along):
+    """柱子在這道牆上佔掉的沿牆區間(洞口不能壓柱)。
+
+    窄透天/淺透天沒有柱(column_centers 空),這裡就回空清單;兩帶式與集合住宅
+    有柱,補窗時要避開——否則會被 validate_spec 判「洞口壓柱」而整份設計失敗。"""
+    centers = _column_centers(spec)
+    if not centers:
+        return []
+    size = float(getattr(spec, "column_size", 500.0) or 500.0)
+    (sx, sy), (ex, ey) = wall.start, wall.end
+    vertical = abs(sx - ex) < 1.0
+    out = []
+    for cx, cy in centers:
+        off = abs(cx - sx) if vertical else abs(cy - sy)
+        if off > wall.thickness / 2.0 + size / 2.0:     # 柱不在這道牆上
+            continue
+        c = cy if vertical else cx
+        t = abs(c - along)
+        # 淨距用 validate_spec 的同一個標準(柱半徑 + COLUMN_CLEARANCE),
+        # 不能只留 WINDOW_GAP —— 那樣補完窗還是會被判「洞口壓柱」。
+        out.append((t - size / 2.0 - COLUMN_CLEARANCE - 10.0,
+                    t + size / 2.0 + COLUMN_CLEARANCE + 10.0))
+    return out
+
+
+def _free_intervals(wall, lo, hi, along, blocks=(), edge_clear=None):
+    """牆段 [lo,hi](世界座標)扣掉既有洞口(與柱)→ 沿牆座標的可用區間 [(a,b)]。"""
+    if edge_clear is None:
+        edge_clear = WINDOW_EDGE_CLEAR
     a0, b0 = abs(lo - along), abs(hi - along)
-    a0, b0 = min(a0, b0) + WINDOW_EDGE_CLEAR, max(a0, b0) - WINDOW_EDGE_CLEAR
+    a0, b0 = min(a0, b0) + edge_clear, max(a0, b0) - edge_clear
     free = [(a0, b0)] if b0 > a0 else []
-    for op in wall.openings:
-        t0, t1 = op.position - op.width / 2 - WINDOW_GAP,             op.position + op.width / 2 + WINDOW_GAP
+    # 兩扇**窗**之間的牆垛要 ≥600(細長牆垛結構上會裂);窗與門之間用一般淨距即可
+    # ——3.5m 面寬的南牆上已經有一扇 1m 大門,若也要求 600 就再也開不出窗了。
+    spans = [(op.position - op.width / 2
+              - (WINDOW_PIER_MIN if op.kind == "window" else WINDOW_GAP),
+              op.position + op.width / 2
+              + (WINDOW_PIER_MIN if op.kind == "window" else WINDOW_GAP))
+             for op in wall.openings] + list(blocks)
+    for t0, t1 in spans:
         nxt = []
         for a, b in free:
             if t1 <= a or t0 >= b:
@@ -830,6 +894,15 @@ def _need_window_width(room) -> float:
     return max(WINDOW_WIDTH, area * DAYLIGHT_RATIO / WINDOW_H_ASSUMED)
 
 
+def _window_cap(seg_len: float) -> float:
+    """單一扇窗的寬度上限(mm):標準上限,但長牆上可以開到**半道牆**那麼寬。
+
+    3.6m 是住宅窗的常見上限,對 3.5~7m 面寬的透天剛好;但兩帶式 19m 寬的房子,
+    50㎡ 的客餐廚要 5.4m 的採光開口,硬卡在 3.6m 就永遠補不滿 §40(實測 60 顆種子
+    有 2 顆中招)。「一扇窗最寬到牆的一半」是有道理的上限:牆兩端仍留得下結構。"""
+    return max(WINDOW_MAX_W, seg_len / 2.0)
+
+
 def _ensure_room_windows(spec, bx0, by0, bx1, by1, party_walls: bool = True) -> int:
     """保證居室採光:窗開得**夠大**(§40 樓地板 1/8),不是有一扇就算。
 
@@ -851,21 +924,66 @@ def _ensure_room_windows(spec, bx0, by0, bx1, by1, party_walls: bool = True) -> 
         have = sum(op.width for w in spec.walls for op in w.openings
                    if op.kind == "window"
                    and poly.exterior.distance(Point(*w.point_at(op.position))) < 60)
-        deficit = _need_window_width(room) - have
+        # 多要 WINDOW_MARGIN:法規是「不得小於 1/8」,補到剛好等於時常被浮點誤差
+        # 判掉(實測 6.45㎡ < 6.45㎡),多給 2cm 就穩。
+        deficit = _need_window_width(room) + WINDOW_MARGIN - have
+        # ① 先**加寬既有的窗**:牆上剩下的空檔常常各只有 40~50cm(開不了一扇新窗
+        #    的下限 60cm),但把原本那扇拉寬就綽綽有餘。真實圖也是這樣處理。
+        # ① 先**加寬既有的窗**:牆上剩下的空檔常常各只有 40~50cm(開不了一扇新窗的
+        #    下限 60cm),但把原本那扇拉寬就綽綽有餘。真實圖也是這樣處理。
+        #    做法:把那扇窗暫時拿掉,算出它所在的那段可用區間(已扣掉其他洞口與柱),
+        #    再在區間內盡量拉寬。兩輪:正常淨距(300)不夠才放寬到 150。
+        for edge_clear in (WINDOW_EDGE_CLEAR, WINDOW_EDGE_CLEAR / 2.0):
+            for _rank, wi, lo, hi, along in segs:
+                if deficit <= 1.0:
+                    break
+                w = spec.walls[wi]
+                blocks = _column_blocks(spec, w, along)
+                for op in list(w.openings):
+                    if deficit <= 1.0:
+                        break
+                    if op.kind != "window":
+                        continue
+                    if poly.exterior.distance(Point(*w.point_at(op.position))) >= 60:
+                        continue
+                    others = [o for o in w.openings if o is not op]
+                    keep_all = list(w.openings)
+                    w.openings = others                     # 暫時拿掉自己再算空間
+                    free = _free_intervals(w, lo, hi, along, blocks, edge_clear)
+                    w.openings = keep_all
+                    span = next(((a, b) for a, b in free
+                                 if a - 1 <= op.position <= b + 1), None)
+                    if span is None:
+                        continue
+                    a, b = span
+                    width = min(b - a, _window_cap(hi - lo), op.width + deficit)
+                    if width <= op.width + 1.0:
+                        continue
+                    deficit -= width - op.width
+                    op.width = width
+                    op.position = min(max(op.position, a + width / 2),
+                                      b - width / 2)
+        # ② 還不夠才開新的窗
         for _rank, wi, lo, hi, along in segs:
             if deficit <= 1.0:
                 break
             w = spec.walls[wi]
+            blocks = _column_blocks(spec, w, along)   # 洞口不能壓柱
             while deficit > 1.0:
-                free = _free_intervals(w, lo, hi, along)
+                free = _free_intervals(w, lo, hi, along, blocks)
                 if not free:
                     break
                 a, b = free[0]
                 # 差額不足一扇窗的下限時,仍開一扇最小窗(寧可略大於法定,也不要
                 # 差 5cm 就判不合格)。
-                width = min(max(deficit, WINDOW_MIN_W), b - a, WINDOW_MAX_W)
+                width = min(max(deficit, WINDOW_MIN_W), b - a, _window_cap(hi - lo))
                 if width < WINDOW_MIN_W:
-                    break
+                    # 空檔不足一扇標準窗:差額若這段補得完,就開一扇窄高窗補滿
+                    # (見 WINDOW_LAST_MIN);否則這段真的沒用,換下一段。
+                    if b - a >= WINDOW_LAST_MIN and deficit <= b - a + 1.0:
+                        width = b - a
+                    else:
+                        break
                 pos = (a + b) / 2 if b - a <= width + 1 else a + width / 2
                 if pos - width / 2 < 0 or pos + width / 2 > w.length:
                     break
@@ -1142,6 +1260,8 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
                   entry_frac=variant.entry_frac)
     _ensure_floor_connected(spec)                    # 從大門走得到每一間房
     _ensure_room_doors(spec, bx0, by0, bx1, level)   # 保證每房都有門(不管尺寸)
+    from src.design.layout.balcony import add_balconies
+    add_balconies(spec, level, env=(bx0, by0, bx1, by1))  # 2F 以上前後挑陽台
     _ensure_room_windows(spec, bx0, by0, bx1, by1)   # 居室補窗(前後外牆/天井側)
     from src.design.layout.door_rules import repair_doors
     repair_doors(spec, bx0, by0, bx1, level)         # 門與動線規範:改門(不改切法)

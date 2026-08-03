@@ -78,10 +78,24 @@ def test_master_bedroom_is_biggest() -> None:
 
 
 def test_small_site_merges_dining() -> None:
-    small = generate_floor_plan(HouseBrief(site_width=12000, site_depth=11000, bedrooms=2))
+    """餐廳分不到足夠的寬度就併成「客餐廳」。
+
+    ⚠️ 2026-08-02 起判準多一條:**餐廳的南外牆開不出 §40 要的窗**(牆太短,或
+    柱卡在牆中間把可開窗的段切碎)時也併——以前那種情形會生出一間採光不合格的
+    餐廳,整張圖不合格。所以「基地大 → 一定有獨立餐廳」不再成立,要看那面牆。"""
+    small = generate_floor_plan(HouseBrief(site_width=12000, site_depth=11000,
+                                           bedrooms=2))
     assert "客餐廳" in {r.name for r in small.rooms}
-    big = generate_floor_plan(HouseBrief(site_width=20000, site_depth=14000, bedrooms=3))
-    assert "餐廳" in {r.name for r in big.rooms}
+    big = generate_floor_plan(HouseBrief(site_width=20000, site_depth=12000,
+                                         bedrooms=3))
+    assert "餐廳" in {r.name for r in big.rooms}        # 這個尺寸的南牆夠長
+
+    # 併成客餐廳的那些尺寸,採光一定要合格(併的目的就是這個)
+    from src.design.layout.code_check import check_code_building
+    merged = generate_floor_plan(HouseBrief(site_width=20000, site_depth=14000,
+                                            bedrooms=3))
+    assert "客餐廳" in {r.name for r in merged.rooms}
+    assert check_code_building([("1F", merged)]).ok
 
 
 def test_house_fixtures_follow_rooms() -> None:
@@ -473,8 +487,8 @@ def test_corridor_unit_count_scales() -> None:
     for n in (2, 4, 6):
         spec = generate_floor_plan(CorridorBrief(units_per_row=n))
         assert len([r for r in spec.rooms if r.name == "起居室"]) == 2 * n
-        # 每戶 入口+浴廁門 ×2n,加上核區 4 扇(兩梯間+兩儲藏)。
-        assert len(spec.doors) == 4 * n + 4
+        # 每戶 入口+陽台落地門+浴廁門 ×2n,加上核區 4 扇(兩梯間+兩儲藏)。
+        assert len(spec.doors) == 6 * n + 4
 
 
 def test_corridor_area_closure() -> None:
