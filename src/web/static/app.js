@@ -31,9 +31,12 @@ fetch("/api/config").then((r) => r.json()).then((cfg) => {
 });
 
 // ── 範例句:點了直接填進輸入框 ─────────────────────────────────────
+// chip 上顯示的是短標籤(排起來才整齊),真正要送出的整句放 data-text;
+// 設計建議的 chip 是 JS 生的、沒有 data-text,就退回讀顯示文字。
 $("examples").addEventListener("click", (e) => {
   if (!e.target.classList.contains("chip")) return;
-  $("text").value = e.target.textContent.split("(")[0].split("(")[0].trim();
+  $("text").value = e.target.dataset.text
+    || e.target.textContent.split("(")[0].split("(")[0].trim();
   $("text").focus();
 });
 
@@ -132,10 +135,39 @@ async function modify() {
   if (ok) $("modify-text").value = "";
 }
 
+// ── 生成進度燈 ─────────────────────────────────────────────────────
+// 出圖要 10~60 秒。只寫一行「設計中…」的話,使用者會以為當掉了;四段亮燈
+// 是**估時**的動畫(伺服器沒有回報進度),所以最後一段停著等,不會自己跑完。
+const PROGRESS_AT = [0, 3000, 9000, 16000];   // 各段大約什麼時候亮
+let progressTimers = [];
+
+function startProgress() {
+  stopProgress();
+  const lis = [...$("progress").children];
+  $("progress").classList.remove("hidden");
+  PROGRESS_AT.forEach((ms, i) => {
+    progressTimers.push(setTimeout(() => {
+      lis.forEach((li, j) => {
+        li.classList.toggle("done", j < i);
+        li.classList.toggle("now", j === i);
+      });
+    }, ms));
+  });
+}
+
+function stopProgress() {
+  progressTimers.forEach(clearTimeout);
+  progressTimers = [];
+  const box = $("progress");
+  box.classList.add("hidden");
+  [...box.children].forEach((li) => li.classList.remove("done", "now"));
+}
+
 // 共用請求流程:送出 → 成功就渲染結果。回傳是否成功。
 async function requestPlan(body, btn, textForRedesign) {
   btn.disabled = true;
-  $("status").textContent = "設計中:解析需求 → 配置格局 → 檢查 → 出圖…(約 10~60 秒)";
+  $("status").textContent = "設計中…(約 10~60 秒)";
+  startProgress();
   hideError();
   try {
     const resp = await fetch("/api/generate", {
@@ -154,6 +186,7 @@ async function requestPlan(body, btn, textForRedesign) {
   } finally {
     btn.disabled = false;
     $("status").textContent = "";
+    stopProgress();
   }
 }
 
@@ -179,7 +212,10 @@ function applyResult(data) {
   const keep = sheets.findIndex((s) => s.label === keepLabel);   // 沿用當前樓層
   showSheet(keep >= 0 ? keep : 0);
   $("result").classList.remove("hidden");
+  document.body.classList.add("has-result");   // 收掉舞台的空狀態線稿
+  $("about").open = false;      // 有方案了 → 能力說明收起來,側欄留給結果
   $("history").classList.add("hidden");
+  loadRecent();                 // 剛存的這一筆要出現在「最近」
 }
 
 function showError(msg) {
@@ -201,16 +237,17 @@ function renderMetrics(m) {
   ];
   if (m.basement_m2 > 0) items.push(["地下", m.basement_m2 + " m²"]);
   items.push(["總坪數", m.total_ping + " 坪"]);
-  items.push(["粗估造價", "約 " + m.est_cost_wan.toLocaleString() + " 萬"]);
-  items.forEach(([k, v]) => {
+  // 造價獨立一整列(wide):這是評審第一個問的數字,不該跟其他量體擠在半格裡
+  items.push(["粗估造價", "約 " + m.est_cost_wan.toLocaleString() + " 萬", "wide"]);
+  items.forEach(([k, v, cls]) => {
     const el = document.createElement("span");
-    el.className = "metric";
-    el.innerHTML = `<b>${v}</b> ${k}`;
+    el.className = "metric" + (cls ? " " + cls : "");
+    el.innerHTML = `<b>${v}</b><span>${k}</span>`;
     box.appendChild(el);
   });
   const note = document.createElement("span");
   note.className = "hint";
-  note.textContent = "(量體粗估,非法規檢討)";
+  note.textContent = "量體粗估,非法規檢討";
   box.appendChild(note);
   box.classList.remove("hidden");
 }
@@ -231,9 +268,9 @@ function renderAiPanel(data) {
   const probs = (data.ai_problems || []).length
     ? `<div class="ai-problems"><b>收斂後仍待改(${data.ai_problems.length}):</b>` +
       data.ai_problems.map((p) => `<div>· ${p}</div>`).join("") + `</div>`
-    : `<div class="ai-problems ok">✅ 收斂後無明顯問題</div>`;
+    : `<div class="ai-problems ok"><b>收斂後無明顯問題</b></div>`;
   box.innerHTML =
-    `<div class="ai-head">🤖 AI 設計師:設計 → 落實 → 挑毛病 → 重設計,擇優</div>` +
+    `<div class="ai-head">AI 設計師:設計 → 落實 → 挑毛病 → 重設計,擇優</div>` +
     `<div class="ai-traj">${traj}</div>` + renderPlanCheck(data.plan_check) +
     renderCodeCheck(data.code_check) + probs;
   box.classList.remove("hidden");
@@ -244,7 +281,7 @@ function renderPlanCheck(c) {
   if (!c) return "";
   const items = (c.issues || []).filter((i) => i.severity === "error");
   if (c.ok) {
-    return `<div class="ai-problems ok">✅ 圖面檢查通過:每間房都有門、室內走得通、` +
+    return `<div class="ai-problems ok"><b>圖面檢查通過</b>　每間房都有門、室內走得通、` +
            `有臨路大門、家具不穿牆、動線暢通` +
            (c.n_warnings ? `(另有 ${c.n_warnings} 項設計建議)` : "") + `</div>`;
   }
@@ -258,7 +295,7 @@ function renderCodeCheck(c) {
   if (!c) return "";
   const items = (c.issues || []).filter((i) => i.severity === "violation");
   if (c.ok) {
-    return `<div class="ai-problems ok">✅ 法規檢查通過:樓梯級高級深/梯段寬/平臺深` +
+    return `<div class="ai-problems ok"><b>法規檢查通過</b>　樓梯級高級深/梯段寬/平臺深` +
            `(施工編§33)、居室採光開口 ≥1/8(§40)` +
            (c.n_warnings ? `(另有 ${c.n_warnings} 項慣例建議)` : "") + `</div>`;
   }
@@ -291,6 +328,29 @@ $("history-btn").addEventListener("click", async () => {
   }
 });
 
+// ── 最近方案:開頁就抓最新 3 筆列在側欄(沒紀錄就整塊不出現)──────────
+// 跟「歷史方案」按鈕是同一份資料,差別在這裡是隨手可點的捷徑,那裡是完整清單。
+async function loadRecent() {
+  try {
+    const items = await (await fetch("/api/history")).json();
+    const box = $("recent");
+    box.innerHTML = "";
+    if (!items.length) { $("recent-block").classList.add("hidden"); return; }
+    items.slice(0, 3).forEach((m) => {
+      const b = document.createElement("button");
+      b.className = "recent-item";
+      b.innerHTML = `<span class="h-text">${m.text}</span>` +
+                    `<span class="h-meta">${m.summary || ""}</span>`;
+      b.addEventListener("click", () => loadJob(m));
+      box.appendChild(b);
+    });
+    $("recent-block").classList.remove("hidden");
+  } catch (err) {
+    $("recent-block").classList.add("hidden");   // 抓不到就當沒這塊,不吵使用者
+  }
+}
+loadRecent();
+
 async function loadJob(meta) {
   $("status").textContent = "載入歷史方案…";
   try {
@@ -314,7 +374,7 @@ function renderSuggestions(items) {
   if (!items.length) { box.classList.add("hidden"); return; }
   const hint = document.createElement("span");
   hint.className = "hint";
-  hint.textContent = "💡 這塊基地還可以:";
+  hint.textContent = "這塊基地還可以:";
   box.appendChild(hint);
   items.forEach((s) => {
     const b = document.createElement("button");
@@ -389,6 +449,20 @@ function applyView() {
   if (pane) pane.style.transform =
     `translate(${view.x}px, ${view.y}px) scale(${view.k})`;
 }
+
+// 工具列按鈕:以畫面正中央為圓心縮放(滾輪是以游標為圓心,兩者不衝突)
+function zoomBy(factor) {
+  const rect = $("canvas").getBoundingClientRect();
+  const mx = rect.width / 2, my = rect.height / 2;
+  const k = Math.min(40, Math.max(0.2, view.k * factor));
+  view.x = mx - (mx - view.x) * (k / view.k);
+  view.y = my - (my - view.y) * (k / view.k);
+  view.k = k;
+  applyView();
+}
+$("zoom-in").addEventListener("click", () => zoomBy(1.3));
+$("zoom-out").addEventListener("click", () => zoomBy(1 / 1.3));
+$("zoom-reset").addEventListener("click", resetView);
 
 $("canvas").addEventListener("wheel", (e) => {
   e.preventDefault();

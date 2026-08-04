@@ -4,73 +4,180 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>自動建築平面圖生成器</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2316181c'/><g stroke='%23f7f6f3' stroke-width='2' fill='none'><rect x='8' y='8' width='16' height='16'/><path d='M8 18h7M15 18v6'/></g></svg>">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header>
-  <h1>自動建築平面圖生成器</h1>
-  <p class="sub">用一句中文描述需求,自動設計出整棟樓的平面圖(可下載 DXF 回 AutoCAD)</p>
-</header>
 
-<main>
-  <section class="input-panel">
-    <textarea id="text" rows="3"
-      placeholder="例:透天三層,基地19×13米,三房,地下一層車庫"></textarea>
+<div class="app">
 
-    <div class="examples" id="examples">
-      <span class="hint">試試看:</span>
-      <button class="chip">透天三層,基地19×13米,三房,地下一層車庫</button>
-      <button class="chip">集合住宅每排6戶,走廊2米寬,五層樓,地下一層</button>
-      <button class="chip">基地16×14米,三房,主臥在西南角,廚房靠北</button>
-      <button class="chip" data-ai="1">透天三層,建築物7×12米,三房</button>
-      <button class="chip" data-ai="1">透天三層,基地9×14米,四房</button>
-    </div>
-
-    <div class="actions">
-      <input id="code" type="password" placeholder="通行碼" class="hidden">
-      <button id="generate" class="primary">生成平面圖</button>
-      <button id="history-btn" class="ghost">🕘 歷史方案</button>
-      <span id="status"></span>
-    </div>
-
-    <div id="history" class="history hidden"></div>
-    <div id="error" class="error hidden"></div>
-  </section>
-
-  <section id="result" class="result hidden">
-    <div class="result-head">
-      <div class="result-info">
-        <span id="summary" class="summary"></span>
-        <span id="design-note" class="design-note"></span>
-        <div id="ai-panel" class="ai-panel hidden"></div>
-        <div id="metrics" class="metrics hidden"></div>
-        <div id="suggestions" class="suggestions hidden"></div>
+  <!-- ══ 左:需求與報告 ════════════════════════════════════════════ -->
+  <aside class="side">
+    <header class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17"/>
+          <path d="M3.5 14h7M10.5 14v6.5"/></svg>
       </div>
-      <div class="result-actions">
-        <button id="score-btn" class="primary">🛋 家具配置評分</button>
-        <button id="redesign" class="ghost">🔀 重新設計(換一個方案)</button>
-        <a id="pdf" class="download" download>⬇ PDF 圖冊 (A3)</a>
-        <a id="zip" class="download" download>⬇ 全部 DXF (zip)</a>
+      <div class="brand-text">
+        <h1>自動建築平面圖生成器</h1>
+        <p>一句中文需求 → 可施工的 DXF</p>
+      </div>
+    </header>
+
+    <div class="side-scroll">
+
+      <section class="block">
+        <textarea id="text" rows="3"
+          placeholder="描述你想蓋的房子&#10;例:透天三層,基地19×13米,三房,地下一層車庫"></textarea>
+
+        <!-- 範例句依「案子類型」分組:順便展示這套系統收得下哪幾種案子。
+             chip 上是短標籤,真正送出的整句在 data-text。 -->
+        <div class="examples" id="examples">
+          <div class="ex-group">
+            <span class="ex-label">一般透天</span>
+            <button class="chip" data-text="透天三層,基地19×13米,三房,地下一層車庫">19×13 三房 + 地下車庫</button>
+            <button class="chip" data-text="基地16×14米,三房,主臥在西南角,廚房靠北">16×14 指定主臥方位</button>
+          </div>
+          <div class="ex-group">
+            <span class="ex-label">窄面寬透天</span>
+            <button class="chip" data-text="透天三層,建築物7×12米,三房">7×12 三房</button>
+            <button class="chip" data-text="透天三層,基地9×14米,四房">9×14 四房</button>
+          </div>
+          <div class="ex-group">
+            <span class="ex-label">集合住宅</span>
+            <button class="chip" data-text="集合住宅每排6戶,走廊2米寬,五層樓,地下一層">6 戶 × 5 層 + 地下</button>
+          </div>
+        </div>
+
+        <div class="actions">
+          <input id="code" type="password" placeholder="通行碼" class="hidden">
+          <button id="generate" class="btn solid block">生成平面圖</button>
+        </div>
+
+        <div class="run-row">
+          <button id="history-btn" class="btn link">歷史方案</button>
+          <span id="status"></span>
+        </div>
+
+        <ol id="progress" class="progress hidden">
+          <li>讀懂需求</li>
+          <li>配置格局</li>
+          <li>圖面 / 法規檢查</li>
+          <li>出圖</li>
+        </ol>
+      </section>
+
+      <div id="error" class="error hidden"></div>
+      <div id="history" class="history hidden"></div>
+
+      <!-- 最近生成過的方案(有紀錄才會出現),點了直接載回來 -->
+      <section class="block hidden" id="recent-block">
+        <h2 class="block-title">最近</h2>
+        <div class="recent" id="recent"></div>
+      </section>
+
+      <!-- 能力範圍:出圖前就先講清楚這套系統做得到什麼、把哪些關。
+           出圖後自動收起來(app.js),讓側欄專心顯示方案。 -->
+      <section class="block">
+        <details id="about" open>
+          <summary>這個系統會做什麼</summary>
+
+          <dl class="spec">
+            <dt>產出圖面</dt>
+            <dd>每層平面圖 · 剖面 A—A · 南向立面(DXF / PDF 圖冊 A3)</dd>
+
+            <dt>圖上有什麼</dt>
+            <dd>A3 圖框標題欄 · 門窗表 · 面積計算表 · 門窗編號 · 牆厚註記
+              · 剖切符號 · 尺寸鏈 · 指北針 · 家具</dd>
+
+            <dt>自動把關</dt>
+            <!-- ⚠️ 換行處會變成一個空格,別在標點後面斷行 -->
+            <dd><b>圖面硬規則 16 條</b> —— 房間沒門、室內斷成兩塊、家具穿牆、門卡牆角、梯段沒扶手牆、動線走不通…只要違反就換個切法重生,不合格的圖不會給你</dd>
+            <dd><b>建築技術規則施工編</b> §33 樓梯尺寸 · §40 居室採光
+              · §43 通風</dd>
+
+            <dt>收得下的尺寸</dt>
+            <dd class="sizes">
+              <span><b>窄面寬透天</b>建築寬 3.5–7 m · 深 9.5–13.5 m</span>
+              <span><b>淺進深透天</b>寬 5–9 m · 深 ≥5 m</span>
+              <span><b>兩帶式 / 集合住宅</b>寬 ≥10 m</span>
+              <span><b>AI 關係圖</b>寬 5–30 m · 深 ≥9 m</span>
+            </dd>
+          </dl>
+        </details>
+      </section>
+
+      <div id="result" class="result hidden">
+
+        <section class="block">
+          <h2 class="block-title">本案</h2>
+          <span id="summary" class="summary"></span>
+          <span id="design-note" class="design-note"></span>
+          <div id="metrics" class="metrics hidden"></div>
+          <div id="suggestions" class="suggestions hidden"></div>
+        </section>
+
+        <section class="block">
+          <h2 class="block-title">檢查</h2>
+          <div id="ai-panel" class="ai-panel hidden"></div>
+        </section>
+
+        <section class="block">
+          <h2 class="block-title">調整方案</h2>
+          <div class="modify-bar">
+            <input id="modify-text" type="text"
+              placeholder="例:改四房 / 加蓋一層 / 主臥放西南角">
+            <button id="modify" class="btn solid">修改</button>
+          </div>
+          <div class="btn-row">
+            <button id="redesign" class="btn quiet">換一個方案</button>
+            <button id="score-btn" class="btn quiet">家具配置評分</button>
+          </div>
+          <div id="layout-score" class="layout-score hidden"></div>
+        </section>
+
+        <section class="block">
+          <h2 class="block-title">下載</h2>
+          <div class="dl-row">
+            <a id="dxf" class="dl" download><b>DXF</b>目前這張圖</a>
+            <a id="zip" class="dl" download><b>ZIP</b>全部圖面</a>
+            <a id="pdf" class="dl" download><b>PDF</b>圖冊 A3</a>
+          </div>
+        </section>
+
       </div>
     </div>
+  </aside>
 
-    <div id="layout-score" class="layout-score hidden"></div>
-
-    <div class="modify-bar">
-      <input id="modify-text" type="text"
-        placeholder="修改這個方案(例:改四房 / 加蓋一層 / 加地下車庫 / 主臥放西南角 / 加書房)">
-      <button id="modify" class="primary">✏️ 修改方案</button>
+  <!-- ══ 右:圖面 ══════════════════════════════════════════════════ -->
+  <main class="stage">
+    <div class="stage-bar">
+      <div class="tabs" id="tabs"></div>
+      <span class="stage-hint">滾輪縮放 · 拖曳平移 · 雙擊還原</span>
     </div>
-    <div class="tabs" id="tabs"></div>
+
     <div class="viewer" id="viewer">
       <div class="canvas" id="canvas"></div>
+
+      <div class="empty" id="empty">
+        <svg viewBox="0 0 140 96" class="empty-art" aria-hidden="true">
+          <rect x="20" y="14" width="100" height="64"/>
+          <path d="M20 50h46M66 50v28M66 30h54M92 14v16"/>
+          <path d="M36 14v5M52 78v-5" class="thin"/>
+        </svg>
+        <p class="empty-title">還沒有圖面</p>
+        <p class="empty-sub">在左邊描述你想蓋的房子,或點一個範例</p>
+      </div>
+
       <div class="viewer-tools">
-        <a id="dxf" class="download" download>⬇ 下載此張 DXF</a>
-        <span class="hint">滾輪縮放 · 拖曳平移 · 雙擊還原</span>
+        <button class="zoom" id="zoom-out" title="縮小">−</button>
+        <button class="zoom" id="zoom-reset" title="還原">⤢</button>
+        <button class="zoom" id="zoom-in" title="放大">+</button>
       </div>
     </div>
-  </section>
-</main>
+  </main>
+
+</div>
 
 <script src="app.js"></script>
 </body>
