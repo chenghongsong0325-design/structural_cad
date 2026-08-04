@@ -37,18 +37,36 @@ def _item(rep, code):
 
 
 # ── 報表不能說謊 ────────────────────────────────────────────────────────────
-def test_opening_tags_not_fooled_by_the_schedule_table(report):
-    """★★ 門窗編號:表格裡有 D1/W1,但圖上沒標 → 必須報 partial,不能報 have。
+def test_opening_tags_not_fooled_by_the_schedule_table():
+    """★★ 探針要分得出「圖上的標註」與「表格裡的欄位」。
 
-    這正是第一版的錯誤。受測的圖**開著門窗表**,探針要能分清楚
-    「畫在地界線範圍內的標註」與「表格裡的欄位」。"""
-    it = _item(report, "opening_tags")
+    這正是第一版的錯誤:去全圖找 D1/W1,撈到門窗表裡的編號就報 have,圖上其實
+    一個都沒有。這裡刻意**關掉圖上的編號、只留門窗表**,探針必須報 partial。"""
+    from dataclasses import replace
+
+    from src.design.gap_analysis import _sample_drawing
+    from src.drafting.apartment_plan import draw_floor_plan
+    from src.standards.loader import apply_standard, load_standard, new_document
+
+    _msp, spec = _sample_drawing()
+    spec = replace(spec, opening_marks=False, schedules=True)
+    doc = new_document()
+    layers = apply_standard(doc, load_standard())
+    msp = doc.modelspace()
+    draw_floor_plan(msp, spec, layers)
+
+    it = _item(analyze_gap(msp, spec), "opening_tags")
     assert it.status == PARTIAL, it.ours
     assert "圖上一個都沒標" in it.ours
 
 
+def test_opening_tags_are_on_the_plan_now(report):
+    """★★ 預設出圖:門窗編號要**畫在圖上**(2026-08-03 補的四項之一)。"""
+    it = _item(report, "opening_tags")
+    assert it.status == HAVE, it.ours
+
+
 @pytest.mark.parametrize("code", [
-    "wall_thickness_note",      # 牆厚只在資料裡,圖上沒寫
     "spot_level",               # 沒有地坪標高
     "balcony_area",             # 陽台面積沒進面積計算表
     "drainage",                 # 沒有基地排水
@@ -63,6 +81,8 @@ def test_known_gaps_are_reported_missing(report, code):
     "sheet_frame", "dim_chains", "site_line", "building_line", "walls",
     "doors", "windows", "stairs", "balcony", "room_name", "furniture",
     "area_table", "opening_table",
+    # 2026-08-03 補的四項(三個版本的參考圖都有,連空殼圖都有)
+    "opening_tags", "wall_thickness_note", "stair_steps", "section_mark",
 ])
 def test_things_we_really_do_have(report, code):
     """★ 這些是真的畫得出來的(探針在圖裡找得到實體/文字才算)。"""

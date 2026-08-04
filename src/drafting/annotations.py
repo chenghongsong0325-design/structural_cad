@@ -1,14 +1,25 @@
-"""圖面配件 —— 樓層標示(大字)與北向箭頭(ROADMAP B5 的第 3 項)。
+"""圖面配件 —— 樓層標示、北向箭頭、門窗編號、剖切符號、牆厚標註。
 
-  * 樓層標示:一個大字(如「3F」),掛 TEXT 層——真實建案圖在圖面角落
-    放大大的樓層代號。
-  * 北向箭頭:做成可重用圖塊(圓 + 指北針三角 + N 字),插入時可旋轉
-    (圖面的北不朝上時轉 rotation),掛 OTHER 層。
+前三項是 ROADMAP B5;後三項是 2026-08-03 對照丙級檢定參考圖(見
+`src/design/gap_analysis.py`)補上的 —— 那三個版本的參考圖裡,連**沒有家具、
+沒有室名的空殼圖**都有這些,可見它們比家具還基本:
 
-⚠️ 待確認:北向箭頭樣式(圓+三角+N 為常見畫法之一,各事務所不同);
-   樓層標示字高預設 1500(1:100 出圖紙上 15mm)。
+  * 樓層標示:一個大字(如「3F」),掛 TEXT 層。
+  * 北向箭頭:可重用圖塊(圓 + 指北針三角 + N 字),插入時可旋轉,掛 OTHER 層。
+  * **門窗編號**:每個開口旁一個帶圈編號(D1/W2…),編號與門窗表**同一來源**
+    (`schedule.opening_codes`),圖與表一定對得起來。
+  * **剖切符號**:平面上標「剖面圖從這裡剖、往這邊看」——剖面圖是另一張,
+    平面沒指過去的話兩張圖對不起來。
+  * **牆厚標註**:引線 + 「15cm RC Wall」。牆厚本來就在 `Wall.thickness` 裡,
+    以前只是沒寫到圖上。
+
+⚠️ 待確認:北向箭頭樣式(圓+三角+N 為常見畫法之一,各事務所不同);樓層標示
+   字高預設 1500(1:100 出圖紙上 15mm);門窗編號圈徑/剖切符號臂長為 1:100
+   可讀的經驗值。
 """
 from __future__ import annotations
+
+import math
 
 from ezdxf.enums import TextEntityAlignment
 
@@ -16,6 +27,22 @@ Point = tuple[float, float]
 
 NORTH_ARROW_BLOCK = "NORTH_ARROW"
 NORTH_ARROW_RADIUS = 600      # 圖塊定義的半徑(mm)。待確認
+
+# 門窗編號:圈半徑、字高、離牆面的淨距(mm)。
+TAG_RADIUS = 230.0
+TAG_TEXT_H = 220.0
+TAG_OFFSET = 320.0
+# 剖切符號:線超出建築的長度、箭頭大小、字高(mm)。
+# ⚠️ 超出量 + 代號的位置要留在**退縮帶(2m)之內**,否則剖切代號會跑到地界線外面。
+CUT_EXTEND = 900.0
+CUT_ARROW = 450.0
+CUT_TEXT_H = 420.0
+# 牆厚標註:引線第一段長、水平段長、字高(mm)。
+NOTE_LEG = 900.0
+NOTE_TAIL = 700.0
+NOTE_TEXT_H = 250.0
+# 牆厚 ≥ 這個算 RC(與 wall_join 的剖面線分類同一條界線)。
+RC_THICKNESS = 140.0
 
 
 def draw_floor_label(msp, text: str, insert: Point, layers: dict[str, str],
@@ -55,3 +82,154 @@ def place_north_arrow(msp, insert: Point, layers: dict[str, str],
         dxfattribs={"layer": layers["OTHER"], "rotation": rotation,
                     "xscale": scale, "yscale": scale},
     )
+
+
+# ---------------------------------------------------------------------------
+# 門窗編號(圖上)
+# ---------------------------------------------------------------------------
+def _building_center(spec) -> Point:
+    """房間外接矩形的中心 —— 用來決定編號往牆的哪一側擺(往外擺)。"""
+    xs = [p[0] for r in spec.rooms for p in r.points]
+    ys = [p[1] for r in spec.rooms for p in r.points]
+    if not xs:
+        return (0.0, 0.0)
+    return ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0)
+
+
+def draw_opening_marks(msp, spec, layers: dict[str, str]) -> int:
+    """每個門窗洞口旁畫一個帶圈編號(D1/W2…)。回畫了幾個。
+
+    編號取自 `schedule.opening_codes`(與門窗表同一來源)。位置在洞口中心往
+    **背向建築中心**那一側偏移 —— 外牆的編號就落在建築外面(和參考圖一樣),
+    內牆的落在鄰室裡,不會壓到牆體本身。"""
+    from src.drafting.schedule import opening_codes
+
+    codes = opening_codes(spec)
+    if not codes:
+        return 0
+    cx, cy = _building_center(spec)
+    line_layer = layers["OTHER"]
+    text_layer = layers["A-TEXT"]
+    n = 0
+    for (wi, oi), code in sorted(codes.items()):
+        try:
+            wall = spec.walls[wi]
+            op = wall.openings[oi]
+        except (IndexError, AttributeError):
+            continue
+        px, py = wall.point_at(op.position)
+        nx, ny = wall.normal_vector
+        # 往背離建築中心的那一側擺(法線可能指向任一側,用內積決定正負)
+        sign = 1.0 if (px - cx) * nx + (py - cy) * ny >= 0 else -1.0
+        d = wall.thickness / 2.0 + TAG_OFFSET + TAG_RADIUS
+        tx, ty = px + nx * d * sign, py + ny * d * sign
+        msp.add_circle((tx, ty), radius=TAG_RADIUS,
+                       dxfattribs={"layer": line_layer})
+        msp.add_text(
+            code, height=TAG_TEXT_H,
+            dxfattribs={"layer": text_layer, "style": "STRUCT"},
+        ).set_placement((tx, ty), align=TextEntityAlignment.MIDDLE_CENTER)
+        n += 1
+    return n
+
+
+# ---------------------------------------------------------------------------
+# 剖切符號
+# ---------------------------------------------------------------------------
+def draw_section_mark(msp, spec, layers: dict[str, str], *, label: str = "A",
+                      axis: str = "x", at: float | None = None,
+                      look: int = 1) -> None:
+    """平面上的剖切符號:剖切線 + 兩端箭頭 + 剖面代號(A—A)。
+
+    axis="x":剖切線沿平面 X 橫過建築(對應 `section.draw_section(axis="x")`);
+    "y" 則是縱向。at = 剖切位置(預設建築正中);look = +1/-1 決定往哪個方向看。
+
+    為什麼要有:剖面圖是**另一張圖**,平面上沒有標「從這裡剖」的話,看圖的人
+    對不起來 —— 參考圖三個版本(含 92 年的空殼圖)都有這個符號。"""
+    if axis not in ("x", "y"):
+        raise ValueError(f"axis 需為 'x' 或 'y',收到 {axis!r}")
+    xs = [p[0] for r in spec.rooms for p in r.points]
+    ys = [p[1] for r in spec.rooms for p in r.points]
+    if not xs:
+        return
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    line_layer = layers["OTHER"]
+    text_layer = layers["A-TEXT"]
+    sign = 1 if look >= 0 else -1
+
+    if axis == "x":                      # 橫向剖切線(y 固定)
+        cut = (y0 + y1) / 2.0 if at is None else at
+        a = (x0 - CUT_EXTEND, cut)
+        b = (x1 + CUT_EXTEND, cut)
+        arrow = (0.0, float(sign))       # 視線方向(南北)
+    else:                                # 縱向剖切線(x 固定)
+        cut = (x0 + x1) / 2.0 if at is None else at
+        a = (cut, y0 - CUT_EXTEND)
+        b = (cut, y1 + CUT_EXTEND)
+        arrow = (float(sign), 0.0)
+
+    msp.add_line(a, b, dxfattribs={"layer": line_layer})
+    ux, uy = arrow
+    for end, inward in ((a, 1.0), (b, -1.0)):
+        ex, ey = end
+        # 箭頭:從端點往視線方向畫一段 + 兩撇
+        hx, hy = ex + ux * CUT_ARROW, ey + uy * CUT_ARROW
+        msp.add_line((ex, ey), (hx, hy), dxfattribs={"layer": line_layer})
+        for s in (-1, 1):
+            bx = hx - ux * CUT_ARROW * 0.45 + (-uy) * s * CUT_ARROW * 0.25
+            by = hy - uy * CUT_ARROW * 0.45 + ux * s * CUT_ARROW * 0.25
+            msp.add_line((hx, hy), (bx, by), dxfattribs={"layer": line_layer})
+        # 代號:放在端點外側(沿剖切線再往外一點)
+        if axis == "x":
+            tx, ty = ex - inward * CUT_ARROW * 1.1, ey
+        else:
+            tx, ty = ex, ey - inward * CUT_ARROW * 1.1
+        msp.add_text(
+            label, height=CUT_TEXT_H,
+            dxfattribs={"layer": text_layer, "style": "STRUCT"},
+        ).set_placement((tx, ty), align=TextEntityAlignment.MIDDLE_CENTER)
+
+
+# ---------------------------------------------------------------------------
+# 牆厚標註
+# ---------------------------------------------------------------------------
+def wall_note_text(thickness: float) -> str:
+    """牆厚 → 圖上的文字(參考圖寫法:「15cm RC Wall」)。"""
+    cm = thickness / 10.0
+    kind = "RC Wall" if thickness >= RC_THICKNESS else "磚牆"
+    return f"{cm:.0f}cm {kind}"
+
+
+def draw_wall_notes(msp, spec, layers: dict[str, str]) -> int:
+    """每一種牆厚挑一道代表牆,拉引線寫厚度(如「15cm RC Wall」)。回畫了幾條。
+
+    只挑代表牆(每種厚度最長的那道):每道牆都標會把圖蓋滿,參考圖也是各標一次。"""
+    line_layer = layers["OTHER"]
+    text_layer = layers["A-TEXT"]
+    best: dict = {}
+    for w in spec.walls:
+        if getattr(w, "stair_guard", False):     # 導牆是配件,不是主結構
+            continue
+        t = round(float(w.thickness), 1)
+        if t not in best or w.length > best[t].length:
+            best[t] = w
+
+    cx, cy = _building_center(spec)
+    n = 0
+    for t, wall in sorted(best.items(), key=lambda kv: -kv[0]):
+        px, py = wall.point_at(wall.length / 2.0)
+        nx, ny = wall.normal_vector
+        sign = 1.0 if (px - cx) * nx + (py - cy) * ny >= 0 else -1.0
+        p1 = (px + nx * sign * NOTE_LEG, py + ny * sign * NOTE_LEG)
+        tail = NOTE_TAIL if p1[0] >= cx else -NOTE_TAIL
+        p2 = (p1[0] + tail, p1[1])
+        msp.add_line((px, py), p1, dxfattribs={"layer": line_layer})
+        msp.add_line(p1, p2, dxfattribs={"layer": line_layer})
+        align = (TextEntityAlignment.MIDDLE_LEFT if tail > 0
+                 else TextEntityAlignment.MIDDLE_RIGHT)
+        msp.add_text(
+            wall_note_text(t), height=NOTE_TEXT_H,
+            dxfattribs={"layer": text_layer, "style": "STRUCT"},
+        ).set_placement((p2[0] + math.copysign(120.0, tail), p2[1]), align=align)
+        n += 1
+    return n

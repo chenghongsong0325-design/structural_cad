@@ -90,23 +90,41 @@ def draw_area_table(msp, spec, layers: dict[str, str], origin: Point) -> float:
     return _draw_table(msp, origin, AREA_COLS, "面積計算表", rows, layers)
 
 
+def _groups(spec, placements) -> list:
+    """這些門(或窗)有幾種寬度 → [(寬, 數量)],寬的排前面。"""
+    out: dict[float, int] = {}
+    for p in placements:
+        w = spec.walls[p.wall_index].openings[p.opening_index].width
+        out[w] = out.get(w, 0) + 1
+    return sorted(out.items(), key=lambda kv: -kv[0])
+
+
+def opening_codes(spec) -> dict:
+    """洞口 → 門窗編號:{(wall_index, opening_index): "D1"/"W2"…}。
+
+    **圖上的標註與門窗表共用這一份**——真實圖面每個開口旁邊都有編號,要能跟表
+    對得起來;兩邊各編各的遲早會對不上(這正是參考圖有、我們以前沒有的一項)。
+    """
+    codes: dict = {}
+    for placements, prefix in ((spec.doors, "D"), (spec.windows, "W")):
+        order = {w: f"{prefix}{i}"
+                 for i, (w, _n) in enumerate(_groups(spec, placements), start=1)}
+        for p in placements:
+            width = spec.walls[p.wall_index].openings[p.opening_index].width
+            codes[(p.wall_index, p.opening_index)] = order[width]
+    return codes
+
+
 def draw_opening_table(msp, spec, layers: dict[str, str], origin: Point) -> float:
     """門窗表:門/窗各依洞口寬度分組編號(D1、D2…/W1、W2…,寬的排前面)。
 
     寬度從 DoorPlacement/WindowPlacement 指到的牆洞口讀(圖與表同一資料
     來源,不會對不上)。回傳表格總高度(mm)。
     """
-    def widths(placements):
-        out: dict[float, int] = {}
-        for p in placements:
-            w = spec.walls[p.wall_index].openings[p.opening_index].width
-            out[w] = out.get(w, 0) + 1
-        return sorted(out.items(), key=lambda kv: -kv[0])   # 寬 → 窄
-
     rows = [["編號", "類型", "寬度(cm)", "數量"]]
-    for i, (w, n) in enumerate(widths(spec.doors), start=1):
+    for i, (w, n) in enumerate(_groups(spec, spec.doors), start=1):
         rows.append([f"D{i}", "門", f"{w / 10:.0f}", str(n)])
-    for i, (w, n) in enumerate(widths(spec.windows), start=1):
+    for i, (w, n) in enumerate(_groups(spec, spec.windows), start=1):
         rows.append([f"W{i}", "窗", f"{w / 10:.0f}", str(n)])
     return _draw_table(msp, origin, OPEN_COLS, "門窗表", rows, layers)
 

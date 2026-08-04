@@ -30,6 +30,8 @@ import json
 import re
 from dataclasses import asdict, dataclass, field
 
+from src.drafting.annotations import CUT_TEXT_H
+
 HAVE, PARTIAL, MISSING = "have", "partial", "missing"
 _MARK = {HAVE: "✅", PARTIAL: "🟡", MISSING: "❌"}
 
@@ -139,6 +141,9 @@ def _observe(msp, spec) -> dict:
         "blocks": {e.dxf.name for e in msp.query("INSERT")},
         "n_axis_circle": len([e for e in msp.query("CIRCLE")
                               if e.dxf.layer == "AXIS"]),
+        # 剖切代號用字高當指紋:軸網編號圈裡也是「A」,只比文字會認錯。
+        "n_cut_mark": len([e for e in msp.query("TEXT")
+                           if abs(e.dxf.height - CUT_TEXT_H) < 1.0]),
         "n_dim": len(msp.query("DIMENSION")),
     }
 
@@ -209,10 +214,12 @@ def _elements() -> list:
                 if "WALL" in o["layers"] else (MISSING, "沒畫", ""))
 
     def wall_note(o):
-        return ((HAVE, "有牆厚文字", "") if _has_text(o, "RC Wall")
-                else (MISSING, "牆上沒有厚度標註",
-                      "參考圖用引線寫「15cm RC Wall」「20cm RC Wall」;"
-                      "我們牆厚只存在資料裡,圖上看不到"))
+        notes = [t for t in o["texts"] if "RC Wall" in t or "磚牆" in t]
+        return ((HAVE, f"annotations.draw_wall_notes:{'、'.join(notes)}", "")
+                if notes else
+                (MISSING, "牆上沒有厚度標註",
+                 "參考圖用引線寫「15cm RC Wall」「20cm RC Wall」;"
+                 "我們牆厚只存在資料裡,圖上看不到"))
 
     def columns(o):
         return ((HAVE, "members.draw_column(柱藏牆內)", "")
@@ -247,12 +254,15 @@ def _elements() -> list:
                 "(陽台比室內低 2cm 就是靠這個表達)")
 
     def stairs(o):
-        return ((HAVE, "stair:踏步線+折斷線+方向箭頭+上/下", "")
-                if _has_text(o, "上", "下") else (MISSING, "沒畫", ""))
+        ok = bool(getattr(o["spec"], "stairs", None)) and "HANDRAIL" in o["layers"]
+        return ((HAVE, "stair:踏步線+折斷線+方向箭頭+UP/DN", "")
+                if ok else (MISSING, "這層沒有樓梯", "單層平面本來就沒有"))
 
     def stair_count(o):
-        return (PARTIAL, "只寫「上/下」",
-                "參考圖寫「UP 16 / DN」(級數),我們沒把級數標上去")
+        up = _match_text(o, r"UP \d+")
+        return ((HAVE, f"stair.flight_label:{'、'.join(up)}", "") if up else
+                (PARTIAL, "只寫「上/下」",
+                 "參考圖寫「UP 16 / DN」(級數),我們沒把級數標上去"))
 
     def elevator(o):
         return (PARTIAL, "balcony_elevator.draw_elevator_symbol 有,透天沒放",
@@ -320,6 +330,8 @@ def _elements() -> list:
         return (HAVE, "section.draw_section / draw_elevation(另出圖)", "")
 
     def section_mark(o):
+        if o["n_cut_mark"] >= 2:
+            return HAVE, "annotations.draw_section_mark(剖切線+箭頭+代號 A)", ""
         return (MISSING, "平面圖上沒有剖切指示",
                 "參考圖外牆角落有 A◺ 之類的方向符號,標出剖面/立面是從哪裡剖、"
                 "往哪個方向看。我們的剖面立面是另外一張圖,平面上沒有指到它 —— "

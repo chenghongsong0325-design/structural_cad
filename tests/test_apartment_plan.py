@@ -108,8 +108,10 @@ def test_draw_floor_plan_layers(doc_and_layers) -> None:
     # 門 7(含樓梯間門)+ 窗 7 = 14 個 INSERT 在 DW。
     assert by_layer.get("DW") == 14
     # OTHER:A3 圖框 2 + 標題欄 1 + 電梯符號 3 + 設備家具圖塊 11 +
-    #        流理台(2 段多義線 + 1 水槽圓)3 + 北向箭頭 1 = 21。
-    assert by_layer.get("OTHER") == 21
+    #        流理台(2 段多義線 + 1 水槽圓)3 + 北向箭頭 1 = 21;
+    #        2026-08-03 起再加圖面標註(對照丙級檢定參考圖):門窗編號圈 14 +
+    #        牆厚引線 2 種×2 段 4 + 剖切符號(線 1 + 兩端各 箭幹1+箭羽2)7 = 25。
+    assert by_layer.get("OTHER") == 21 + 25
     # 尺度在 DIM:四邊三層尺寸鏈(細部 20 + 軸距 10 + 總長 4)= 34,
     # 加基地標註 8(下方/左方各:院|建築|院 3 段 + 基地總長 1)= 42 個。
     assert by_layer.get("DIM") == 42

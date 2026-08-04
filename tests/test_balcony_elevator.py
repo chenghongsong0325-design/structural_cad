@@ -138,8 +138,17 @@ def test_floor_plan_draws_elevator_and_balcony(doc_and_layers) -> None:
     draw_floor_plan(msp, spec, layers)   # 不應報 NotImplementedError
 
     # 轎廂符號在 OTHER(對角線 2 條);欄杆折線在 HANDRAIL。
-    other_lines = [e for e in msp.query("LINE") if e.dxf.layer == layers["OTHER"]]
-    assert len(other_lines) == 2
+    # ⚠️ 只數**落在井道範圍內**的線:OTHER 層現在還有牆厚引線與剖切符號
+    #    (2026-08-03 補的圖面標註),整層一起數會誤判。
+    elev = spec.elevators[0]
+    x0, y0 = elev.origin
+    x1, y1 = x0 + elev.width, y0 + elev.depth
+    def _inside(e):
+        return all(x0 - 1 <= p.x <= x1 + 1 and y0 - 1 <= p.y <= y1 + 1
+                   for p in (e.dxf.start, e.dxf.end))
+    car_lines = [e for e in msp.query("LINE")
+                 if e.dxf.layer == layers["OTHER"] and _inside(e)]
+    assert len(car_lines) == 2
     rail_polys = [e for e in msp.query("LWPOLYLINE")
                   if e.dxf.layer == layers["HANDRAIL"]]
     assert len(rail_polys) >= 2          # 樓梯折斷線 + 陽台欄杆

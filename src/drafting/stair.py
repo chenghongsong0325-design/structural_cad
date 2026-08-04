@@ -55,6 +55,22 @@ NEWEL_POST_SIZE = 120    # 立柱小方塊邊長(mm)
 _DIRECTIONS = ("north", "south", "east", "west")
 
 
+# 起步端文字:參考圖(丙級檢定術科)寫「UP 16」/「DN」—— 上行標**級數**、下行不標。
+# 資料層仍用「上」/「下」(spec 的語意),換算成圖面寫法集中在這裡一處。
+UP_WORD, DOWN_WORD = "UP", "DN"
+
+
+def flight_label(label: str, steps: int) -> str:
+    """(label, 總級數) → 圖上的文字。
+
+    以前只寫「上」/「下」,看圖的人不知道這座梯爬幾階;參考圖一律寫「UP 16」。
+    級數由樓梯自己算(Stair.steps / UStair 的兩梯段合計),不必呼叫端自己寫進
+    label —— 寫進去遲早會跟實際級數對不上。"""
+    if label.strip() in ("下", DOWN_WORD):
+        return DOWN_WORD
+    return f"{UP_WORD} {steps}" if steps else UP_WORD
+
+
 @dataclass
 class Stair:
     """一座單跑樓梯(平面圖)。
@@ -196,9 +212,9 @@ def draw_stair(msp, stair: Stair, layers: dict[str, str], text_height: float = 2
             dxfattribs={"layer": rail},
         )
 
-    # (4) 「上/下」文字:起步端、中心線上。
+    # (4) 方向文字:起步端、中心線上(上行標級數,如「UP 16」)。
     msp.add_text(
-        stair.label,
+        flight_label(stair.label, stair.steps),
         height=text_height,
         dxfattribs={"layer": text_layer, "style": "STRUCT"},
     ).set_placement(stair.to_world(t_mid, max(tail_s - 250, 100)),
@@ -329,7 +345,7 @@ def draw_u_stair(msp, stair: UStair, layers: dict[str, str], text_height: float 
             dxfattribs={"layer": rail},
         )
     msp.add_text(
-        stair.label, height=text_height,
+        flight_label(stair.label, stair.steps_per_flight * 2), height=text_height,
         dxfattribs={"layer": text_layer, "style": "STRUCT"},
     ).set_placement(stair.to_world(t_mid, max(tail_s - 250, 100)),
                     align=TextEntityAlignment.MIDDLE_CENTER)

@@ -121,7 +121,12 @@ Phase 6 家具擺放。
 
 **離「合格圖面」還差多少**：`python -m src.design.gap_analysis` 會拿產線畫出來的圖
 去對照丙級檢定術科的參考平面圖（台灣的圖；**不用簡體字的圖當基準**），逐項量測後
-更新 [docs/gap_analysis.md](docs/gap_analysis.md)。目前 34 項元素涵蓋率 57%。
+更新 [docs/gap_analysis.md](docs/gap_analysis.md)。目前 35 項元素涵蓋率 64%。
+
+**圖面標註**（2026-08-03 補，`FloorPlanSpec` 預設開啟，不像 `schedules` 是可選旁註）：
+門窗編號 `opening_marks`（與門窗表同一來源 `schedule.opening_codes`）、牆厚引線
+`wall_notes`（「15cm RC Wall」）、剖切符號 `section_mark`（A—A）；樓梯改標
+`UP 16`／`DN`（`stair.flight_label`，級數由樓梯自己算）。
 
 **做不到 / 尚未做：**
 - 寬度 <5m 或深度 <9m（物理下限，骨架排不下）

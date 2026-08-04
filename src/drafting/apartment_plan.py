@@ -64,7 +64,13 @@ from src.drafting.gridlines import (
     draw_grid_dimensions,
 )
 from src.drafting.members import Column, column_corners, draw_column
-from src.drafting.annotations import draw_floor_label, place_north_arrow
+from src.drafting.annotations import (
+    draw_floor_label,
+    draw_opening_marks,
+    draw_section_mark,
+    draw_wall_notes,
+    place_north_arrow,
+)
 from src.drafting.room import Room, draw_room_label, draw_room_tag
 from src.drafting.stair import Stair, UStair, draw_stair, draw_u_stair
 from src.drafting.titleblock import (
@@ -155,6 +161,17 @@ class FloorPlanSpec:
     # ── 圖面表格(E4):True 時畫「面積計算表+門窗表」——有圖框貼內框右側,
     #    無圖框放地界線右側(讓開右邊的尺寸鏈)。
     schedules: bool = False
+
+    # ── 圖面標註(2026-08-03,對照丙級檢定參考圖補上)────────────────────
+    # 這三項在參考圖裡連「沒有家具、沒有室名的空殼圖」都有,屬於基本要求,
+    # 所以**預設開啟**(不像 schedules 是可選的旁註)。
+    #   opening_marks:每個門窗洞口旁的帶圈編號(D1/W2…),與門窗表同一來源。
+    #   wall_notes   :每種牆厚一條引線,寫「15cm RC Wall」。
+    #   section_mark :剖切符號的代號("A" → 畫 A—A);None/"" = 不畫。
+    opening_marks: bool = True
+    wall_notes: bool = True
+    section_mark: Optional[str] = "A"
+    section_mark_axis: str = "x"        # 對應 section.draw_section 的 axis
 
     # ── 樓梯(B1)/ 電梯與陽台(B3)/ 設備家具(B4)──────────────────────────
     stairs: list = field(default_factory=list)      # Stair / UStair
@@ -333,6 +350,16 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
             insert_competition_title_block(msp, spec.title_block, layers, insert=insert)
         else:
             insert_title_block(msp, spec.title_block, layers, insert=insert)
+
+    # (8.5) 圖面標註:門窗編號 / 牆厚引線 / 剖切符號(對照丙級檢定參考圖)。
+    #       放在門窗、房間標註之後,才不會被後面的圖元壓過去。
+    if spec.opening_marks:
+        draw_opening_marks(msp, spec, layers)
+    if spec.wall_notes:
+        draw_wall_notes(msp, spec, layers)
+    if spec.section_mark:
+        draw_section_mark(msp, spec, layers, label=spec.section_mark,
+                          axis=spec.section_mark_axis)
 
     # (9) 圖面配件:樓層標示大字 + 北向箭頭(B5)。
     xs = [p[0] for p in spec.site_boundary]

@@ -149,7 +149,8 @@ def test_draw_stair_label_text(doc_and_layers) -> None:
 
     texts = list(msp.query("TEXT"))
     assert len(texts) == 1
-    assert texts[0].dxf.text == "下"
+    # 資料層仍是「下」,圖上照參考圖(丙級術科)的寫法畫成 DN。
+    assert texts[0].dxf.text == "DN"
     assert texts[0].dxf.layer == layers["A-TEXT"]
 
 
@@ -252,10 +253,11 @@ def test_draw_u_stair_well_lines(doc_and_layers) -> None:
 def test_draw_u_stair_label(doc_and_layers) -> None:
     doc, layers = doc_and_layers
     msp = doc.modelspace()
-    draw_u_stair(msp, _demo_ustair(label="上18"), layers)
+    draw_u_stair(msp, _demo_ustair(label="上"), layers)
     texts = list(msp.query("TEXT"))
     assert len(texts) == 1
-    assert texts[0].dxf.text == "上18"
+    # 上行要標**級數**(參考圖寫「UP 16」);級數由樓梯自己算,不靠呼叫端寫進 label。
+    assert texts[0].dxf.text == "UP 18"
 
 
 # ---------------------------------------------------------------------------
