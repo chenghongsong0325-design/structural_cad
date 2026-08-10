@@ -257,12 +257,29 @@ def check_floor(spec, env=None, level: int = 1, label: str = "") -> list[PlanIss
     # ④ 家具不得嵌進牆體
     from src.design.collision.geometry import fixture_obstacles
     bodies = _wall_bodies(spec)
-    for o in fixture_obstacles(spec):
+    obstacles = list(fixture_obstacles(spec))
+    for o in obstacles:
         overlap = sum(o.poly.intersection(b).area for b in bodies)
         if overlap > WALL_OVERLAP_TOL:
             issues.append(PlanIssue(
                 "error", "furniture_in_wall", lb, getattr(o, "tag", "家具"),
                 f"家具嵌進牆體 {overlap/1e6:.3f}㎡(畫出來是穿牆)"))
+
+    # ④b 家具壓在柱上 → **warning,不是 error**。
+    #     ⚠️ 分類理由(很重要,不要好心改成 error):柱是結構物、位置由軸網決定,
+    #     擺位器只能「盡力挪開」(fixture_fix.clear_fixtures_off_columns),挪開
+    #     會撞到牆/門迴轉時寧可留著壓柱 —— 那是刻意的取捨。列成 error 會讓產線
+    #     為了一件修不掉的家具無限重生,也會讓網站對一張其他都合格的圖回 422。
+    #     與 ④ 分開列:穿牆是「貼牆樣板算錯半個牆厚」,壓柱是「柱比牆胖」,
+    #     成因與解法都不同,混在一起看不出是哪一種。
+    from src.design.column_design import column_footprints
+    cols = column_footprints(spec)
+    for o in obstacles:
+        overlap = sum(o.poly.intersection(c).area for c in cols)
+        if overlap > WALL_OVERLAP_TOL:
+            issues.append(PlanIssue(
+                "warning", "furniture_in_column", lb, getattr(o, "tag", "家具"),
+                f"家具壓在柱上 {overlap/1e6:.3f}㎡(柱角凸出牆面,擺不進去)"))
 
     # ⑤ 門不得卡在房間角落(人走不進那個角 → 動線判不通,看圖卻不明顯)
     from src.design.layout.narrow_house import DOOR_CORNER_MIN, _door_pos_ok

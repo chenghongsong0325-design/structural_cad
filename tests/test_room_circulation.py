@@ -70,11 +70,24 @@ def test_good_layout_adequate_rooms_all_ok():
     assert bad == [], bad
 
 
-def test_s11_narrow_dining_not_blocked():
-    """★ 窄餐廳修正回歸守門:S11 餐桌偏移後,餐廳動線不再被切斷。"""
-    rep = analyze_room_circulation(_case("S11"))
-    dining = next(r for r in rep.rooms if r.kind == "dining")
-    assert dining.ok, dining.reason
+def test_narrow_dining_not_blocked():
+    """★ 窄餐廳修正回歸守門:餐桌偏移後,餐廳動線不再被切斷。
+
+    ⚠️ 原本只釘 S11 一案。2026-08-10 起外牆要替柱留位置(STRUCT_MARGIN),建築
+       每邊縮 27.5cm,S11(18×14 三房)的餐廳因此併進客廳、不再是獨立房間 ——
+       **釘單一案子的守門會這樣悄悄失效**(next() 直接 StopIteration)。改成掃過
+       所有仍有餐廳的案子,最窄的那間(S09,短邊 3.2m)也要走得通,並要求至少
+       找得到一間,免得哪天全被併掉還一路綠燈。
+    """
+    seen = 0
+    for cid in ("S07", "S08", "S09"):
+        rep = analyze_room_circulation(_case(cid))
+        for room in rep.rooms:
+            if room.kind != "dining":
+                continue
+            seen += 1
+            assert room.ok, f"{cid} 餐廳動線不通:{room.reason}"
+    assert seen, "沒有任何案子有獨立餐廳 —— 這條守門形同虛設,要換案子"
 
 
 # ── 擋路會被抓出來 ──────────────────────────────────────────────────────────

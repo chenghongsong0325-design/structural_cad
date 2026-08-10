@@ -60,6 +60,11 @@ def test_floor_label_written_into_spec():
 
 # ── 共用軸網(柱上下對齊的根本)────────────────────────────────────────────
 def test_all_floors_share_same_grid():
+    """軸網是全棟共用的一副骨架 —— 這才是柱能上下對齊的根本。
+
+    ⚠️ 柱**斷面**不在此列:column_design 會讓一樓的柱比頂樓粗(上面壓的樓層
+       多)。軸網相同 + 斷面往上只縮不脹,對齊仍然成立(見下一條測試)。
+    """
     b = generate_building(BuildingBrief(
         typical=CorridorBrief(units_per_row=6), floors=4))
     ref = b.floors[0].spec
@@ -67,7 +72,15 @@ def test_all_floors_share_same_grid():
         assert fl.spec.x_spacings == ref.x_spacings
         assert fl.spec.y_spacings == ref.y_spacings
         assert fl.spec.grid_origin == ref.grid_origin
-        assert fl.spec.column_size == ref.column_size
+
+
+def test_column_size_never_grows_upward():
+    """柱斷面由下往上只能縮不能脹 —— 上層比下層粗就代表力路徑斷了。"""
+    b = generate_building(BuildingBrief(
+        typical=CorridorBrief(units_per_row=6), floors=4))
+    sizes = [f.spec.column_size for f in b.floors]
+    assert all(a >= b_ for a, b_ in zip(sizes, sizes[1:])), sizes
+    assert sizes[0] > sizes[-1], f"四層樓的柱應該有粗細變化,實得 {sizes}"
 
 
 def test_floors_are_independent_objects():

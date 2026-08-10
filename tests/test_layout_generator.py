@@ -249,8 +249,14 @@ def test_one_bedroom_house_has_no_hallway() -> None:
 
 def test_two_bedroom_hallway_only_when_needed() -> None:
     """2 房動線融入客餐廳、預設不設走道;小基地上東臥門被服務核+柱位
-    擠到開不進客餐廳時,才退回設走道。"""
-    big = generate_floor_plan(HouseBrief(site_width=14000, site_depth=12000, bedrooms=2))
+    擠到開不進客餐廳時,才退回設走道。
+
+    ⚠️ 2026-08-10 起外牆要替柱留位置(STRUCT_MARGIN),建築每邊縮 27.5cm,
+       「不必設走道」的門檻跟著往上平移約 0.5m(14.0m → 14.5m)。這裡原本釘
+       14×12 剛好卡在舊門檻上,改成 15×12 讓它明確落在門檻的另一邊 ——
+       釘的是「大基地不設走道、小基地才設」這個意圖,不是那個特定尺寸。
+    """
+    big = generate_floor_plan(HouseBrief(site_width=15000, site_depth=12000, bedrooms=2))
     assert not any(r.kind == "corridor" for r in big.rooms)
     small = generate_floor_plan(HouseBrief(site_width=12000, site_depth=11000, bedrooms=2))
     assert any(r.kind == "corridor" for r in small.rooms)

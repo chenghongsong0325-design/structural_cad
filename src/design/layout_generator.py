@@ -138,6 +138,28 @@ WALL_SNAP_TOL = 600                    # 隔間牆距軸線小於此值就吸附
 # 寧可讓餐廳面積偏離目標一點,也要保住「窗開得下」。
 DINING_SNAP_TOL = 2500
 DAYLIGHT_DEPTH_MAX = 6000              # 居室採光深度上限(距窗最遠 6m,C1.5c)
+# 建築線 → 外牆**中心線**之間替結構保留的距離(使用者 2026-08-10 指正:
+# 「盡量讓室內的人看不到柱子」,對照丙級參考圖 107 年版壹層/貳層平面圖)。
+#
+# ⚠️ 以前 bx0 直接 = setback,也就是把外牆**中心線**壓在建築線上。後果有二:
+#    ① 牆外皮已經越過建築線 75mm(半個牆厚)—— 實質違建;
+#    ② 外牆柱(350)想往室外躲、讓室內牆面平整時,柱外緣會超出建築線 165mm,
+#       `column_design._push_exterior_out` 只好拒絕推 → 柱角全部凸進房間。
+#       量出來:19×13 與 21×12 的餘裕都是 0mm,一根都推不動。
+#
+# 留多少:柱推到「室內面與牆內面齊平」時,柱外緣離中心線
+#         = (柱寬−牆厚)/2 + 柱寬/2 = 柱寬 − 牆厚/2 = 350 − 75 = 275mm。
+# 柱更粗(4 層以上會到 400)時推不滿,`_push_exterior_out` 本來就會「有多少
+# 推多少」,不會出錯,只是室內少露一點點。
+STRUCT_MARGIN = 275
+# 退讓階梯的級距:留不滿時往下試的間隔。實測整條階梯跑到底只花 0.07ms
+# (骨架放不下時很早就 raise),所以取細一點 —— 級距太粗會讓「其實留得起
+# 220mm」的基地一路掉到 0(18×13 就是這樣被粗階梯害到)。
+STRUCT_MARGIN_STEP = 25
+# ⚠️ 鐵則:**不得因為要留柱位而讓原本生得出來的案子生不出來** —— 那等於用
+#    「圖比較好看」換掉「有圖可用」。所以兩個入口(_house_frame / _generate_house)
+#    都做成退讓階梯,基地剛好卡在下限時退到 0,行為與改動前完全一致。
+
 # 建築深度上限(深基地收斂用):兩帶式格局 = 北帶臥室(≤NORTH_BAND_RANGE 上限)
 # + 南帶客廳/起居(只靠南牆採光,深度 ≤DAYLIGHT_DEPTH_MAX)。基地更深時房間
 # 再深既不合結構(Y 跨 >9m)也不合法規(採光照不到)——建築深度封頂、
@@ -355,12 +377,28 @@ def _plan_x_grid(bx0: float, W: float, majors: list[float],
 # 產生器:單戶住宅(兩帶式)
 # ---------------------------------------------------------------------------
 def _generate_house(brief: HouseBrief) -> FloorPlanSpec:
+    """單層透天:同樣「先試著替外牆柱留滿位置,放不下就少留一點」。
+
+    ⚠️ 不能只拿 W/D 下限去夾:真正放不下的原因常常在更後面(餐廳併不併、走道
+       要不要、家具擺不擺得下),那些要排完才知道。所以與 `_house_frame` 一樣
+       做成退讓階梯。
+    """
+    last: Exception | None = None
+    for margin in range(int(STRUCT_MARGIN), -1, -STRUCT_MARGIN_STEP):
+        try:
+            return _generate_house_at(brief, float(margin))
+        except ValueError as exc:
+            last = exc
+    raise last
+
+
+def _generate_house_at(brief: HouseBrief, margin: float) -> FloorPlanSpec:
     if not 1 <= brief.bedrooms <= 4:
         raise ValueError(f"支援 1~4 間臥室,收到 {brief.bedrooms}")
 
-    bx0 = by0 = brief.setback
-    bx1 = brief.site_width - brief.setback
-    by1 = brief.site_depth - brief.setback
+    bx0 = by0 = brief.setback + margin              # 替外牆柱留位置,見常數說明
+    bx1 = brief.site_width - brief.setback - margin
+    by1 = brief.site_depth - brief.setback - margin
     W, D = bx1 - bx0, by1 - by0
     if W < 8000 or D < 7000:
         raise ValueError(
@@ -933,7 +971,7 @@ def _corridor_shell(brief: CorridorBrief, unit_list: list[UnitSpec],
     n = len(unit_list)
     depth = unit_list[0].depth
 
-    x0 = y0 = brief.setback
+    x0 = y0 = brief.setback + STRUCT_MARGIN         # 替外牆柱留位置,見常數說明
     widths = [u.width for u in unit_list]
     unit_x = [x0 + CORE_W + sum(widths[:i]) for i in range(n)]   # 各戶左緣(累加)
     y_corr = y0 + depth                         # 走廊下緣
@@ -1016,9 +1054,12 @@ def _corridor_shell(brief: CorridorBrief, unit_list: list[UnitSpec],
                           door_side="west")]
 
     spec_kw = dict(
-        site_boundary=[(0, 0), (bx1 + brief.setback, 0),
-                       (bx1 + brief.setback, by1 + brief.setback),
-                       (0, by1 + brief.setback)],
+        # ⚠️ 集合住宅的基地是由建築量體反推的,東/北側要把 STRUCT_MARGIN 也加
+        #    回去,否則西/南留 setback+margin、東/北只留 setback → 院子不對稱。
+        site_boundary=[(0, 0), (bx1 + brief.setback + STRUCT_MARGIN, 0),
+                       (bx1 + brief.setback + STRUCT_MARGIN,
+                        by1 + brief.setback + STRUCT_MARGIN),
+                       (0, by1 + brief.setback + STRUCT_MARGIN)],
         setback=brief.setback,
         x_spacings=[CORE_W] + widths + [CORE_W],
         y_spacings=[depth, brief.corridor_width, depth],
@@ -1598,6 +1639,24 @@ def _solve_frame_program(slot_kinds: list[str], w_avail: float, d_avail: float,
 
 
 def _house_frame(brief: HouseBrief) -> SimpleNamespace:
+    """透天骨架:先試著替外牆柱留滿位置,**放不下就少留一點**。
+
+    ⚠️ 為什麼是「試」而不是直接算:留多少會不會放得下,取決於臥室最小寬、
+       樓梯間進深、公共帶⋯⋯這些都要等骨架排完才知道,沒辦法事先算。所以做成
+       退讓階梯 —— 基地寬鬆的留滿(柱完全躲到室外、室內牆面全平),基地剛好
+       卡在下限的一點都不留(寧可柱角凸進房間,也不要生不出圖)。
+       這與 `column_design._push_exterior_out` 的「有多少推多少」是同一套哲學。
+    """
+    last: Exception | None = None
+    for margin in range(int(STRUCT_MARGIN), -1, -STRUCT_MARGIN_STEP):
+        try:
+            return _house_frame_at(brief, float(margin))
+        except ValueError as exc:
+            last = exc
+    raise last                                      # 一點都不留還是放不下 → 真的太小
+
+
+def _house_frame_at(brief: HouseBrief, margin: float) -> SimpleNamespace:
     """透天多樓層的「不變骨架」(D2):外殼、南北兩帶、東端[濕區|樓梯間]、軸網。
 
     層別分化的關鍵不變量——各層(B1F/1F/2F+)共用:
@@ -1611,9 +1670,9 @@ def _house_frame(brief: HouseBrief) -> SimpleNamespace:
     (_plan_x_grid),再做反向吸附(隔牆挪到軸線上,同 C1.5c 隔間坐樑);
     1F 廚房東牆同樣吸附。中間軸線的柱因此都落在豎牆交點,不會凸進房間。
     """
-    bx0 = by0 = brief.setback
-    bx1 = brief.site_width - brief.setback
-    by1 = brief.site_depth - brief.setback
+    bx0 = by0 = brief.setback + margin
+    bx1 = brief.site_width - brief.setback - margin
+    by1 = brief.site_depth - brief.setback - margin
     W, D = bx1 - bx0, by1 - by0
     if W < 10000 or D < 7000:
         raise ValueError(

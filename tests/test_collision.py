@@ -380,48 +380,81 @@ def test_no_column_hits_on_passing_specs():
         assert hits == []
 
 
-def test_column_contacts_reports_every_contact():
-    """Collision Report:column_contacts 列出**所有**家具×柱接觸(含合法的),
-    每筆有穿入深度/面積/是否超標;合格圖上應全部 over_tolerance=False。"""
+def test_pipeline_specs_put_no_furniture_on_columns():
+    """★ 2026-08-10 起的**更強保證**:產線圖上一件家具都不壓到柱。
+
+    使用者看圖時指出「柱會卡到沙發」。原因是擺位器只認牆、不認柱,而柱比牆胖
+    (500 的柱坐在 120 的內牆上,兩側各凸 190mm),貼牆家具必然壓上去。
+    以前只能容忍(COLUMN_TOLERANCE_MM=300 就是為此設的),現在
+    fixture_fix 會把家具推離柱、流理台則截短 → 接觸應為零。
+    """
     from src.design.collision import column_contacts
-    seen = 0
+    from src.design.layout.plan_check import WALL_OVERLAP_TOL
     for make in _SPECS:
-        for c in column_contacts(make()):
-            seen += 1
-            assert c["penetration_mm"] > 0
-            assert c["area_mm2"] > 0
-            assert len(c["column"]) == 2               # 柱心座標
-            assert c["over_tolerance"] is False        # 貼牆合法接觸
-            assert c["penetration_mm"] <= 190          # 柱半250 − 內牆半厚60
-    assert seen > 0                                    # 確實有貼牆壓柱的家具
+        # 判準用**圖面關卡的容差**:碰到角的幾百 mm² 是幾何毛邊(實測最大
+        # 641mm²、穿入 6mm),不是「沙發被柱卡住」。超過這條線的要為零。
+        real = [c for c in column_contacts(make())
+                if c["area_mm2"] > WALL_OVERLAP_TOL]
+        assert real == []
+
+
+def _hugging_contact_spec():
+    """刻意造一件「壓柱 150mm」的家具(在容差 300 之內 = 合法接觸)。
+
+    ⚠️ 以前這幾條測試是拿產線圖上**現成的**貼牆接觸來驗 API。產線已經不再
+       產生那種接觸(見上一條測試),所以改成自己造一個 —— 測的是偵測/回報
+       /引擎的行為,不該隨產線改好而消失。
+    """
+    from src.design.collision.geometry import column_obstacles, fixture_obstacles
+
+    spec, fx, _ = _lone_column_spec(lambda p: [(p.centroid.x, p.centroid.y)])
+    col = column_obstacles(spec)[0].poly
+    fur = fixture_obstacles(spec)[0].poly
+    fx.insert = (fx.insert[0] + (col.bounds[2] - fur.bounds[0]) - 150.0,
+                 fx.insert[1])
+    return spec, fx
+
+
+def test_column_contacts_reports_every_contact():
+    """Collision Report:column_contacts 列出家具×柱接觸,每筆有穿入深度/
+    面積/柱心/是否超標;容差內的接觸 over_tolerance=False。"""
+    from src.design.collision import column_contacts
+    spec, _ = _hugging_contact_spec()
+    contacts = column_contacts(spec)
+    assert contacts
+    for c in contacts:
+        assert abs(c["penetration_mm"] - 150.0) <= 1.0
+        assert c["area_mm2"] > 0
+        assert len(c["column"]) == 2                   # 柱心座標
+        assert c["over_tolerance"] is False            # 150 < 容差 300
 
 
 def test_column_detection_fires_when_tolerance_lowered():
-    """把容差降到合法穿入之下,偵測就會抓到 → 證明判定確實在運作,
-    而 COLUMN_TOLERANCE_MM=300 正是「讓合法貼牆穿入通過」的那條線。"""
+    """把容差降到穿入深度之下,偵測就會抓到 → 證明判定確實在運作,
+    而 COLUMN_TOLERANCE_MM=300 正是「讓容差內接觸通過」的那條線。"""
     from src.design.collision.detector import find_collisions
     from src.design.collision.geometry import collect_active
     from src.design.collision.obstacle import COLUMN
-    obs = collect_active(_SPECS[0]())
+    spec, _ = _hugging_contact_spec()
+    obs = collect_active(spec)
     assert [c for c in find_collisions(obs) if c.b.kind == COLUMN] == []
     loud = [c for c in find_collisions(obs, col_tol=50) if c.b.kind == COLUMN]
-    assert loud                                        # 容差 50 → 抓到貼牆接觸
+    assert loud                                        # 容差 50 → 抓到接觸
 
 
 def test_engine_never_acts_on_column_contacts():
-    """★ 需求 5:柱接觸真實存在(貼牆家具壓到柱的室內半邊),但 engine
-    **一件都不動**——不 try_move、不 try_drop,純回報。"""
+    """★ 需求 5:容差內的柱接觸,engine **一件都不動**——不 try_move、
+    不 try_drop,純回報。"""
     from src.design.collision import CollisionEngine, column_contacts
-    for make in _SPECS:
-        spec = make()
-        assert column_contacts(spec)                   # 確實有家具貼到柱
-        before = [(f.name, f.insert) for f in spec.fixtures
-                  if isinstance(f, FixturePlacement)]
-        report = CollisionEngine(spec).resolve()
-        after = [(f.name, f.insert) for f in spec.fixtures
-                 if isinstance(f, FixturePlacement)]
-        assert report.changed is False                 # 沒有移動/丟棄
-        assert before == after                         # 逐字不變
+    spec, _ = _hugging_contact_spec()
+    assert column_contacts(spec)                       # 確實有家具貼到柱
+    before = [(f.name, f.insert) for f in spec.fixtures
+              if isinstance(f, FixturePlacement)]
+    report = CollisionEngine(spec).resolve()
+    after = [(f.name, f.insert) for f in spec.fixtures
+             if isinstance(f, FixturePlacement)]
+    assert report.changed is False                     # 沒有移動/丟棄
+    assert before == after                             # 逐字不變
 
 
 # ── Phase 4:Column Resolver(超過容差才修,修不動就保留並標記)──────────────

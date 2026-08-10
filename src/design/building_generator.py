@@ -53,6 +53,7 @@ from src.drafting.apartment_plan import (
     build_grid,
     resolve_columns,
 )
+from src.design.column_design import apply_column_design
 from src.design.layout_generator import (
     Brief,
     CorridorBrief,
@@ -145,8 +146,15 @@ def check_column_alignment(building: BuildingSpec,
     """逐層檢核柱位是否上下對齊,回傳問題清單(空 = 全對齊)。
 
     結構原則(見 column_grid_principles):上層柱必須落在下層柱正上方,力
-    路徑才能連續貫通到基礎,避免轉換樑/轉換柱。逐一相鄰樓層比對:每根上層
-    柱都要在下層找到 tol 內的柱心當支承,否則列為問題。
+    路徑才能連續貫通到基礎,避免轉換樑/轉換柱。
+
+    判準是「**上層柱的斷面完全落在下層柱的斷面裡**」,不是「柱心距離 ≤ tol」。
+    為什麼改:柱斷面概算(column_design)會讓上層的柱比下層細,而真實建築的
+    柱往上縮時常常是**對齊某一面**(貼分間牆那一面)、不是同心縮 —— 柱心因此
+    差了幾公分,但上層柱整根坐在下層柱頭上,力路徑完全連續,這是合格的做法。
+    用柱心距離判會把這種正確的做法誤判成錯誤。
+
+    兩層柱同尺寸時,此判準退化成原本的「柱心距離 ≤ tol」,行為不變。
 
     (D2 起各層格局可以不同——B1F 車庫/1F 公共層/2F+ 臥室層——靠「同一副
     骨架軸網」保證對齊,這裡驗證。)
@@ -154,17 +162,23 @@ def check_column_alignment(building: BuildingSpec,
     problems: list[str] = []
     floors = building.floors
     for lower, upper in zip(floors[:-1], floors[1:]):
+        ls = float(lower.spec.column_size)
+        us = float(upper.spec.column_size)
+        slack = (ls - us) / 2.0 + tol      # 上層柱心可以偏離下層柱心多遠
         below = _column_centers(lower.spec)
         for cx, cy in _column_centers(upper.spec):
+            if any(abs(cx - bx) <= slack and abs(cy - by) <= slack
+                   for bx, by in below):
+                continue
             nearest = min(
-                (((cx - bx) ** 2 + (cy - by) ** 2) ** 0.5 for bx, by in below),
+                (max(abs(cx - bx), abs(cy - by)) for bx, by in below),
                 default=float("inf"),
             )
-            if nearest > tol:
-                problems.append(
-                    f"{upper.label} 柱 ({cx/1000:.2f},{cy/1000:.2f})m "
-                    f"下方 {lower.label} 無柱支承(最近 {nearest/1000:.2f}m)"
-                    f"——需轉換樑,違反柱位上下對齊")
+            problems.append(
+                f"{upper.label} 柱 ({cx/1000:.2f},{cy/1000:.2f})m "
+                f"斷面 {us:.0f} 未完全落在下方 {lower.label} 柱 {ls:.0f} 內"
+                f"(最近偏移 {nearest:.0f}mm,可容許 {slack:.0f}mm)"
+                f"——需轉換樑,違反柱位上下對齊")
     return problems
 
 
@@ -172,10 +186,17 @@ def check_column_alignment(building: BuildingSpec,
 # 產生器:標準層 → 疊成一整棟
 # ---------------------------------------------------------------------------
 def _narrow_to_building(named_floors, floor_height: float) -> BuildingSpec:
-    """窄透天各層 [(標示, spec)] → BuildingSpec(1F 樓板標高 0,往上每層 +層高)。"""
+    """窄透天各層 [(標示, spec)] → BuildingSpec(1F 樓板標高 0,往上每層 +層高)。
+
+    ⚠️ AI 關係圖版(graph_layout)也走這條路,不經過 generate_building ——
+    柱斷面概算要在這裡也套一次,四條產線才一致。窄透天/淺透天沒有柱,
+    apply_column_design 會自動跳過。
+    """
     levels = [FloorLevel(level=i, elevation=(i - 1) * floor_height, spec=spec)
               for i, (_, spec) in enumerate(named_floors, 1)]
-    return BuildingSpec(floors=levels, floor_height=floor_height)
+    building = BuildingSpec(floors=levels, floor_height=floor_height)
+    apply_column_design(building)
+    return building
 
 
 def generate_building_auto(brief: BuildingBrief) -> BuildingSpec:
@@ -273,6 +294,11 @@ def generate_building(brief: BuildingBrief) -> BuildingSpec:
             st.label = "下"
 
     building = BuildingSpec(floors=floors, floor_height=brief.floor_height)
+
+    # 柱斷面概算:各層依「上方壓了幾層」給不同斷面(一樓比頂樓粗),取代原本
+    # 全棟寫死 500。⚠️ 概算不是結構計算,細節與免責見 column_design 模組說明。
+    # 只縮不放 → 不可能新撞到門窗家具,所以放在格局定案之後、對齊檢核之前。
+    apply_column_design(building)
 
     problems = check_column_alignment(building)
     if problems:

@@ -16,6 +16,7 @@ import math
 from shapely.geometry import LineString, Polygon
 from shapely.ops import unary_union
 
+from src.design.collision.geometry import door_swing_obstacles
 from src.drafting.fixtures import Counter, counter_footprint, fixture_footprint
 
 # 與 plan_check.WALL_OVERLAP_TOL 對齊:重疊小於此視為貼齊誤差,不算穿牆。
@@ -33,6 +34,187 @@ def _wall_union(spec):
         LineString([w.start, w.end]).buffer(w.thickness / 2.0,
                                             cap_style=2, join_style=2)
         for w in walls])
+
+
+MIN_COUNTER_LEN = 1200.0    # 截短到比這還短 = 不成一段廚具,改用整排外推
+COLUMN_NUDGE_MAX = 400.0    # 為了閃柱最多挪這麼多(500 的舊柱凸 190,夠用)
+
+
+def clear_fixtures_off_columns(spec) -> int:
+    """把壓在柱上的家具挪開;**挪不開就不動**。回傳挪動了幾件。
+
+    ⚠️ 這是「盡力而為」,不是硬性修復 —— 三件事的嚴重程度不一樣:
+
+        穿牆   圖面硬錯誤,一定要修(即使代價是家具離牆 19cm)
+        擋門   人進不去,一定不能製造出來
+        壓柱   醜、家具擺不進去,但**忍得住**(柱藏在牆內時本來就會有接觸)
+
+    所以順序是 **穿牆 > 擋門 > 壓柱**:挪開柱之後如果反而撞到牆、別的家具或
+    門的迴轉,就整件退回原位,寧可留著壓柱。第一版把柱直接併進 `_wall_union`
+    (= 壓柱與穿牆同等級),結果 18.4×14.5m/seed4242 的鞋櫃為了閃柱退進門的
+    開啟弧裡,整份設計被檢核否決 —— 那是把「忍得住」的事修成「不能忍」的事。
+
+    嘗試順序:先沿牆兩側平移(柱只佔牆的一小段,讓到旁邊最自然,家具也還
+    貼著牆),都不行再往室內推(沙發離牆 10cm 是可以接受的樣子)。
+    """
+    cols = _column_polys(spec)
+    fixtures = getattr(spec, "fixtures", None)
+    if not cols or not fixtures:
+        return 0
+
+    walls = _wall_union(spec)
+    swings = [o.poly for o in door_swing_obstacles(spec)]
+    moved = 0
+    for fx in fixtures:
+        if isinstance(fx, Counter):
+            continue                    # 廚具走截短那條路,不平移
+        if sum(_footprint(fx).intersection(c).area for c in cols) <= OVERLAP_TOL:
+            continue
+        others = [_footprint(o) for o in fixtures if o is not fx]
+        nx, ny = _inward(fx)
+        # 沿牆(法線轉 90°)兩側 → 最後才往室內
+        dirs = [(-ny, nx), (ny, -nx), (nx, ny)]
+        placed = False
+        for dx, dy in dirs:
+            gone = 0.0
+            for _ in range(int(COLUMN_NUDGE_MAX / NUDGE_STEP)):
+                _shift(fx, dx * NUDGE_STEP, dy * NUDGE_STEP)
+                gone += NUDGE_STEP
+                mine = _footprint(fx)
+                if sum(mine.intersection(c).area for c in cols) > OVERLAP_TOL:
+                    continue
+                if walls is not None and mine.intersection(walls).area > OVERLAP_TOL:
+                    continue
+                if any(mine.intersection(o).area > OVERLAP_TOL
+                       for o in others + swings):
+                    continue
+                placed = True
+                break
+            if placed:
+                # 記下「挪了多少、挪到哪」:柱之後會縮細並外推,那時 settle_
+                # fixtures_to_wall 要能沿原路把它還原(見該函式說明)。
+                setattr(fx, DODGE_MARK,
+                        (dx * gone, dy * gone,
+                         fx.start if isinstance(fx, Counter) else fx.insert))
+                break
+            _shift(fx, -dx * gone, -dy * gone)          # 這個方向不行 → 退回
+        if placed:
+            moved += 1
+    return moved
+
+
+DODGE_MARK = "_column_dodge"        # (dx, dy, 當時的位置):閃柱挪了多少、挪到哪
+
+
+def settle_fixtures_to_wall(spec) -> int:
+    """把「為了閃柱而挪開、但柱後來自己躲掉了」的家具還原;回傳還原了幾件。
+
+    為什麼需要這一道 —— **順序問題**:擺家具的時候柱還是舊的 500、還沒外推,
+    貼牆家具為了閃柱讓開了一段;等 `column_design.apply_column_design` 把柱縮細
+    又推到室外,讓路的理由就沒了,沒人叫它回來就會停在半空中(實測 19×13 的沙發
+    離牆 18cm,圖上看起來像擺錯)。
+
+    ⚠️ **只還原自己挪過的,而且只在它之後沒被別人動過的時候。**
+       第一版是「所有家具都盡量往牆邊推」,結果把 `_declutter_for_circulation`
+       特地挪開讓出通道的家具又推回去 —— 淺透天掃描冒出 4 案 circulation_blocked。
+       挪動家具的模組不只一個,誰都不該去動別人的決定。
+    """
+    fixtures = getattr(spec, "fixtures", None)
+    if not fixtures:
+        return 0
+    walls = _wall_union(spec)
+    if walls is None:
+        return 0
+    cols = _column_polys(spec)
+    swings = [o.poly for o in door_swing_obstacles(spec)]
+
+    settled = 0
+    for fx in fixtures:
+        mark = getattr(fx, DODGE_MARK, None)
+        if mark is None:
+            continue
+        dx, dy, at = mark
+        try:
+            delattr(fx, DODGE_MARK)             # 一次性:還原過就不再試
+        except AttributeError:
+            pass
+        if (fx.start if isinstance(fx, Counter) else fx.insert) != at:
+            continue                            # 之後被別人動過 → 那是別人的決定
+        others = [_footprint(o) for o in fixtures if o is not fx]
+        blockers = others + swings + cols
+        steps = int(max(abs(dx), abs(dy)) / NUDGE_STEP)
+        ux, uy = (dx / steps / NUDGE_STEP, dy / steps / NUDGE_STEP) if steps else (0, 0)
+        back = 0
+        for _ in range(steps):                  # 沿原路走回去,走得回多少算多少
+            _shift(fx, -ux * NUDGE_STEP, -uy * NUDGE_STEP)
+            mine = _footprint(fx)
+            if (mine.intersection(walls).area > OVERLAP_TOL
+                    or any(mine.intersection(b).area > OVERLAP_TOL
+                           for b in blockers)):
+                _shift(fx, ux * NUDGE_STEP, uy * NUDGE_STEP)    # 這一步過頭 → 退回
+                break
+            back += 1
+        if back:
+            settled += 1
+    return settled
+
+
+def _column_polys(spec) -> list:
+    from src.design.column_design import column_footprints
+    return column_footprints(spec)
+
+
+def trim_counters_at_columns(spec) -> int:
+    """流理台被柱角咬到**端部**時,把檯面截短讓開;回傳截短了幾段。
+
+    為什麼流理台要另外處理:它是**貼牆的固定廚具**,不是可以隨手挪的家具。
+    整排往室內推 10cm 既不像真的(檯面後面留一道縫),還會頂到旁邊的冰箱 ——
+    師傅遇到柱是**把那一段切短**。實測 5.4m 的檯面兩端各被咬掉約 10cm,
+    截短後仍有 5.2m,完全夠用。
+
+    柱剛好落在檯面**中段**時截不了(會把一段切成兩段),就不動它,留給
+    push_fixtures_out_of_walls 用整排外推收尾(那才是真的沒別的辦法)。
+    """
+    cols = _column_polys(spec)
+    fixtures = getattr(spec, "fixtures", None)
+    if not cols or not fixtures:
+        return 0
+
+    trimmed = 0
+    for fx in fixtures:
+        if not isinstance(fx, Counter):
+            continue
+        for _ in range(len(cols)):          # 兩端可能各咬一根,逐根收
+            (x1, y1), (x2, y2) = fx.start, fx.end
+            L = fx.length
+            ux, uy = (x2 - x1) / L, (y2 - y1) / L
+            foot = _footprint(fx)
+            cut = None
+            for c in cols:
+                inter = foot.intersection(c)
+                if inter.is_empty or inter.area <= OVERLAP_TOL:
+                    continue
+                ts = [((px - x1) * ux + (py - y1) * uy)
+                      for px, py in inter.exterior.coords]
+                t0, t1 = max(0.0, min(ts)), min(L, max(ts))
+                if t0 <= 1.0:                       # 咬在起點端 → 起點往前縮
+                    cut = ("start", t1)
+                elif t1 >= L - 1.0:                 # 咬在終點端 → 終點往回縮
+                    cut = ("end", t0)
+                if cut:
+                    break
+            if cut is None:
+                break
+            side, t = cut
+            new_len = (L - t) if side == "start" else t
+            if new_len < MIN_COUNTER_LEN:
+                break                               # 截到不成廚具 → 交給外推
+            if side == "start":
+                fx.start = (x1 + ux * t, y1 + uy * t)
+            else:
+                fx.end = (x1 + ux * t, y1 + uy * t)
+            trimmed += 1
+    return trimmed
 
 
 def _footprint(fx) -> Polygon:
@@ -77,6 +259,7 @@ def push_fixtures_out_of_walls(spec) -> tuple:
 
     家具的區域座標是「原點在貼牆邊中點、往 +Y 進入室內」,所以往室內 = 沿旋轉後
     的 +Y 方向;推的過程只動插入點,不改尺寸也不改朝向(仍然貼著同一道牆)。"""
+    trim_counters_at_columns(spec)      # 貼牆廚具遇柱先截短(不是整排推開)
     bodies = _wall_union(spec)
     fixtures = getattr(spec, "fixtures", None)
     if bodies is None or not fixtures:
@@ -133,4 +316,8 @@ def push_fixtures_out_of_walls(spec) -> tuple:
             dropped += 1
     if dropped:
         spec.fixtures = keep
+    # 牆的問題收完(硬錯誤優先)之後,再盡力把壓在柱上的家具挪開。
+    # ⚠️ 還原(settle_fixtures_to_wall)**不在這裡做** —— 要等柱定案(縮細+外推)
+    #    之後才知道還需不需要讓路,呼叫點在 column_design.apply_column_design。
+    clear_fixtures_off_columns(spec)
     return (moved, dropped)
