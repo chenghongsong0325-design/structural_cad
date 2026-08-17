@@ -469,6 +469,8 @@ def _push_exterior_out(spec, size: float) -> list[Point]:
     只推「柱心落在建築外緣上」的柱;角柱兩個方向都推。推完仍不得越過建築線
     (地界線內縮 setback),越過就不推那一根(寧可室內看得到,也不能違建)。
     """
+    from shapely.geometry import box
+
     centers = spec.column_centers
     if not centers:
         return centers
@@ -517,6 +519,23 @@ def _push_exterior_out(spec, size: float) -> list[Point]:
         gap = (edge - limit) if outward < 0 else (limit - edge)
         return max(0.0, min(push, gap))
 
+    # ⚠️ 外推是**加分項,不能把圖弄壞**:柱往室外挪之後可能剛好蓋住某扇門的開啟
+    #    弧(AI 產線的門是獨立擺的,不像兩帶式會先 `_blocked` 躲開柱)。實測 AI 版
+    #    12×12 三層因此冒出 door_swing_blocked、整份設計被 422 擋掉。
+    #    所以推完要驗一次:擋到門就這根不推(其他根照推)。
+    swings = []
+    try:
+        from src.design.collision.geometry import door_swing_obstacles
+        swings = [o.poly for o in door_swing_obstacles(spec)]
+    except Exception:                    # 沒有門資訊 → 沒東西好擋,照推
+        swings = []
+
+    def _hits_door(px: float, py: float) -> bool:
+        if not swings:
+            return False
+        foot = box(px - half, py - half, px + half, py + half)
+        return any(foot.intersection(s).area > 1000.0 for s in swings)
+
     out = []
     for cx, cy in centers:
         nx, ny = cx, cy
@@ -528,6 +547,8 @@ def _push_exterior_out(spec, size: float) -> list[Point]:
             ny = cy - _room(cy, ly0, -1)
         elif abs(cy - by1) < EDGE_TOL:
             ny = cy + _room(cy, ly1, +1)
+        if (nx, ny) != (cx, cy) and _hits_door(nx, ny) and not _hits_door(cx, cy):
+            nx, ny = cx, cy              # 推過去會擋門 → 這根留在原位
         out.append((nx, ny))
     return out
 
@@ -564,8 +585,14 @@ def apply_column_design(building, report: ColumnDesignReport | None = None
                                                old, new)
         spec.column_size = new
         item.applied_side = new
-        if spec.column_centers is not None:
-            spec.column_centers = _push_exterior_out(spec, new)
+        # ⚠️ `column_centers is None` 代表「柱放在每個軸網交點」(窄透天/淺透天
+        #    走這條)。要外推就得先把柱位**具體化**成一份清單,否則柱心永遠等於
+        #    軸線交點、一根都推不動 —— 這個 if 少了 else 分支的時候,那兩條產線
+        #    的外牆柱全部露臉(實測 6.5×14 三層 6 根全露)。
+        from src.design.building_generator import _column_centers
+        if spec.column_centers is None:
+            spec.column_centers = _column_centers(spec)
+        spec.column_centers = _push_exterior_out(spec, new)
 
     # ⚠️ 柱動完一定要讓家具重新貼牆。擺家具那時候柱還是**舊的 500、還沒外推**,
     #    貼牆家具為了閃柱讓開了一段;等這裡把柱縮細又推到室外,讓路的理由就沒了,

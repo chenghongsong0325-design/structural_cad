@@ -207,24 +207,36 @@ def test_house_has_hallway_between_bands() -> None:
         assert Polygon(b.points).intersection(hp).length >= 900
 
 
-def test_bedroom_doors_open_to_hallway() -> None:
-    """每間臥室都有一扇門同時落在 臥室邊界 與 走道邊界 上。"""
+@pytest.mark.parametrize("w,d", [(18000, 13000), (16000, 14000), (19000, 13000)])
+def test_bedroom_doors_open_to_public_circulation(w, d) -> None:
+    """★★ 每間臥室都有一扇門直接開向**公共動線**。
+
+    ⚠️ 舊版釘的是「門落在**走道**邊界上」——那是把載具當成目的。走道現在改成
+    功能性判準(東臥進得了客餐廳就不設,見 `has_hall`),18×13 這種尺寸本來就
+    沒有走道,測試就 StopIteration 掛掉,看起來像臥室沒門,其實是量錯東西。
+    真正要守的是「臥室不必穿過別人的房間才出得來」,公共動線是走道**或**客餐廳。
+    """
     from shapely.geometry import Point, Polygon
 
-    spec = generate_floor_plan(HouseBrief(site_width=18000, site_depth=13000, bedrooms=3))
-    hp = Polygon(next(r for r in spec.rooms if r.kind == "corridor").points)
+    PUBLIC = {"corridor", "living", "dining", "foyer"}
+    spec = generate_floor_plan(HouseBrief(site_width=w, site_depth=d, bedrooms=3))
+    pubs = [Polygon(r.points) for r in spec.rooms if r.kind in PUBLIC]
+    assert pubs, "這層沒有任何公共空間"
     bed_polys = [Polygon(r.points) for r in spec.rooms if r.kind == "bedroom"]
     served = set()
-    for w in spec.walls:
-        for op in w.openings:
+    for wall in spec.walls:
+        for op in wall.openings:
             if op.kind != "door":
                 continue
-            pt = Point(w.point_at(op.position))
-            if hp.boundary.distance(pt) < 1.0:
-                for i, bp in enumerate(bed_polys):
-                    if bp.boundary.distance(pt) < 1.0:
-                        served.add(i)
-    assert served == {0, 1, 2}
+            pt = Point(wall.point_at(op.position))
+            if not any(p.boundary.distance(pt) < 1.0 for p in pubs):
+                continue
+            for i, bp in enumerate(bed_polys):
+                if bp.boundary.distance(pt) < 1.0:
+                    served.add(i)
+    assert served == set(range(len(bed_polys))), (
+        f"這幾間臥室的門沒開向公共動線:"
+        f"{sorted(set(range(len(bed_polys))) - served)}")
 
 
 def test_hallway_open_passage_to_living() -> None:
@@ -605,3 +617,208 @@ def test_stair_flight_is_walled_on_both_sides(brief) -> None:
         assert len(sides) == 2
         for seg in sides:
             assert _side_is_walled(spec, seg), (_brief_id(brief), seg)
+
+
+# ── 房間數要跟著面積長(不是把同樣幾間一起撐大)────────────────────────────
+def _floor_rooms(w_m, d_m, bedrooms=3, floors=3):
+    from src.design.building_generator import BuildingBrief, generate_building_auto
+    b = generate_building_auto(BuildingBrief(
+        typical=HouseBrief(site_width=w_m * 1000, site_depth=d_m * 1000,
+                           bedrooms=bedrooms, setback=0, seed=0),
+        floors=floors, differentiated=floors > 1))
+    return [(f.spec.floor_label, f.spec) for f in b.floors]
+
+
+def test_big_north_band_splits_into_several_rooms():
+    """★★ 大基地的 1F 北帶西段要切成**好幾間**,不是切一刀變兩間大房。
+
+    ⚠️ 舊版 `_west_zone_cut` 只切一刀:19×13m 實測切完是書房 32.9㎡ + 餐廚 34.1㎡,
+    兩邊都還是大得離譜——「不讓一間無限長大」變成「讓兩間一起無限長大」。"""
+    from src.design.room_program import requirement
+    _lb, spec = _floor_rooms(19, 13)[0]
+    west = [r for r in spec.rooms if r.kind in ("study", "family", "storage")
+            and max(p[1] for p in r.points) > spec.rooms[0].points[0][1]]
+    assert len(west) >= 2, f"北帶西段只切出 {len(west)} 間:{[r.name for r in west]}"
+    for r in spec.rooms:
+        if r.kind != "study":
+            continue
+        cap = requirement("study").max_area
+        assert r.area_m2 <= cap * 1.5, f"{r.name} {r.area_m2:.1f}㎡ 仍然過大"
+
+
+def test_west_zone_split_never_costs_a_generatable_plan():
+    """★★ 多切幾刀不得讓原本生得出來的案子生不出來(能力不可倒退)。
+
+    切點會被柱擋住(柱剛好站在那一格的北牆正中,窗與門都塞不進去)——
+    這時要**少切一刀**,不是整份設計失敗。"""
+    ok = 0
+    for w, d, n in [(12, 11, 1), (14, 12, 2), (16, 14, 3), (18, 13, 3),
+                    (20, 13, 4), (22, 15, 4), (26, 16, 4), (24, 16, 4)]:
+        spec = generate_floor_plan(HouseBrief(site_width=w * 1000,
+                                              site_depth=d * 1000, bedrooms=n))
+        validate_spec(spec)
+        ok += 1
+    assert ok == 8
+
+
+# ── 走道:功能性判準,不是「房數 ≥3 就給」──────────────────────────────
+def test_corridor_only_when_east_bedroom_cannot_reach_public():
+    """★★ 走道是**東側臥室進不了客餐廳**時才設,不是房間數多就設。
+
+    使用者 2026-08-12:「走道是真的很大的房子才會需要走道」;
+    2026-07-12:「小宅動線融入客廳,不要硬塞走廊」。
+    19×13m 三房的東臥門開得進客餐廳 → 不該有走道。"""
+    spec = generate_floor_plan(HouseBrief(site_width=19000, site_depth=13000,
+                                          bedrooms=3))
+    assert not [r for r in spec.rooms if r.kind == "corridor"],         "東臥門進得了客餐廳,不該再切一條走道"
+    validate_spec(spec)
+
+
+def test_corridor_still_appears_when_it_is_actually_needed():
+    """★ 反面:東臥被服務核擠住、門開不進客餐廳時,走道要留著。
+
+    拿掉走道不是目標,「沒必要就不要」才是——這條守住不能矯枉過正。"""
+    spec = generate_floor_plan(HouseBrief(site_width=15000, site_depth=12000,
+                                          bedrooms=3))
+    assert [r for r in spec.rooms if r.kind == "corridor"],         "這個尺寸的東臥門開不進客餐廳,走道不能拿掉"
+
+
+def test_every_bedroom_still_reaches_public_space_without_corridor():
+    """★★ 拿掉走道之後,每間臥室仍然走得到公共空間(動線不能斷)。"""
+    from src.design.layout.plan_check import check_floor
+    for w, d, n in [(19, 13, 3), (20, 13, 4), (22, 15, 4), (18, 13, 3)]:
+        spec = generate_floor_plan(HouseBrief(site_width=w * 1000,
+                                              site_depth=d * 1000, bedrooms=n))
+        bad = [i for i in check_floor(spec) if i.severity == "error"]
+        assert not bad, f"{w}×{d} {n}房:{[(i.code, i.room) for i in bad]}"
+
+
+# ── 地下車庫:替外牆柱留位置不得害車停不進去 ───────────────────────────────
+def test_basement_garage_keeps_room_for_a_car():
+    """★★ 有汽車位時,南帶(車庫就在它正下方)一定要有一個車位的長度。
+
+    ⚠️ 踩過的坑:替外牆柱留位置(`STRUCT_MARGIN`)把建築縮小之後,20×20m 基地的
+    南帶掉到 3.9m,B1F 直接報「車庫進深太淺」整份設計失敗 —— 而旁邊還有 6m 的
+    院子沒用到。專案鐵則是「留柱位不得讓原本生得出來的案子生不出來」,當時只
+    驗了地上層,漏了地下車庫。院子少 0.9m 換車停得進去,不用選。"""
+    from src.design.building_generator import BuildingBrief, generate_building_auto
+    from src.design.layout.code_check import check_code_building
+    from src.design.layout.plan_check import check_building
+    from src.design.layout_generator import GARAGE_MIN_DEPTH, _house_frame
+
+    for w, d, cars in [(20, 20, 2), (20, 18, 1), (22, 20, 2)]:
+        brief = HouseBrief(site_width=w * 1000, site_depth=d * 1000,
+                           bedrooms=3, car_spaces=cars)
+        f = _house_frame(brief)
+        assert f.yn - f.by0 >= GARAGE_MIN_DEPTH - 1, (
+            f"{w}×{d} {cars}車位:車庫只有 {(f.yn-f.by0)/1000:.1f}m")
+        bld = generate_building_auto(BuildingBrief(
+            typical=brief, floors=3, basements=1, differentiated=True))
+        floors = [(fl.label, fl.spec) for fl in bld.floors]
+        assert "B1F" in [lb for lb, _ in floors]
+        assert check_building(floors).ok
+        assert check_code_building(floors).ok
+
+
+def test_garage_depth_never_eats_the_bedroom_band():
+    """★ 讓給車庫的只能是**院子**的餘量,不能吃臥室帶(那會讓臥室變窄)。"""
+    from src.design.layout_generator import _house_frame
+
+    for w, d in [(20, 20), (22, 20), (20, 18)]:
+        plain = _house_frame(HouseBrief(site_width=w * 1000, site_depth=d * 1000,
+                                        bedrooms=3))
+        car = _house_frame(HouseBrief(site_width=w * 1000, site_depth=d * 1000,
+                                      bedrooms=3, car_spaces=2))
+        assert car.dn == pytest.approx(plain.dn), f"{w}×{d} 臥室帶被吃掉了"
+        assert car.W == pytest.approx(plain.W)
+
+
+# ── 北帶切完,通道還要開得出來 ────────────────────────────────────────────
+def test_dining_keeps_room_for_the_passage_to_the_living():
+    """★★ 北帶切完,餐廳/餐廚對客廳的**寬通道**還要開得出來。
+
+    ⚠️ 踩過的坑:切完只剩 1.186m 的乾淨牆,房門(0.75)過得了、通道(1.2)差
+    **14mm** 過不了 → 整份設計 raise。驗切點時只驗門寬會漏掉這一格。
+    13.9×15.3m/2房/seed203 是實際掃到的那一案。"""
+    from src.design.building_generator import BuildingBrief, generate_building_auto
+
+    for w, d, n, seed in [(13.9, 15.3, 2, 203), (15, 12, 3, 0), (19, 13, 3, 0)]:
+        generate_building_auto(BuildingBrief(
+            typical=HouseBrief(site_width=w * 1000, site_depth=d * 1000,
+                               bedrooms=n, setback=0, seed=seed),
+            floors=3, differentiated=True))
+
+
+# ── 樓梯:門一開要站得住人(單跑直梯的盲點)────────────────────────────────
+def test_stair_boxes_sees_a_straight_flight():
+    """★★ 取「踏step 佔的範圍」時,單跑直梯(Stair)也要看得見。
+
+    ⚠️ 踩過的坑:`_stair_boxes` 只讀 `flight_run` —— 那是**折返梯**(UStair)才有的
+    欄位。兩帶式/集合住宅用的是單跑直梯,沒有這個欄位 → AttributeError → 整座
+    樓梯被當成不存在 → 「門不得開在階梯上」「梯段不得一側沒牆」這兩條硬規則
+    **從來沒對那兩條產線生效過**。"""
+    from types import SimpleNamespace
+
+    from src.design.layout.narrow_house import _stair_boxes
+    from src.drafting.stair import Stair
+
+    st = Stair(origin=(1000.0, 2000.0), width=2500.0, length=4000.0,
+               direction="north", steps=15, tread=250.0)
+    assert not hasattr(st, "flight_run"), "直梯本來就沒有 flight_run(這正是坑)"
+    boxes = _stair_boxes(SimpleNamespace(stairs=[st]))
+    assert len(boxes) == 1, "單跑直梯被當成不存在了"
+    x0, y0, x1, y1 = boxes[0].bounds
+    assert (x0, y0) == (1000.0, 2000.0)
+    assert y1 - y0 == pytest.approx(15 * 250.0)      # 踏step 從 origin 起算
+
+
+@pytest.mark.parametrize("w,d,n,floors", [(19, 13, 3, 3), (15, 12, 3, 2),
+                                          (22, 14, 3, 3), (26, 16, 4, 3)])
+def test_stairwell_door_has_a_place_to_stand(w, d, n, floors):
+    """★★ 每一層的樓梯間門與第一階之間都要有起步平台(門一開站得住人)。
+
+    ⚠️ 實測改版前**每一層**都只有 150mm(一個牆縫)——「一開門就踩上踏step」。"""
+    from shapely.geometry import Point
+
+    from src.design.building_generator import BuildingBrief, generate_building_auto
+    from src.design.layout.narrow_house import STAIR_DOOR_CLEAR, _stair_boxes
+
+    bld = generate_building_auto(BuildingBrief(
+        typical=HouseBrief(site_width=w * 1000, site_depth=d * 1000,
+                           bedrooms=n, setback=0, seed=0),
+        floors=floors, differentiated=True))
+    seen = 0
+    for fl in bld.floors:
+        spec = fl.spec
+        boxes = _stair_boxes(spec)
+        assert boxes, f"{fl.label} 看不到樓梯(又踩到 flight_run 的坑?)"
+        for wall in spec.walls:
+            for op in wall.openings:
+                if op.kind != "door":
+                    continue
+                p = Point(*wall.point_at(op.position))
+                for bx in boxes:
+                    if bx.distance(p) > 3000:
+                        continue                     # 不是樓梯間那扇門
+                    seen += 1
+                    assert bx.distance(p) >= STAIR_DOOR_CLEAR - wall.thickness / 2, (
+                        f"{fl.label} 門({p.x:.0f},{p.y:.0f}) 離第一階只有 "
+                        f"{bx.distance(p):.0f}mm")
+    assert seen > 0, "沒量到任何樓梯間的門(測試自己失效了)"
+
+
+@pytest.mark.parametrize("w,d,n", [(19, 13, 3), (15, 12, 3), (26, 16, 4)])
+def test_stair_riser_and_tread_stay_legal_after_the_landing(w, d, n):
+    """★★ 讓出起步平台之後,每階升高/踏面仍要合法。
+
+    ⚠️ 這是讓平台時最容易錯的地方:梯跑變短,若還照舊「用長度回推級數」,
+    級數會變少 → **每階升高超過法定上限**。級數要由**層高**決定。"""
+    from src.design.layout.narrow_house import FLOOR_HEIGHT, MAX_RISER, MIN_TREAD
+    from src.design.layout_generator import _house_frame, _house_stair
+
+    st = _house_stair(_house_frame(HouseBrief(
+        site_width=w * 1000, site_depth=d * 1000, bedrooms=n, setback=0)))
+    assert FLOOR_HEIGHT / st.steps <= MAX_RISER + 1e-6, (
+        f"每階升高 {FLOOR_HEIGHT / st.steps:.0f} > {MAX_RISER:.0f}")
+    assert st.tread >= MIN_TREAD - 1e-6, f"踏面 {st.tread:.0f} < {MIN_TREAD:.0f}"
+    assert st.steps * st.tread <= st.length + 1e-6   # 梯跑放得進樓梯間

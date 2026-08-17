@@ -183,9 +183,12 @@ def _swing_obstacles(spec, wall, op):
         if w is wall:
             continue
         bodies.append(_wall_bodies(spec)[i])
-    for c in getattr(spec, "column_centers", None) or []:
-        cs = getattr(spec, "column_size", 500.0) or 500.0
-        bodies.append(Point(*c).buffer(cs / 2.0, cap_style=3))
+    # ⚠️ 以前這裡寫 `spec.column_centers or []` —— 但 `column_centers is None`
+    #    的意思是「柱放在每個軸網交點」(AI 產線與窄/淺透天都用這種存法),
+    #    `None or []` 會變成空清單 → **這條規則對那幾條產線從來沒有生效過**。
+    #    一律走 `column_footprints`(柱實體的單一出處),它會把 None 解成實際柱位。
+    from src.design.column_design import column_footprints
+    bodies += column_footprints(spec)
     bodies += [o.poly for o in fixture_obstacles(spec)]
     return bodies
 

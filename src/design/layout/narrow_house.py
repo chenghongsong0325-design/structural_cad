@@ -597,7 +597,18 @@ def _stair_boxes(spec) -> list:
         try:
             ox, oy = st.origin
             w = st.width
-            run = min(st.flight_run, st.length)      # 踏step 的長度(不含折返平台)
+            # ⚠️ 踩過的坑:這裡本來只寫 `st.flight_run`,那是**折返梯**(UStair)
+            #    才有的欄位。兩帶式/集合住宅用的是單跑直梯(Stair),沒有這個欄位
+            #    → AttributeError → `continue` → **整座樓梯被當成不存在**。
+            #    於是「門不得直接開在階梯上」「梯段不得有一側沒牆」這兩條硬規則,
+            #    對那兩條產線**從來沒有生效過**(實測每一層的樓梯間門都只離第一階
+            #    150mm,一開門就踩上踏step)。直梯的踏step 長度 = flight_length。
+            run = getattr(st, "flight_run", None)
+            if run is None:
+                run = getattr(st, "flight_length", None)
+            if run is None:
+                continue
+            run = min(float(run), st.length)         # 踏step 的長度(不含折返平台)
         except Exception:
             continue
         d = getattr(st, "direction", "north")
@@ -801,6 +812,72 @@ def _window_segments(spec, room, bx0, by0, bx1, by1, party_walls):
 
 
 COLUMN_CLEARANCE = 300.0        # 洞口與柱面的最小淨距(對齊 layout_generator 的檢核)
+
+# 軸網要離建築端點多遠才算「中間的橫牆」(太靠邊的就是外牆本身,不是可吸附的目標)
+GRID_EDGE_MARGIN = 300.0
+
+
+def _fit_margin(build):
+    """替外牆柱留位置,**留不滿就少留一點**(與兩帶式 `_house_frame` 同一套)。
+
+    ⚠️ 鐵則:留柱位不得讓原本生得出來的案子生不出來。窄透天的下限很緊
+       (面寬 3.5m 起跳),留滿 275mm 會直接把最窄的那批擠掉,所以做成退讓階梯,
+       一路退到 0 時行為與改動前完全一致。
+    """
+    from src.design.layout_generator import STRUCT_MARGIN, STRUCT_MARGIN_STEP
+
+    last: Exception | None = None
+    for m in range(int(STRUCT_MARGIN), -1, -STRUCT_MARGIN_STEP):
+        try:
+            return build(float(m))
+        except ValueError as exc:
+            last = exc
+    raise last
+
+
+def _set_structural_grid(spec, bx0: float, by0: float,
+                         W: float, D: float) -> None:
+    """替窄透天/淺透天排結構軸網,柱放在軸網交點。
+
+    ⚠️ 這兩條產線以前**根本沒有柱**(`column_centers=[]`、外框只當「單跨」記進
+       格線)。一棟三層 RC 透天沒有柱是結構上不可能的,而且進深 13.5m 會變成
+       單跨 —— 專案自己的原則是經濟跨距 6~9m(`BAY_SPAN_LIMITS`)。
+       使用者 2026-08-10:「每個房子尺寸的柱都這樣設計」。
+
+    做法:直接重用兩帶式的 `_plan_x_grid`(它是**軸向無關**的:給原點、長度、
+    可吸附的主要牆位)。面寬 3.5~9m 本來就在單跨範圍內,所以 X 只有兩條外牆
+    軸線;進深由中間的**橫牆**撐出 2~3 跨,軸線吸附到牆上 → 柱天生坐在牆交點、
+    藏在牆內,不會孤零零站在房間中間。
+
+    `column_centers=None` = 「放在每個軸網交點」(與集合住宅/兩帶式同一套約定)。
+    """
+    from src.design.layout_generator import BAY_SPAN_LIMITS, _plan_x_grid
+
+    def axis(origin: float, length: float, majors: list) -> list:
+        """一個方向的跨距清單。
+
+        ⚠️ `_plan_x_grid` 的 `BAY_RANGE` 下限是 **2 跨** —— 那是寬房子的假設。
+           窄透天面寬 3.5~9m 本來就該是**單跨**(還在 9m 經濟跨距內),硬要它
+           切兩跨會得到 2.5m 的跨距而被判不合格,整棟生不出來(5×12 實測)。
+           所以長度塞得進一跨就直接單跨,長到放不下才叫規劃器切。
+        """
+        if length <= BAY_SPAN_LIMITS[1]:
+            return [length]
+        grid = _plan_x_grid(origin, length, majors)
+        return [grid[i + 1] - grid[i] for i in range(len(grid) - 1)]
+
+    # 可吸附的主要牆:X 向找縱牆的 x、Y 向找橫牆的 y(都只取建築中段的)。
+    verts = sorted({round(w.start[0], 1) for w in spec.walls
+                    if abs(w.start[0] - w.end[0]) < 1})
+    horis = sorted({round(w.start[1], 1) for w in spec.walls
+                    if abs(w.start[1] - w.end[1]) < 1})
+    mx = [v for v in verts if bx0 + GRID_EDGE_MARGIN < v < bx0 + W - GRID_EDGE_MARGIN]
+    my = [h for h in horis if by0 + GRID_EDGE_MARGIN < h < by0 + D - GRID_EDGE_MARGIN]
+
+    spec.x_spacings = axis(bx0, W, mx)
+    spec.y_spacings = axis(by0, D, my)
+    spec.grid_origin = (bx0, by0)
+    spec.column_centers = None                  # None = 放在每個軸網交點
 
 
 def _column_centers(spec) -> list:
@@ -1236,7 +1313,7 @@ def _floor_connected(spec) -> bool:
 
 def _build_floor(level, top, W, D, floor_label, furnish=True,
                  variant=DEFAULT_VARIANT, force_absorb=False,
-                 force_bath_south=False):
+                 force_bath_south=False, margin=0.0):
     """組一層 spec(房間 → 牆/門/窗 + 樓梯 + 開口收尾 + 家具)。
 
     D 超過該面寬的上限時,**建築封頂**、多出來的地留成前後院(置中)——與兩帶式
@@ -1244,11 +1321,18 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
 
     取消儲藏室後多出來的空格預設併進隔壁居室;併完若那間房變走廊狀或窗開不夠
     (_spare_hosts_ok 實際量),就改併進樓梯間重生一次(force_absorb)。"""
-    build_d = min(D, max_depth_for(W))
-    yard = (D - build_d) / 2.0
-    bx0 = SETBACK
-    by0 = SETBACK + yard
-    bx1, by1 = SETBACK + W, by0 + build_d
+    # margin:替外牆柱留的位置(見 layout_generator.STRUCT_MARGIN)。柱能因此
+    # 推到室外、室內牆面全平。⚠️ 基地不變、**建築縮小** —— 反過來做(建築不變、
+    # 基地長大)會讓圖上宣稱的地比實際大。留不滿由 _fit_margin 的退讓階梯處理。
+    Wb, Db = W - 2 * margin, D - 2 * margin
+    if margin and (Wb < MIN_WIDTH or Db < min_depth_for(Wb)):
+        raise ValueError(f"留柱位 {margin:.0f}mm 後放不下(剩 "
+                         f"{Wb/1000:.1f}×{Db/1000:.1f}m)")
+    build_d = min(Db, max_depth_for(Wb))
+    yard = (Db - build_d) / 2.0
+    bx0 = SETBACK + margin
+    by0 = SETBACK + margin + yard
+    bx1, by1 = bx0 + Wb, by0 + build_d
     site_w, site_d = W + 2 * SETBACK, D + 2 * SETBACK   # ⚠️ 基地用原始 D,不是封頂後的
     rooms, stair = _floor_rooms(level, top, bx0, by0, bx1, by1, variant,
                                 force_absorb, force_bath_south)
@@ -1267,20 +1351,29 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
     repair_doors(spec, bx0, by0, bx1, level)         # 門與動線規範:改門(不改切法)
     if not force_absorb and not _spare_hosts_ok(spec):   # 居室吃不下空格 → 給樓梯間
         return _build_floor(level, top, W, D, floor_label, furnish, variant,
-                            force_absorb=True)
+                            force_absorb=True, margin=margin)
     if force_absorb and not force_bath_south and not _floor_connected(spec):
         # 空格併在樓梯間南端時,樓梯間北端只剩梯段 → 後段接不上。浴廁搬回南側。
         return _build_floor(level, top, W, D, floor_label, furnish, variant,
-                            force_absorb=True, force_bath_south=True)
+                            force_absorb=True, force_bath_south=True,
+                            margin=margin)
     spec.floor_label = floor_label
-    # 建築外框當「單跨」記進格線(不放柱):讓 metrics/摘要讀得到建築尺寸與院深。
-    spec.x_spacings = [W]
-    spec.y_spacings = [build_d]                  # 建築(封頂後)的進深,不含院子
-    spec.grid_origin = (bx0, by0)
+    _set_structural_grid(spec, bx0, by0, Wb, build_d)
+    # ⚠️ 柱到這一步才存在,而**柱是實心的**:門扇掃到柱就打不開。上面第 1340 行
+    #    那次修門看到的是「還沒有柱」的世界,所以這裡一定要再修一次
+    #    (不furnish 的樓層沒有下面那段,不補這一行就完全沒人管)。
+    repair_doors(spec, bx0, by0, bx1, level)
     if furnish:                                     # 家具:沿用 Phase 6 擺位(必合法)
         from src.design.layout.auto_furnish import furnish_spec
+        from src.design.layout.fixture_fix import (
+            clear_fixtures_off_columns, trim_counters_at_columns)
         from src.design.layout.graph_layout import _declutter_for_circulation
         furnish_spec(spec)
+        # 這條產線以前沒有柱,所以從來不必閃柱;現在有了就得閃(掃描原本冒出
+        # 45 件 furniture_in_column)。⚠️ 放在 _declutter 之前 —— 動線要有最後
+        # 決定權,不能反過來讓閃柱把它讓開的通道又占回去。
+        trim_counters_at_columns(spec)
+        clear_fixtures_off_columns(spec)
         _declutter_for_circulation(spec)            # 擋動線的家具移掉(與 AI 產線同一套)
         repair_doors(spec, bx0, by0, bx1, level)    # 家具擺完再修一次門(弧線會不會撞家具)
     if variant.mirror:                              # 整層東西鏡射(樓梯核換邊)
@@ -1315,9 +1408,11 @@ def generate_narrow_building(building_w_mm: float, building_d_mm: float, *,
     floors = max(1, int(floors))
     if variant is None:
         variant = DEFAULT_VARIANT if seed is None else variant_from_seed(seed)
-    return [(f"{lv}F",
-             _build_floor(lv, floors, W, D, f"{lv}F", furnish, variant))
-            for lv in range(1, floors + 1)]
+    # ⚠️ 各層必須用**同一個** margin,否則軸網對不上、柱不會上下對齊。
+    return _fit_margin(lambda m: [
+        (f"{lv}F",
+         _build_floor(lv, floors, W, D, f"{lv}F", furnish, variant, margin=m))
+        for lv in range(1, floors + 1)])
 
 
 def generate_narrow_house(building_w_mm: float, building_d_mm: float, *,
@@ -1326,4 +1421,5 @@ def generate_narrow_house(building_w_mm: float, building_d_mm: float, *,
     """窄面寬透天單層 1F(便捷入口,回單一 FloorPlanSpec;含樓梯核+家具)。"""
     W, D = float(building_w_mm), float(building_d_mm)
     _check_dims(W, D)
-    return _build_floor(1, 1, W, D, floor_label, furnish)
+    return _fit_margin(lambda m: _build_floor(1, 1, W, D, floor_label,
+                                              furnish, margin=m))

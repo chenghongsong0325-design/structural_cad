@@ -194,3 +194,68 @@ def test_sweep_rule_pipeline_never_emits_broken_plan():
                 if not rep.ok:
                     bad.append((bw, bd, n, [i.code for i in rep.errors]))
     assert not bad, f"規則版生出不合格圖:{bad}"
+
+
+# ── 「房間過大」要用對的尺量 ────────────────────────────────────────────────
+def test_oversize_band_uses_master_bedroom_band_for_the_master():
+    """★★ 主臥的 kind 也是 "bedroom"(規則版兩帶式這樣存),不能拿次臥的上限去量。
+
+    ⚠️ 實測 19×13m 三層:2F/3F 的主臥 27㎡ 被次臥的上限(18)判成過大,
+    但主臥的合理上限是 24 —— 量錯尺,不是設計問題。"""
+    from types import SimpleNamespace
+
+    from src.design.layout.graph_layout import AREA_BAND
+    from src.design.layout.plan_check import oversize_band
+
+    master = SimpleNamespace(kind="bedroom", name="主臥室")
+    plain = SimpleNamespace(kind="bedroom", name="臥室2")
+    assert oversize_band(master, AREA_BAND) == AREA_BAND["master_bedroom"]
+    assert oversize_band(plain, AREA_BAND) == AREA_BAND["bedroom"]
+
+
+def test_oversize_band_adds_up_for_merged_rooms():
+    """★★ 「餐廚」= 餐廳+廚房、「客餐廳」= 客廳+餐廳,上限要相加。
+
+    開放式格局是我們自己選的設計,拿單獨一間餐廳的上限去量它一定超標。"""
+    from types import SimpleNamespace
+
+    from src.design.layout.graph_layout import AREA_BAND
+    from src.design.layout.plan_check import oversize_band
+
+    band = oversize_band(SimpleNamespace(kind="dining", name="餐廚"), AREA_BAND)
+    assert band == (AREA_BAND["dining"][0] + AREA_BAND["kitchen"][0],
+                    AREA_BAND["dining"][1] + AREA_BAND["kitchen"][1])
+    band2 = oversize_band(SimpleNamespace(kind="living", name="客餐廳"), AREA_BAND)
+    assert band2 == (AREA_BAND["living"][0] + AREA_BAND["dining"][0],
+                     AREA_BAND["living"][1] + AREA_BAND["dining"][1])
+
+
+def test_oversize_still_catches_a_genuinely_huge_room():
+    """★ 尺換對了,真正過大的房間還是要抓得到(不能變成放水)。"""
+    from types import SimpleNamespace
+
+    from src.design.layout.graph_layout import AREA_BAND
+    from src.design.layout.plan_check import OVERSIZE_RATIO, oversize_band
+
+    band = oversize_band(SimpleNamespace(kind="study", name="書房"), AREA_BAND)
+    assert 32.9 > band[1] * OVERSIZE_RATIO          # 改版前 1F 的書房
+    band_m = oversize_band(SimpleNamespace(kind="bedroom", name="主臥室"), AREA_BAND)
+    assert 60.0 > band_m[1] * OVERSIZE_RATIO        # 60㎡ 的主臥仍然過大
+
+
+def test_two_band_house_has_no_false_oversize_warnings():
+    """★★ 端到端:19×13m 三層不再冒出「量錯尺」的過大警告。
+
+    改版前 10 個,其中 3 個是尺不對(餐廚 ×1、主臥 ×2)、1 個是真的
+    (書房 32.9㎡,已由北帶多切一刀解掉)。"""
+    from src.design.building_generator import BuildingBrief, generate_building_auto
+    from src.design.layout_generator import HouseBrief
+
+    b = generate_building_auto(BuildingBrief(
+        typical=HouseBrief(site_width=19000, site_depth=13000, bedrooms=3,
+                           setback=0, seed=0),
+        floors=3, differentiated=True))
+    rep = check_building([(f.label, f.spec) for f in b.floors])
+    over = [i for i in rep.issues if i.code == "room_oversize"]
+    assert not [i for i in over if "餐廚" in i.room or "主臥" in i.room or
+                "書房" in i.room], [(i.floor, i.room, i.detail) for i in over]

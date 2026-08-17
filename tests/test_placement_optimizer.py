@@ -49,6 +49,19 @@ def _rect(room):
     return min(xs), min(ys), max(xs), max(ys)
 
 
+def _already_there(spec, name):
+    """spec 裡同名的既有家具 —— 要當成 `place(..., ignore=)` 傳進去。
+
+    ⚠️ `_spec()` 是**已經擺好家具**的完整設計:客餐廳裡本來就有一張 table4。
+    不 ignore 就等於問「這房間再塞第二張餐桌放得下嗎」,而中心原點家具的候選
+    點正好繞著房間中心撒 —— 既有那張也在中心附近,九個候選全撞上它。
+    以前會過只是**碰巧**:那時客餐廳淺 3.85m,中心離既有餐桌夠遠;走道改成
+    功能性判準之後,客餐廳吃下原本走道那 1.2m(46.2→61.6㎡)、中心往北移,
+    就正好壓在既有餐桌上。房間變大反而擺不下,這是測試在問錯問題,不是擺位器壞了。
+    """
+    return [f for f in spec.fixtures if getattr(f, "name", "") == name]
+
+
 # ── 產生候選 + 挑最佳 ─────────────────────────────────────────────────────
 def test_generates_multiple_candidates():
     spec = _spec()
@@ -67,9 +80,10 @@ def test_best_placement_is_actually_valid():
     eng = FurnitureCollisionEngine(spec)
     for kind, name in (("bedroom", "wardrobe"), ("living", "sofa3"),
                        ("living", "table4")):
-        res = opt.place(name, _room(spec, kind))
+        mine = _already_there(spec, name)      # 重新選位:別讓它自己撞自己
+        res = opt.place(name, _room(spec, kind), ignore=mine)
         assert res.found, name
-        check = eng.check(res.best.placement())
+        check = eng.check(res.best.placement(), ignore=mine)
         assert check.valid, f"{name} 最佳擺位竟不合法:{check}"
 
 
@@ -139,7 +153,7 @@ def test_center_origin_furniture_lands_near_room_center():
     spec = _spec()
     opt = FurniturePlacementOptimizer(spec)
     room = _room(spec, "living")
-    res = opt.place("table4", room)
+    res = opt.place("table4", room, ignore=_already_there(spec, "table4"))
     assert res.found
     x0, y0, x1, y1 = _rect(room)
     bx, by = res.best.insert

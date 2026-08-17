@@ -101,11 +101,18 @@ def test_alignment_passes_for_generated_building():
 
 
 def test_alignment_catches_shifted_floor():
-    """人為把某層軸網原點平移 → 應被檢核抓到上下不對齊。"""
+    """人為把某層的柱整排平移 → 應被檢核抓到上下不對齊。
+
+    ⚠️ 要移的是**柱位本身**,不是 `grid_origin`。柱位定案後會被寫成具體清單
+    (`column_centers`,`apply_column_design` 把柱外推時就必須這麼做),之後
+    `grid_origin` 只剩畫軸線用,移它一根柱都不會動 → 檢核當然沒話說,那是測試
+    戳錯地方,不是檢核失靈。"""
     b = generate_building(BuildingBrief(
         typical=CorridorBrief(units_per_row=4), floors=3))
-    ox, oy = b.floors[1].spec.grid_origin
-    b.floors[1].spec.grid_origin = (ox + 800, oy)   # 2F 整體東移 0.8m
+    spec = b.floors[1].spec
+    from src.design.building_generator import _column_centers
+    spec.column_centers = [(cx + 800, cy)            # 2F 整排柱東移 0.8m
+                           for cx, cy in _column_centers(spec)]
     problems = check_column_alignment(b)
     assert problems
     assert any("2F" in p for p in problems)

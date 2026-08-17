@@ -128,6 +128,18 @@ def settle_fixtures_to_wall(spec) -> int:
     cols = _column_polys(spec)
     swings = [o.poly for o in door_swing_obstacles(spec)]
 
+    # ⚠️ 還原是「錦上添花」,不能把圖弄壞。挪動家具的模組不只一個,而閃柱發生在
+    #    動線修復器之前 —— 家具一還原,它當初批准的通道就變了。所以先拍快照、
+    #    還原完再驗一次動線與門的迴轉,只要比還原前差就**整層退回去**。
+    #    (實測:少了這道,淺透天冒出 circulation_blocked、AI 版冒出
+    #     door_swing_blocked 而整份設計被 422 擋掉。使用者說沙發離牆 10cm 也可以,
+    #     所以退回去是完全可接受的結果 —— 寧可醜一點,不要壞掉。)
+    snapshot = [(fx, fx.start if isinstance(fx, Counter) else fx.insert)
+                for fx in fixtures if getattr(fx, DODGE_MARK, None)]
+    if not snapshot:
+        return 0
+    before = _plan_faults(spec)
+
     settled = 0
     for fx in fixtures:
         mark = getattr(fx, DODGE_MARK, None)
@@ -156,7 +168,32 @@ def settle_fixtures_to_wall(spec) -> int:
             back += 1
         if back:
             settled += 1
+
+    if settled and _plan_faults(spec) > before:      # 還原反而弄壞了 → 整層退回
+        for fx, pos in snapshot:
+            if isinstance(fx, Counter):
+                dx, dy = pos[0] - fx.start[0], pos[1] - fx.start[1]
+                _shift(fx, dx, dy)
+            else:
+                fx.insert = pos
+        return 0
     return settled
+
+
+def _plan_faults(spec) -> int:
+    """這層現在有幾條「家具惹出來的」硬錯誤(動線不通 / 擋住門的迴轉)。
+
+    只數這兩類:還原家具只可能影響它們,其他規則(沒門、樓上外門⋯⋯)與家具無關,
+    數進來只是白花時間。⚠️ 檢查本身壞掉不該讓還原變成「一定退回」,所以吞例外
+    回 0(= 當作沒問題),頂多少還原幾件家具。
+    """
+    try:
+        from src.design.layout.plan_check import check_floor
+        return sum(1 for i in check_floor(spec)
+                   if i.severity == "error"
+                   and i.code in ("circulation_blocked", "door_swing_blocked"))
+    except Exception:
+        return 0
 
 
 def _column_polys(spec) -> list:

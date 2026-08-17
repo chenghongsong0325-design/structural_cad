@@ -158,3 +158,70 @@ def test_door_table_serialisable():
     assert json.loads(table.to_json())["n_doors"] == d["n_doors"]
     assert "門連通表" in table.summary()
     assert isinstance(DoorTable().to_json(), str)
+
+
+# ── 柱是實心的:門扇掃到柱就打不開 ───────────────────────────────────────────
+def test_swing_check_sees_columns_stored_as_a_grid():
+    """★★ 柱存成「放在每個軸網交點」時,開啟弧線檢查也要看得到柱。
+
+    ⚠️ 踩過的坑:以前寫 `spec.column_centers or []` —— 但 `column_centers is None`
+    的意思是「柱放在每個軸網交點」,`None or []` 會變成**空清單**,於是窄透天 /
+    淺透天 / AI 產線的門「會不會撞到柱」**從來沒有被檢查過**。柱位是由
+    `column_footprints` 解出來的,這條測試釘的就是「別再繞過它」。"""
+    from src.design.column_design import column_footprints
+    from src.design.layout.door_rules import _swing_obstacles
+
+    _lb, spec = generate_narrow_building(7000.0, 12000.0, floors=2)[0]
+    assert spec.column_centers is None, "這條產線的柱本來就是存成軸網交點"
+    cols = column_footprints(spec)
+    assert cols, "這層本來就該有柱"
+    w = next(w for w in spec.walls if any(o.kind == "door" for o in w.openings))
+    op = next(o for o in w.openings if o.kind == "door")
+    obs = _swing_obstacles(spec, w, op)
+    assert all(any(c.equals(o) for o in obs) for c in cols),         "柱沒被算進開啟弧線的障礙物 → 門撞柱不會被抓到"
+
+
+def test_column_planted_in_front_of_a_door_is_caught():
+    """★ 人為在門扇掃過的地方種一根柱 → 要判 door_swing_blocked。
+
+    上一條驗「看得到柱」,這條驗「看到了會出聲」。"""
+    from src.design.building_generator import _column_centers
+
+    _lb, spec = generate_narrow_building(7000.0, 12000.0, floors=2)[0]
+    assert not [i for i in check_door_rules(spec, None, 1, "1F")]   # 原本乾淨
+    dp = next(dp for dp in spec.doors if not getattr(dp.door, "sliding", False))
+    w = spec.walls[dp.wall_index]
+    op = w.openings[dp.opening_index]
+    cx, cy = w.point_at(op.position)
+    nx, ny = w.normal_vector
+    s = 1.0 if getattr(dp.door, "swing", "out") == "out" else -1.0
+    spec.column_centers = _column_centers(spec) + [(cx + nx * 400 * s,
+                                                    cy + ny * 400 * s)]
+    codes = {i.code for i in check_door_rules(spec, None, 1, "1F")}
+    assert "door_swing_blocked" in codes
+
+
+@pytest.mark.parametrize("bw,bd", SIZES_NARROW)
+def test_narrow_doors_clear_of_columns(bw, bd):
+    """★★ 窄透天各尺寸:沒有一扇門的開啟弧線壓在柱上。"""
+    from src.design.column_design import column_footprints
+    from src.design.layout.door_rules import SWING_OVERLAP_TOL, _swing_sector
+
+    bad = []
+    for lb, spec in generate_narrow_building(bw, bd, floors=3):
+        cols = column_footprints(spec)
+        for dp in spec.doors:
+            if getattr(dp.door, "sliding", False):
+                continue
+            try:
+                w = spec.walls[dp.wall_index]
+                op = w.openings[dp.opening_index]
+            except (IndexError, AttributeError):
+                continue
+            sec = _swing_sector(w, op, dp.door)
+            if sec.is_empty:
+                continue
+            hit = sum(sec.intersection(c).area for c in cols)
+            if hit > SWING_OVERLAP_TOL:
+                bad.append((lb, round(hit / 1e6, 3)))
+    assert not bad, f"這些門被柱擋住:{bad}"

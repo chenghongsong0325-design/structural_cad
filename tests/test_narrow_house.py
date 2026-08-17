@@ -66,12 +66,19 @@ def test_no_storage_room_at_any_size():
 
 
 def test_1f_has_front_entry_door():
-    """★ 臨路大門:1F 南向外牆有一扇門。"""
+    """★ 臨路大門:1F 南向外牆有一扇門。
+
+    ⚠️ 南向外牆的位置要由 **spec 自己推**,不是 `y == setback` —— 建築會替外牆柱
+    留位置(`STRUCT_MARGIN`)而往內縮,寫死退縮線會一道南牆都找不到、空集合的
+    `any()` 是 False,看起來像「大門不見了」其實是量錯地方。"""
+    from src.design.layout.plan_check import building_env
     spec = generate_narrow_house(W, D)
+    south_y = building_env(spec)[1]
     south = [w for w in spec.walls
-             if abs(w.start[1] - spec.setback) < 50
-             and abs(w.end[1] - spec.setback) < 50
+             if abs(w.start[1] - south_y) < 50
+             and abs(w.end[1] - south_y) < 50
              and abs(w.start[0] - w.end[0]) > 1]
+    assert south, "找不到南向外牆"
     assert any(op.kind == "door" for w in south for op in w.openings)
 
 
@@ -311,10 +318,21 @@ def test_auto_router_keeps_two_band_for_wide_building():
 
 
 def test_rooms_tile_building():
+    """★ 房間不重疊、且鋪滿整棟(不留無主的空隙)。
+
+    ⚠️ 外框要由 **spec 自己推**(`building_env`),不能拿輸入的 W×D 當答案 ——
+    產生器會替外牆柱留位置(`STRUCT_MARGIN`)、也會封頂深度留院子,建築因此比
+    傳進去的尺寸小。拿 W×D 比對是在釘「建築剛好等於基地」這個早就不成立的巧合。"""
+    from src.design.layout.plan_check import building_env
+    from src.design.layout_generator import STRUCT_MARGIN
     spec = generate_narrow_house(W, D)
     polys = [Polygon(r.points) for r in spec.rooms]
     for i in range(len(polys)):
         for j in range(i + 1, len(polys)):
             assert polys[i].intersection(polys[j]).area < 1e4
+    x0, y0, x1, y1 = building_env(spec)
     total = sum(p.area for p in polys)
-    assert abs(total - W * D) / (W * D) < 0.02
+    assert abs(total - (x1 - x0) * (y1 - y0)) / ((x1 - x0) * (y1 - y0)) < 0.02
+    # 建築確實只是「為了留柱位」縮了一點,不是整個垮掉
+    assert W - 2 * STRUCT_MARGIN - 1 <= x1 - x0 <= W + 1
+    assert D - 2 * STRUCT_MARGIN - 1 <= y1 - y0 <= D + 1

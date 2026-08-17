@@ -53,8 +53,37 @@ SKINNY_OK_KINDS = {"corridor", "pipe_shaft", "patio", "balcony", "storage",
 EDGE_TOL = 60.0             # 貼邊/貼牆的容差(mm)
 WALL_OVERLAP_TOL = 1000.0   # 家具與牆重疊超過這個面積(mm²)算穿牆
 OVERSIZE_RATIO = 1.5        # 面積超過理想上限這麼多倍算過大
+
+# 併合/開放式的房名 → 它其實是哪幾間併起來的。「餐廚」= 餐廳+廚房、
+# 「客餐廳」= 客廳+餐廳:面積本來就是兩間相加,拿單間的上限去量,正常的
+# 開放式格局會被判成過大。名字用 in 比對(「客餐廳」帶後綴)。
+MERGED_ROOM_PARTS = {"客餐": ("living", "dining"), "餐廚": ("dining", "kitchen")}
 ASPECT_LIMIT = 2.8          # 居室長寬比超過這個算細長
 STAIR_LANDING_MIN = 600.0   # 門與第一階之間至少要有這麼深的平地(起步平台)
+
+
+def oversize_band(room, table: dict) -> tuple | None:
+    """量這間房「會不會太大」該用哪一段面積範圍;查不到回 None(=不查過大)。
+
+    ⚠️ 兩個坑,少一個就會**量錯尺**,把正常的設計判成過大:
+
+      ① **主臥的 kind 也是 `"bedroom"`**(規則版兩帶式這樣存,只有名字帶「主臥」)。
+         直接查表會拿**次臥**的上限去量主臥 —— 主臥本來就該比次臥大。
+      ② **「餐廚」「客餐廳」是兩間併成一間**,上限要相加。開放式餐廚被拿去跟
+         單獨一間餐廳比,一定超標,但那正是我們自己選的開放式格局。
+
+    實測 19×13 三層:10 個「房間過大」裡有 5 個是這兩個坑,不是設計問題。
+    ⚠️ `benchmark.check_rooms` 有一份同樣意圖的舊實作(`_req_for` /
+    `_MERGED_HINTS`),那支是報告用的,尚未併過來 —— 改判準時兩邊要一起改。
+    """
+    for hint, parts in MERGED_ROOM_PARTS.items():
+        if hint in room.name:
+            bands = [table.get(p) for p in parts]
+            if all(b is not None for b in bands):
+                return (sum(b[0] for b in bands), sum(b[1] for b in bands))
+    if room.kind == "bedroom" and "主臥" in room.name:
+        return table.get("master_bedroom", table.get(room.kind))
+    return table.get(room.kind)
 
 
 def _stair_footprint(stair):
@@ -343,7 +372,7 @@ def check_floor(spec, env=None, level: int = 1, label: str = "") -> list[PlanIss
             if not lit:
                 issues.append(PlanIssue("warning", "room_no_daylight", lb,
                                         r.name, "是內間,沒有對外採光面"))
-        band = AREA_BAND.get(r.kind)
+        band = oversize_band(r, AREA_BAND)
         if band and r.area_m2 > band[1] * OVERSIZE_RATIO:
             issues.append(PlanIssue("warning", "room_oversize", lb, r.name,
                                     f"{r.area_m2:.0f}㎡ 過大(理想 ≤{band[1]:.0f}㎡)"))

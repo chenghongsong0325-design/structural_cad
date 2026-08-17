@@ -42,6 +42,7 @@ from src.design.layout.narrow_house import (
     _ensure_room_windows,
     _fix_openings,
     _rect,
+    _set_structural_grid,
 )
 from src.drafting.stair import UStair
 
@@ -222,13 +223,16 @@ def _build_floor(level, top, W, D, floor_label, furnish=True, cap=None,
                             cap=build_d - 250.0,     # 收一點進深、多留後院
                             no_split=no_split)
     spec.floor_label = floor_label
-    spec.x_spacings = [W]
-    spec.y_spacings = [build_d]
-    spec.grid_origin = (bx0, by0)
+    _set_structural_grid(spec, bx0, by0, W, build_d)   # 柱放軸網交點,與窄透天同一套
+    repair_doors(spec, bx0, by0, bx1, level)     # 柱是實心的,門扇掃到柱就打不開(見窄透天同段)
     if furnish:
         from src.design.layout.auto_furnish import furnish_spec
+        from src.design.layout.fixture_fix import (
+            clear_fixtures_off_columns, trim_counters_at_columns)
         from src.design.layout.graph_layout import _declutter_for_circulation
         furnish_spec(spec)
+        trim_counters_at_columns(spec)              # 有柱之後才需要,見窄透天同段說明
+        clear_fixtures_off_columns(spec)
         _declutter_for_circulation(spec)            # 擋動線的家具移掉(四條產線同一套)
         repair_doors(spec, bx0, by0, bx1, level)    # 家具擺完再修一次門(弧線會不會撞家具)
     return spec

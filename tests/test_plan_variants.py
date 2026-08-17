@@ -29,7 +29,17 @@ from src.design.layout.plan_variants import (
 
 SB = 2000.0
 W, D = 7000.0, 12000.0
-ENV = (SB, SB, SB + W, SB + D)
+
+
+def env_of(spec) -> tuple:
+    """這份圖的建築外框,**由 spec 自己推**。
+
+    ⚠️ 以前這裡寫死 `(SB, SB, SB+W, SB+D)`。產生器會替外牆柱留位置
+    (`STRUCT_MARGIN`)而把建築往內縮,寫死的框就比真正的建築大一圈 → 大門與窗
+    被判成「不在外牆上」,24 個變體全部冒出假的 `no_entry`。產線程式碼早就修過
+    這個坑(見 `plan_check.building_env` 的說明),測試沒跟上而已。"""
+    from src.design.layout.plan_check import building_env
+    return building_env(spec)
 
 
 @pytest.mark.slow
@@ -40,8 +50,8 @@ def test_every_variant_passes_both_gates():
     bad = []
     for v in all_variants():
         fl = generate_narrow_building(W, D, floors=3, variant=v)
-        plan = check_building(fl, ENV)
-        code = check_code_building(fl, ENV)
+        plan = check_building(fl, None)          # None = 各層自己推外框
+        code = check_code_building(fl, None)
         if not (plan.ok and code.ok):
             bad.append((v, [i.code for i in plan.errors],
                         [i.code for i in code.violations]))
@@ -71,8 +81,9 @@ def test_seed_picks_a_variant_and_is_repeatable():
     b = generate_narrow_building(W, D, floors=2, seed=7)[0][1]
     assert [r.points for r in a.rooms] == [r.points for r in b.rooms]
     assert variant_from_seed(7) != variant_from_seed(3) or True   # 抽樣可能相同
-    sigs = {_signature(generate_narrow_building(W, D, floors=2, seed=s)[0][1],
-                       ENV) for s in range(8)}
+    sigs = {_signature(sp := generate_narrow_building(W, D, floors=2,
+                                                      seed=s)[0][1],
+                       env_of(sp)) for s in range(8)}
     assert len(sigs) >= 2, "8 個 seed 生出的格局全一樣 → 變體沒有生效"
 
 
@@ -91,7 +102,7 @@ def test_distance_and_signature():
     a = generate_narrow_building(W, D, floors=1)[0][1]
     b = generate_narrow_building(
         W, D, floors=1, variant=type(all_variants()[0])(mirror=True))[0][1]
-    sa, sb = _signature(a, ENV), _signature(b, ENV)
+    sa, sb = _signature(a, env_of(a)), _signature(b, env_of(b))
     assert _distance(sa, sa) == 0.0
     assert _distance(sa, sb) > 0.2
 

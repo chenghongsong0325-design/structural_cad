@@ -40,6 +40,7 @@
 """
 from __future__ import annotations
 
+import math
 import random
 import sys
 from dataclasses import dataclass, replace
@@ -127,7 +128,12 @@ STAIRWELL_W = 2800                     # 透天樓梯間開間寬(D2 多樓層,�
 # 不得淺於採光/使用下限,故加深有上限、且不得讓南帶低於 MIN_SOUTH_BAND_DEPTH。
 HOUSE_STAIR_TREAD = 250                # 級深(踏步深度,mm)
 HOUSE_STAIR_TOP_LANDING = 400          # 梯段頂與樓梯間北牆之間留的平台(mm)
-STAIRWELL_MIN_DEPTH = 4700             # 直梯樓梯間(北帶)最小進深(mm)
+# 梯段**底端**與樓梯間門之間的起步平台(mm)。⚠️ 這一段以前是 0:門開在南牆上,
+# 離第一階只有一個牆縫 150mm ——「一開門就踩上踏step」,人沒有落腳處。
+# 兩帶式/集合住宅一直沒被抓到,因為 `_stair_boxes` 看不見單跑直梯(見那裡的說明)。
+HOUSE_STAIR_ENTRY_LANDING = 600
+STAIRWELL_MIN_DEPTH = 4900             # 直梯樓梯間(北帶)最小進深(mm)
+# = 牆縫 300 + 起步平台 600 + 法定最少級數×最小踏面 + 頂端平台 400,取整。
 MIN_SOUTH_BAND_DEPTH = 3000            # 南帶(客廳帶)最小進深,加深北帶時的下限(mm)
 WET_W = 2000                           # 透天濕區開間寬(1F/2F 衛浴、B1F 機房疊同管道)
 HALL_DEPTH = 1200                      # 單戶走道進深(臥室帶與公共帶之間,C1.5b)
@@ -183,6 +189,10 @@ COLUMN_CLEARANCE = 300       # 洞口與柱面的最小淨距(柱要避開開口
 MIN_STUDY_WIDTH = 2400       # 書房最小淨寬(比臥室略窄可接受:一桌一椅一櫃)
 STUDY_RATIO = 0.85           # 書房相對臥室的寬度分配比(略小,不搶臥室空間)
 CAR_STALL = (2500, 5500)     # 單一汽車位淨尺寸(寬×長,mm;台灣法定約 2.5×5.5m)
+# 地下車庫最淺可以多淺:車位貼北牆、南側是車道,車頭可以略微越過車位線,
+# 所以不必到 5.5m,但少於這個數就是真的停不進去。B1F 在南帶正下方,
+# 所以這是**南帶進深**的下限(見 _house_frame_at 的讓院子換車位)。
+GARAGE_MIN_DEPTH = 4800
 CAR_AISLE = 5500             # 車道/迴轉淨深(垂直式停車進出車道,mm)
 
 
@@ -594,18 +604,18 @@ def _generate_house_at(brief: HouseBrief, margin: float) -> FloorPlanSpec:
     blocked_w = _blocked([by1 - gy for gy in grid_y], col)
     blocked_band = _blocked([gx - bx0 for gx in grid_x], col)   # 帶分界牆(4)
 
-    # C1.5b:走道 =「連接多個獨立房間的共用動線」,房間多才需要——
-    # ≥3 房必設(3+ 扇臥室門不宜全開進客餐廳);2 房動線融入客餐廳、
-    # 預設不設,但東臥門若被服務核+柱位擠到只能開進廚房,退回設走道;
-    # 1 房必不設。(集合住宅的走廊是另一套,見 _generate_corridor。)
-    has_hall = n >= 3
-    pos_direct: Optional[float] = None           # 2房直開客餐廳時的東臥門位
-    if n == 2:
-        pos_direct = _find_clear_position(
-            (bed_x[-2] + sx) / 2 - bx0, DOOR_WIDTH,
-            bed_x[-2] - bx0 + 150, sx - bx0 - 150, blocked_band)
-        if pos_direct is None:
-            has_hall = True
+    # C1.5b:走道 =「連接多個獨立房間的共用動線」。
+    # ⚠️ 舊版寫死「≥3 房必設走道」。但走道在這個骨架裡真正的用途只有一個:**接
+    #    東側臥室**。東臥有一段坐在服務核(廚房+浴廁)上方,那一段的南邊不是客餐廳
+    #    而是廚房,門開出去進不了公共空間;其餘臥室本來就整段貼著客餐廳,門直接
+    #    開就好。所以判準改成功能性的——「東臥的門在客餐廳正上方那一段找不找得到
+    #    位置」,找得到就不設走道。房數多寡本身不是理由(使用者 2026-08-12:
+    #    「走道是真的很大的房子才會需要走道」;動線融入客餐廳見 2026-07-12 定調)。
+    # (集合住宅的走廊是另一套,見 _generate_corridor。)
+    pos_direct: Optional[float] = _find_clear_position(
+        (bed_x[-2] + sx) / 2 - bx0, DOOR_WIDTH,
+        bed_x[-2] - bx0 + 150, sx - bx0 - 150, blocked_band)
+    has_hall = n >= 2 and pos_direct is None     # 1 房必不設
     yc = yd - (HALL_DEPTH if has_hall else 0)    # 走道下緣(=公共帶上緣)
 
     # C1.5b:走道東端 x_he——東側臥室在服務核上方,門要落在走道正面。
@@ -697,7 +707,7 @@ def _generate_house_at(brief: HouseBrief, margin: float) -> FloorPlanSpec:
         if has_hall and i == n - 1:
             door_lo, door_hi, door_desired = pos_e - 450, pos_e + 450, pos_e
         elif not has_hall and pos_direct is not None and i == n - 1:
-            # 2 房無走道:東臥門直開客餐廳(位置已預先算好,避開廚房正面)。
+            # 無走道:東臥門直開客餐廳(位置已預先算好,避開廚房正面)。
             door_lo, door_hi = pos_direct - 450, pos_direct + 450
             door_desired = pos_direct
         elif i == 0 and has_ensuite:
@@ -1779,6 +1789,18 @@ def _house_frame_at(brief: HouseBrief, margin: float) -> SimpleNamespace:
     if slack > 1 and ds < live_req.min_depth:
         ds += min(slack, live_req.min_depth - ds, float(DAYLIGHT_DEPTH_MAX) - ds)
 
+    # 有地下車庫時,南帶再讓深一點:B1F 的車庫就在南帶正下方,停不下車就整份
+    # 設計失敗。優先拿**院子**的餘量來換(院子少 0.9m vs 房子生不出來,不用選)。
+    # ⚠️ 這是踩過的坑:替外牆柱留位置(STRUCT_MARGIN)把建築縮小之後,20×20m
+    #    基地的南帶掉到 3.9m,B1F 就報「車庫太淺」——旁邊明明還有 6m 的院子。
+    #    專案鐵則是「留柱位不得讓原本生得出來的案子生不出來」,當時只檢查了
+    #    地上層,漏了地下車庫。上限一樣守採光深度(客廳不能深到變暗房)。
+    if brief.car_spaces > 0:
+        slack = D - dn - ds - dp
+        need = GARAGE_MIN_DEPTH - (ds + dp)
+        if slack > 1 and need > 0:
+            ds += min(slack, need, float(DAYLIGHT_DEPTH_MAX) - ds)
+
     # 建築進深也由面積程式決定 → 多出來的地變前後院(置中)。
     d_used = ds + dp + dn
     if D > d_used:
@@ -1813,6 +1835,11 @@ def _house_frame_at(brief: HouseBrief, margin: float) -> SimpleNamespace:
     # 立管,真實常識),牆貼最東一條內部軸線 → 1F 的柱也藏進豎牆,與 2F 臥室
     # 牆共用同一批軸線,不再各算各的位置搶軸線。餐廳(西側)內若還有更西的
     # 軸線,由呼叫端立短牆(柱包)蓋住;無內部軸線可藏就給廚房固定寬。
+    # ⚠️ 試過「廚房太寬就把牆從軸線挪開、照面積上限給寬」——**方向錯了,已退回**。
+    #    柱網/結構/牆線優先於面積(見 room_program 模組頭:面積是目標不是命令,
+    #    絕不為了湊面積讓柱子凸進房間)。牆一離開軸線,那根柱就只剩 900mm 的柱包
+    #    短牆遮著,實測 12 條「廚|餐牆坐軸線」的測試全紅、隨機掃描還冒出硬錯誤。
+    #    「餐廚 58㎡」要解的話得從**柱跨本身**下手(讓這個尺寸多切一跨),不是搬牆。
     west_lines = [g for g in grid_x[1:-1] if g < xb - 1]
     if west_lines:
         xk = max(west_lines)
@@ -1902,13 +1929,32 @@ def _house_stair(f: SimpleNamespace, label: str = "上"):
 
     樓梯間在北帶東端,南緣 = f.yn(無天井時 = f.yd,有天井時 = 天井帶北緣)。
     """
+    from src.design.layout.narrow_house import FLOOR_HEIGHT, MAX_RISER, MIN_TREAD
     from src.drafting.stair import Stair
     length = f.dn - 300                                    # 樓梯間內淨長(南北牆各縮 150)
-    run = length - HOUSE_STAIR_TOP_LANDING                 # 梯跑可用長(頂端留平台)
-    steps = max(2, int(run / HOUSE_STAIR_TREAD))           # 級數填滿可用長
+    # 級數下限由**層高**決定(每階升高不得超過 MAX_RISER),不是「填滿可用長」——
+    # 讓出起步平台之後梯跑變短,若還照舊用長度回推級數,級數會變少、每階升高
+    # 就超過法定上限。踏面則可以在 [MIN_TREAD, HOUSE_STAIR_TREAD] 之間縮。
+    steps_min = max(2, math.ceil(FLOOR_HEIGHT / MAX_RISER))
+    # 起步平台先給滿,真的塞不下就一級一級讓(同 STRUCT_MARGIN 的退讓階梯)——
+    # 「有圖可用」優先於「平台漂亮」,但踏面永遠不低於法定下限。
+    step_down = 50.0
+    landing = float(HOUSE_STAIR_ENTRY_LANDING)
+    while landing >= 0:
+        run = length - HOUSE_STAIR_TOP_LANDING - landing
+        if run >= steps_min * MIN_TREAD:
+            steps = max(steps_min, int(run / HOUSE_STAIR_TREAD))
+            tread = min(float(HOUSE_STAIR_TREAD), run / steps)
+            return Stair(origin=(f.xs + 150, f.yn + 150 + landing),
+                         width=STAIRWELL_W - 300, length=length - landing,
+                         direction="north", steps=steps, tread=tread, label=label)
+        landing -= step_down
+    # 連 0 平台都放不下 → 維持原本的填滿做法,讓 plan_check 去擋(不在這裡 raise)
+    run = length - HOUSE_STAIR_TOP_LANDING
     return Stair(origin=(f.xs + 150, f.yn + 150), width=STAIRWELL_W - 300,
                  length=length, direction="north",
-                 steps=steps, tread=HOUSE_STAIR_TREAD, label=label)
+                 steps=max(2, int(run / HOUSE_STAIR_TREAD)),
+                 tread=HOUSE_STAIR_TREAD, label=label)
 
 
 # ── Living Overflow 共用組件(1F 客廳 / 2F 起居室 共用)────────────────────
@@ -2311,33 +2357,126 @@ def max_house_bedrooms(brief: HouseBrief) -> int:
     return best
 
 
-def _west_zone_cut(f: SimpleNamespace, zone_hi: float,
-                   x_max: float) -> Optional[float]:
-    """1F 北帶西段 [bx0, zone_hi] 該不該切一間附屬房出來?回傳切點 x(不切=None)。
+def _west_zone_cuts(f: SimpleNamespace, zone_hi: float, x_max: float,
+                    *, open_kitchen: bool) -> list[float]:
+    """1F 北帶西段 [bx0, zone_hi] 要切成幾間附屬房?回傳切點清單(不切=[])。
 
     餐廳(或開放式的餐廚)大過 max_area 就切:餘量給別的空間,不要讓單一房間
     無限長大(使用者 2026-07-20 定調)。
 
+    ⚠️ 舊版**只切一刀**。基地一大,切完兩邊還是 30m² 起跳(19×13 實測書房
+    32.9m²、餐廚 34.1m²)——「不讓一間無限長大」變成「讓兩間一起無限長大」,
+    根本的問題沒解決。**房間數要跟著面積長**,所以這裡改成切到每一間都在
+    合理範圍內為止。
+
+    ⚠️ 併合的「餐廚」要用**餐廳+廚房**的上限去量,不能拿單獨一間餐廳的上限
+    (那是我們自己選的開放式格局,不是缺陷)——與 `plan_check.oversize_band`
+    同一個判準,兩邊不能各說各話。
+
     切點位置由「餐廳想留多寬」回推,附近有軸線就吸附過去(牆坐在軸線上,柱
-    正好藏進牆交點,更好);沒有也照切——這道牆是輕隔間,不落樑、不新增柱,
+    正好藏進牆交點,更好);沒有也照切——這些牆是輕隔間,不落樑、不新增柱,
     所以柱網完全不受影響(同玄關隔屏 xf 的作法)。「柱藏在牆裡」要求的是每根
     **柱**都有牆包住,不是每道**牆**都要有柱。
     """
-    req = requirement("dining")
+    dine = requirement("dining")
+    if dine.max_area is None:
+        return []
+    east_max, east_keep = dine.max_area, dine.preferred_area
+    if open_kitchen:                                 # 「餐廚」= 餐廳+廚房
+        kit = requirement("kitchen")
+        east_max += kit.max_area or 0.0
+        east_keep += kit.preferred_area
     zone_w = zone_hi - f.bx0
-    if req.max_area is None:
-        return None
-    if zone_w * f.dn / 1_000_000 <= req.max_area * (1 + AREA_TOLERANCE):
-        return None                                  # 還在合理範圍,不必切
-    keep = req.preferred_area * 1_000_000 / f.dn     # 餐廳想留的寬(靠廚房那側)
+    if zone_w * f.dn / 1_000_000 <= east_max * (1 + AREA_TOLERANCE):
+        return []                                    # 還在合理範圍,不必切
+    keep = east_keep * 1_000_000 / f.dn              # 餐廳想留的寬(靠廚房那側)
     lo = f.bx0 + requirement("storage").min_width    # 西邊那間也要放得下
     # 切點不得越過 x_max(=廚房西牆):那之東是廚房的地盤,牆與窗都已排定。
-    hi = min(zone_hi - req.min_width, x_max - req.min_width)
+    hi = min(zone_hi - dine.min_width, x_max - dine.min_width)
     if hi < lo:
-        return None
-    x = _clamp(zone_hi - keep, lo, hi)
-    g = min(f.grid_x, key=lambda t: abs(t - x))      # 附近有軸線就坐上去
-    return g if abs(g - x) <= WALL_SNAP_TOL and lo <= g <= hi else x
+        return []
+    west_hi = _clamp(zone_hi - keep, lo, hi)         # 西段東界(=最後一刀)
+    # 西段再切成幾間:每間都不超過附屬房的合理上限(書房 max_area),但也不能
+    # 窄到擺不下一桌一椅——兩者衝突時以「放得下」為準(寧可大一點也不要切出
+    # 沒人用得了的細長條)。
+    cap = requirement("study").max_area or 14.0
+    west_w = west_hi - f.bx0
+    n_ideal = math.ceil(west_w * f.dn / 1_000_000 / cap - AREA_TOLERANCE)
+    n_max = max(1, min(n_ideal, int(west_w // MIN_STUDY_WIDTH)))
+
+    def even_cuts(n: int) -> list[float]:
+        """把西段等分成 n 間;每一刀附近有軸線就坐上去(牆包柱)。"""
+        step = west_w / n
+        out: list[float] = []
+        for i in range(n):
+            if i == n - 1:
+                out.append(west_hi)                  # 最後一刀固定在西段東界
+                continue
+            x = f.bx0 + step * (i + 1)
+            g = min(f.grid_x, key=lambda t: abs(t - x))
+            prev = out[-1] if out else f.bx0
+            if (abs(g - x) <= WALL_SNAP_TOL and g - prev >= MIN_STUDY_WIDTH
+                    and west_hi - g >= MIN_STUDY_WIDTH):
+                x = g
+            out.append(x)
+        return out
+
+    def zones_can_open(edges: list[float]) -> bool:
+        """每一格的北牆都塞得下一扇窗、帶分界牆都塞得下一扇門(都要躲開柱)。
+
+        ⚠️ **最後一格是餐廳/餐廚**,它對客廳開的不是門而是一道寬通道
+        (獨立廚房 1.2m、開放餐廚 1.8m)。只驗門寬會漏掉這一格:切完剩 1.186m
+        的乾淨牆,門(0.75)過得了、通道(1.2)差 14mm 就過不了 —— 那一刀就把
+        整份設計害到生不出來(13.9×15.3m/seed203 實測)。
+        """
+        last = len(edges) - 2
+        for i, (a, b) in enumerate(zip(edges, edges[1:])):
+            mid = (a + b) / 2
+            if _find_clear_position(mid, 900, a, b, f.blocked) is None:
+                return False        # 北窗
+            if _find_clear_position(mid, 750, a, b, f.blocked) is None:
+                return False        # 房門
+            if i == last:           # 餐廳/餐廚 → 客廳的寬通道(開放餐廚更寬)
+                # 開放餐廚的通道開在 [cut, xb] 上(廚房併進來了),不是 [cut, xk]。
+                hi2 = zone_hi if open_kitchen else b
+                need = 1800.0 if open_kitchen else 1200.0
+                if _find_clear_position((a + hi2) / 2, need, a, hi2,
+                                        f.blocked) is None:
+                    return False
+        return True
+
+    # 退讓階梯:先試切最多間,放不下就少切一刀,一路退到不切為止。
+    # ⚠️ 不能只拿寬度去判斷放不放得下 —— 真正卡住的往往是「柱剛好站在那一格的
+    #    北牆正中」,窗與門都塞不進剩下的兩小段(實測 26×16m 四房就是這樣)。
+    for n in range(n_max, 0, -1):
+        cuts = even_cuts(n)
+        if zones_can_open([f.bx0] + cuts + [x_max]):
+            return cuts
+    return []
+
+
+def _west_zone_program(f: SimpleNamespace, brief: HouseBrief,
+                       xws: list[float]) -> list[tuple]:
+    """1F 北帶西段切出來的每一間各是什麼房 → [(x0, x1, kind, name)]。
+
+    用途由 `select_overflow_program`(Program Selector)決定,跟南帶的 Living
+    Overflow 同一支——**同一個問題只能有一套答案**,不要在這裡另寫一份「夠寬
+    就當書房、否則儲藏室」的判斷。已經配過的用途會記下來(`has_study`/
+    `has_family`),所以切三間會得到「書房 → 家庭廳 → 多功能室」而不是三間書房。
+    """
+    out: list[tuple] = []
+    has_study, has_family = brief.want_study, False
+    lo = f.bx0
+    for hi in xws:
+        kind, name = select_overflow_program(
+            floor="public", bedrooms=brief.bedrooms, want_study=brief.want_study,
+            has_study=has_study, has_family=has_family,
+            width_mm=hi - lo, depth_mm=f.dn)
+        out.append((lo, hi, kind, name))
+        has_study = has_study or kind == "study"
+        has_family = has_family or kind == "family"
+        lo = hi
+    return out
 
 
 def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
@@ -2377,17 +2516,19 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
     # 所以面積要連廚房一起算。但**開窗**永遠以 xk 為界:[xk, xb] 那段是廚房北窗
     # 的地盤,西段的窗跑進去就會兩扇疊在一起(牆墩變負值)。
     zone_hi = f.xb if open_kitchen else xk
-    xw = None if elder else _west_zone_cut(f, zone_hi, xk)
-    zone_edges = [f.bx0] + ([xw] if xw is not None else []) + [xk]
+    xws = [] if elder else _west_zone_cuts(f, zone_hi, xk,
+                                           open_kitchen=open_kitchen)
+    zone_edges = [f.bx0] + xws + [xk]
+    west_prog = _west_zone_program(f, brief, xws)     # 每一間各是什麼房
 
-    # Living Overflow(客廳過細時切西端出來)。1F 北帶西段若已切出書房(見下方
-    # as_study),Program Selector 就不會在南帶再切一間書房(避免重複)。孝親房
-    # 版的南帶是客餐廳(併餐),不切。
-    north_study = (xw is not None and (xw - f.bx0) >= MIN_STUDY_WIDTH
-                   and not brief.want_study)
+    # Living Overflow(客廳過細時切西端出來)。1F 北帶西段已經切出書房/家庭廳時,
+    # Program Selector 就不會在南帶再切一間同樣的(避免整層兩間「家庭廳」)。
+    # 孝親房版的南帶是客餐廳(併餐),不切。
+    north_study = any(k == "study" for _a, _b, k, _n in west_prog)
+    north_family = any(k == "family" for _a, _b, k, _n in west_prog)
     ov = None if elder else _plan_overflow(
         f, brief, "public",
-        has_study=(north_study or brief.want_study), has_family=False)
+        has_study=(north_study or brief.want_study), has_family=north_family)
     live_w0 = f.bx0 if ov is None else ov.x1     # 客廳西界(有溢位就往東縮)
 
     # 北窗:西段每一間各一扇(切開了就兩扇)+ 廚房 + 衛浴。開口索引動態記錄,
@@ -2417,21 +2558,23 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
                  openings=north_ops)
     # 柱包短牆(西段切開處已立整道牆,那裡就不必再包)。
     stubs = [Wall((g, f.yd), (g, f.yd + 900), INT)
-             for g in inner if xw is None or abs(g - xw) > 1]
+             for g in inner if all(abs(g - c) > 1 for c in xws)]
 
-    # 西端附屬房的門(切開時才有),開在帶分界牆上、位置在該房正面。
-    west_room_op: Optional[Opening] = None
-    if xw is not None:
-        dw_, dww = _slot((f.bx0 + xw) / 2, [DOOR_WIDTH, 750], f.bx0, xw,
-                         f.blocked, "西端附屬房門")
-        west_room_op = Opening(dw_ - f.bx0, dww, "door")
+    # 西端附屬房的門(每切一間就一扇),開在帶分界牆上、位置在該房正面。
+    west_room_ops: list[Opening] = []
+    for a, b, _kind, name in west_prog:
+        dw_, dww = _slot((a + b) / 2, [DOOR_WIDTH, 750], a, b,
+                         f.blocked, f"{name}門")
+        west_room_ops.append(Opening(dw_ - f.bx0, dww, "door"))
+    # 西段隔牆:每一刀一道(最後一刀是與餐廳/餐廚的分界)。輕隔間,不落樑。
+    west_walls = [Wall((c, f.yd), (c, f.by1), INT) for c in xws]
 
     if open_kitchen:
         # 開放式廚房:拆掉廚|餐隔牆,廚+餐合成一間「餐廚」,對客廳開寬通道。
-        z_lo = xw if xw is not None else f.bx0
+        z_lo = xws[-1] if xws else f.bx0
         dp, dpw = _slot((z_lo + f.xb) / 2, [2400, 1800], z_lo, f.xb,
                         f.blocked, "餐廚通道")
-        div_ops = ([west_room_op] if west_room_op else []) + [
+        div_ops = west_room_ops + [
             Opening(dp - f.bx0, dpw, "door"),
             Opening(db - f.bx0, dbw, "door"),
             Opening(dst - f.bx0, dstw, "door")]
@@ -2447,11 +2590,10 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
                  Wall((f.xs, f.yd), (f.xs, f.by1), INT),     # 6 衛|梯
                  Wall((xf, f.by0), (xf, foy_n), INT),        # 7 玄關隔屏
                  *([Wall((xk, f.yd), (xk, f.yd + 900), INT)]  # 8 中島腳(包柱)
-                   if xw is None or abs(xk - xw) > 1 else []),
-                 *([Wall((xw, f.yd), (xw, f.by1), INT)]      # 西端附屬房東牆
-                   if xw is not None else []),
+                   if all(abs(xk - c) > 1 for c in xws) else []),
+                 *west_walls,                                # 西段各房的隔牆
                  *stubs]
-        k = 1 if west_room_op else 0                        # 分界牆開口的起始索引
+        k = len(west_room_ops)                              # 分界牆開口的起始索引
         doors = [
             DoorPlacement(0, 0, Door(hinge="left", swing="out")),      # 大門
             DoorPlacement(4, k + 1, Door(hinge="left", swing="out")),  # 衛浴
@@ -2466,11 +2608,11 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
         # 餐廳對客廳開放通道(無門扇)。
         dk, dkw = _slot((xk + f.xb) / 2, [DOOR_WIDTH], xk, f.xb, f.blocked, "廚房門")
         # 西端格:孝親房時開一扇私密門(門扇);否則客餐開放通道(無門扇)。
-        z_lo = xw if xw is not None else f.bx0
+        z_lo = xws[-1] if xws else f.bx0
         dp, dpw = _slot((z_lo + xk) / 2,
                         [DOOR_WIDTH] if elder else [PASSAGE_WIDTH, 1200],
                         z_lo, xk, f.blocked, "孝親房門" if elder else "客餐通道")
-        div_ops = ([west_room_op] if west_room_op else []) + [
+        div_ops = west_room_ops + [
             Opening(dp - f.bx0, dpw, "door"),
             Opening(dk - f.bx0, dkw, "door"),
             Opening(db - f.bx0, dbw, "door"),
@@ -2485,10 +2627,9 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
                  Wall((f.xb, f.yd), (f.xb, f.by1), INT),     # 6 廚|衛(管道牆)
                  Wall((f.xs, f.yd), (f.xs, f.by1), INT),     # 7 衛|梯
                  Wall((xf, f.by0), (xf, foy_n), INT),        # 8 玄關隔屏
-                 *([Wall((xw, f.yd), (xw, f.by1), INT)]      # 西端附屬房東牆
-                   if xw is not None else []),
+                 *west_walls,                                # 西段各房的隔牆
                  *stubs]
-        k = 1 if west_room_op else 0                        # 分界牆開口的起始索引
+        k = len(west_room_ops)                              # 分界牆開口的起始索引
         doors = [
             DoorPlacement(0, 0, Door(hinge="left", swing="out")),      # 大門
             DoorPlacement(4, k + 1, Door(hinge="left", swing="out")),  # 廚房
@@ -2515,16 +2656,14 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
     windows = ([WindowPlacement(0, i) for i in range(1, len(south.openings))]
                + [WindowPlacement(1, i) for i in range(len(north_ops))])
 
-    # 西端附屬房:夠寬就當書房(使用者已指定書房時樓上已有一間,這裡回歸儲藏)。
-    west_rooms: list[Room] = []
-    if xw is not None:
-        as_study = (xw - f.bx0) >= MIN_STUDY_WIDTH and not brief.want_study
-        kind = "study" if as_study else "storage"
-        west_rooms.append(Room(
-            "書房" if as_study else "儲藏室",
-            [(f.bx0, f.yd), (xw, f.yd), (xw, f.by1), (f.bx0, f.by1)],
-            kind=kind, code=ROOM_CODES[kind]))
-        doors.append(DoorPlacement(4, 0, Door(hinge="left", swing="out")))
+    # 西端附屬房:用途已由 Program Selector 決定(見 _west_zone_program),
+    # 這裡只負責把它們變成 Room + 一扇門(門開口在帶分界牆最前面幾個)。
+    west_rooms = [
+        Room(name, [(a, f.yd), (b, f.yd), (b, f.by1), (a, f.by1)],
+             kind=kind, code=ROOM_CODES[kind])
+        for a, b, kind, name in west_prog]
+    doors += [DoorPlacement(4, i, Door(hinge="left", swing="out"))
+              for i in range(len(west_prog))]
 
     rooms = [
         Room("客餐廳" if elder else "客廳",                  # 孝親房佔餐廳格 → 餐併客
@@ -2683,7 +2822,7 @@ def _parking_layout(brief: HouseBrief, bx0: float, bx1: float,
         raise ValueError(
             f"車庫寬 {W/1000:.1f}m 放不下 {n} 個汽車位"
             f"(每位需 {stall_w/1000:.1f}m,共 {n*stall_w/1000:.1f}m),請加大基地寬")
-    if depth < 4800:
+    if depth < GARAGE_MIN_DEPTH:
         raise ValueError(
             f"地下車庫進深 {depth/1000:.1f}m 太淺(汽車位需 ≥4.8m),請加大基地南北深")
 
