@@ -819,8 +819,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         graph = json.loads(cache.read_text(encoding="utf-8"))
         print(f"[1/3] 用快取關係圖 {cache.name}(--cached,不呼叫 Gemini)")
     else:
-        if not (os.environ.get("GEMINI_API_KEY")
-                or os.environ.get("GOOGLE_API_KEY")):
+        from src.design.api_keys import have_key
+        if not have_key():
             print("需要設定 GEMINI_API_KEY 環境變數")
             raise SystemExit(1)
         brief = " ".join(args) if args else "透天三層,建築物7×12米,三房"

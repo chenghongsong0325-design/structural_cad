@@ -1,3 +1,6 @@
+# API 金鑰 —— 絕對不可以進版本控制(推上去等於公開,別人可以拿去用你的額度)
+api_keys.json
+
 # Python
 __pycache__/
 *.pyc

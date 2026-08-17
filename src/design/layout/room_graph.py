@@ -144,8 +144,8 @@ def refine_room_graph(prev_graph: dict, problems: list, *,
                       floor_area_m2: Optional[float] = None) -> dict:
     """上一版關係圖 + 問題清單 → 改良後的關係圖(雙向收斂迴圈的「重設計」那步)。"""
     if client is None:
-        from google import genai
-        client = genai.Client()
+        from src.design.api_keys import make_client
+        client = make_client()   # 多把金鑰輪替(見 api_keys 模組說明)
     contents = ("上一版關係圖(JSON):\n"
                 + json.dumps(prev_graph, ensure_ascii=False)
                 + "\n\n落實後發現的問題:\n"
@@ -178,8 +178,8 @@ def propose_room_graph(brief_text: str, client: Optional[object] = None,
     if not brief_text or not brief_text.strip():
         raise ValueError("需求描述是空的")
     if client is None:
-        from google import genai
-        client = genai.Client()
+        from src.design.api_keys import make_client
+        client = make_client()   # 多把金鑰輪替(見 api_keys 模組說明)
     contents = brief_text
     if floor_area_m2:
         contents += (f"\n\n(補充:每一層樓地板面積約 {floor_area_m2:.0f} ㎡。"
@@ -305,7 +305,8 @@ def _topology_signature(graph: dict) -> tuple:
 
 def main(argv: Optional[list[str]] = None) -> None:
     args = argv if argv is not None else sys.argv[1:]
-    if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+    from src.design.api_keys import have_key
+    if not have_key():
         print("需要設定 GEMINI_API_KEY 環境變數")
         raise SystemExit(1)
 

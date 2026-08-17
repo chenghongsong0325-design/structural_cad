@@ -273,8 +273,8 @@ def parse_brief(text: str, client: Optional[object] = None) -> Brief:
         raise ValueError("需求描述是空的")
 
     if client is None:
-        from google import genai
-        client = genai.Client()   # 自動讀 GEMINI_API_KEY / GOOGLE_API_KEY
+        from src.design.api_keys import make_client
+        client = make_client()   # 多把金鑰輪替(見 api_keys 模組說明)
 
     return _brief_from_data(_call_llm(text, client))
 
@@ -290,8 +290,8 @@ def parse_building_brief(text: str, client: Optional[object] = None,
     if not text or not text.strip():
         raise ValueError("需求描述是空的")
     if client is None:
-        from google import genai
-        client = genai.Client()   # 自動讀 GEMINI_API_KEY / GOOGLE_API_KEY
+        from src.design.api_keys import make_client
+        client = make_client()   # 多把金鑰輪替(見 api_keys 模組說明)
     return _building_from_data(_call_llm(text, client), seed=seed)
 
 
@@ -305,8 +305,8 @@ def parse_brief_data(text: str, client: Optional[object] = None) -> dict:
     if not text or not text.strip():
         raise ValueError("需求描述是空的")
     if client is None:
-        from google import genai
-        client = genai.Client()
+        from src.design.api_keys import make_client
+        client = make_client()   # 多把金鑰輪替(見 api_keys 模組說明)
     return _call_llm(text, client)
 
 
@@ -316,8 +316,8 @@ def parse_modification_data(instruction: str, base: dict,
     if not instruction or not instruction.strip():
         raise ValueError("修改指令是空的")
     if client is None:
-        from google import genai
-        client = genai.Client()
+        from src.design.api_keys import make_client
+        client = make_client()   # 多把金鑰輪替(見 api_keys 模組說明)
     text = (f"目前需求(JSON):{json.dumps(base, ensure_ascii=False)}\n"
             f"修改指令:{instruction}")
     return _call_llm(text, client, system=MODIFY_PROMPT)
@@ -374,7 +374,8 @@ def main(argv: list[str] | None = None) -> None:
     if not args:
         print('用法:python src/design/nl_parser.py "基地16×14米,三房"')
         raise SystemExit(1)
-    if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+    from src.design.api_keys import have_key
+    if not have_key():
         print("需要設定 GEMINI_API_KEY 環境變數(https://aistudio.google.com 申請)")
         raise SystemExit(1)
 

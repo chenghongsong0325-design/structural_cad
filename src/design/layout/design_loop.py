@@ -147,7 +147,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     from src.standards.loader import apply_standard, load_standard, new_document
 
     args = argv if argv is not None else sys.argv[1:]
-    if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+    from src.design.api_keys import have_key
+    if not have_key():
         print("需要設定 GEMINI_API_KEY 環境變數")
         raise SystemExit(1)
 

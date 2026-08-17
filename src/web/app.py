@@ -105,8 +105,10 @@ class ScoreRequest(BaseModel):
 
 
 def _has_api_key() -> bool:
-    return bool(os.environ.get("GEMINI_API_KEY")
-                or os.environ.get("GOOGLE_API_KEY"))
+    # 金鑰不只來自那兩個環境變數(還有 GEMINI_API_KEYS 與 api_keys.json),
+    # 一律問 api_keys 模組,別在這裡自己讀 os.environ。
+    from src.design.api_keys import have_key
+    return have_key()
 
 
 # Gemini 額度/限流錯誤 → 友善中文(而非把整包 429 RESOURCE_EXHAUSTED JSON 砸給使用者)。
