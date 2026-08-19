@@ -812,13 +812,88 @@ def test_stair_riser_and_tread_stay_legal_after_the_landing(w, d, n):
     """★★ 讓出起步平台之後,每階升高/踏面仍要合法。
 
     ⚠️ 這是讓平台時最容易錯的地方:梯跑變短,若還照舊「用長度回推級數」,
-    級數會變少 → **每階升高超過法定上限**。級數要由**層高**決定。"""
+    級數會變少 → **每階升高超過法定上限**。級數要由**層高**決定。
+
+    ⚠️ 級數要**型別無關**地算:折返梯一層走兩段(`steps_per_flight × 2`),
+    直梯是 `steps`。寫死其中一種,換梯型就 AttributeError(不是產品壞了,
+    是測試綁死了實作)。"""
     from src.design.layout.narrow_house import FLOOR_HEIGHT, MAX_RISER, MIN_TREAD
     from src.design.layout_generator import _house_frame, _house_stair
 
     st = _house_stair(_house_frame(HouseBrief(
         site_width=w * 1000, site_depth=d * 1000, bedrooms=n, setback=0)))
-    assert FLOOR_HEIGHT / st.steps <= MAX_RISER + 1e-6, (
-        f"每階升高 {FLOOR_HEIGHT / st.steps:.0f} > {MAX_RISER:.0f}")
+    spf = getattr(st, "steps_per_flight", None)
+    total = spf * 2 if spf else st.steps          # 折返梯 / 直梯都算得出來
+    assert FLOOR_HEIGHT / total <= MAX_RISER + 1e-6, (
+        f"每階升高 {FLOOR_HEIGHT / total:.0f} > {MAX_RISER:.0f}")
     assert st.tread >= MIN_TREAD - 1e-6, f"踏面 {st.tread:.0f} < {MIN_TREAD:.0f}"
-    assert st.steps * st.tread <= st.length + 1e-6   # 梯跑放得進樓梯間
+    # 梯跑(單段)放得進樓梯間,且還留得下平台
+    one_flight = (spf or st.steps) * st.tread
+    assert one_flight <= st.length + 1e-6
+
+
+# ── 折返梯(使用者 2026-08-14 依中間層樓梯參考圖定調)─────────────────────
+@pytest.mark.parametrize("w,d,n", [(19, 13, 3), (15, 12, 3), (26, 16, 4),
+                                   (20, 20, 3)])
+def test_house_stair_is_a_switchback(w, d, n):
+    """★★ 兩帶式透天的樓梯是**折返梯**:兩梯段夾一道梯井、兩端各一平台。
+
+    ⚠️ 這推翻了 2026-07-20「單跑直梯」的決定(使用者 2026-08-14 給了中間層樓梯的
+    參考圖)。§33:折返端平臺深不得小於梯段寬 —— 轉身要站得住人。"""
+    from src.design.layout.narrow_house import (
+        FLOOR_HEIGHT, MAX_RISER, MIN_TREAD, TURN_LANDING_MIN)
+    from src.design.layout_generator import (
+        HOUSE_STAIR_WELL_GAP, _house_frame, _house_stair)
+    from src.drafting.stair import UStair
+
+    st = _house_stair(_house_frame(HouseBrief(
+        site_width=w * 1000, site_depth=d * 1000, bedrooms=n, setback=0)))
+    assert isinstance(st, UStair), "應該是折返梯,不是單跑直梯"
+    assert st.well_gap == HOUSE_STAIR_WELL_GAP
+    assert st.flight_width >= 600                       # 梯段寬下限
+    # §33:折返端平臺深 ≥ 梯段寬
+    assert st.landing_depth >= min(st.flight_width, TURN_LANDING_MIN) - 1e-6
+    assert st.landing_depth >= TURN_LANDING_MIN - 1e-6
+    # 一層要爬完兩段 → 級數看的是 steps_per_flight × 2
+    total = st.steps_per_flight * 2
+    assert FLOOR_HEIGHT / total <= MAX_RISER + 1e-6
+    assert st.tread >= MIN_TREAD - 1e-6
+
+
+@pytest.mark.parametrize("w,d,n,floors,cars", [(19, 13, 3, 3, 0), (15, 12, 3, 2, 0),
+                                               (26, 16, 4, 3, 0), (20, 20, 3, 3, 2)])
+def test_every_door_can_actually_open(w, d, n, floors, cars):
+    """★★ 使用者 2026-08-14 要求:「確認有足夠的空間開關門,不會卡到其他東西」。
+
+    逐扇量門扇掃過的扇形,和牆/柱/家具/其他門的開啟弧線比對 —— 不是抽查,是
+    **每一層每一扇**。換折返梯之後樓梯佔的位置變了,這條守住門沒被連累。"""
+    from src.design.building_generator import BuildingBrief, generate_building_auto
+    from src.design.layout.door_rules import (
+        SWING_OVERLAP_TOL, _other_door_sectors, _swing_obstacles, _swing_sector)
+
+    bld = generate_building_auto(BuildingBrief(
+        typical=HouseBrief(site_width=w * 1000, site_depth=d * 1000, bedrooms=n,
+                           setback=0, seed=0, car_spaces=cars),
+        floors=floors, basements=1 if cars else 0, differentiated=True))
+    bad, seen = [], 0
+    for fl in bld.floors:
+        spec = fl.spec
+        for dp in getattr(spec, "doors", None) or []:
+            try:
+                wall = spec.walls[dp.wall_index]
+                op = wall.openings[dp.opening_index]
+            except (IndexError, AttributeError):
+                continue
+            if op.kind != "door" or getattr(dp.door, "sliding", False):
+                continue
+            sec = _swing_sector(wall, op, dp.door)
+            if sec.is_empty:
+                continue
+            seen += 1
+            obs = _swing_obstacles(spec, wall, op) + _other_door_sectors(spec, dp)
+            hit = sum(sec.intersection(o).area for o in obs if o.intersects(sec))
+            if hit > SWING_OVERLAP_TOL:
+                px, py = wall.point_at(op.position)
+                bad.append((fl.label, round(px), round(py), round(hit / 1e6, 3)))
+    assert seen >= 5, f"只量到 {seen} 扇門,測試自己失效了"
+    assert not bad, f"這些門打不開:{bad}"

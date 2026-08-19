@@ -123,17 +123,22 @@ ENSUITE_W, ENSUITE_D = 1800, 2000     # 主臥套房衛浴尺寸(≥3房自動�
 CORE_W = 3100                          # 集合住宅端部逃生核(樓梯+電梯)的開間寬
 RAMP_GAP = 2700                        # 地下室車道口寬(限一跨內躲柱;機車坡道)
 STAIRWELL_W = 2800                     # 透天樓梯間開間寬(D2 多樓層,每層同位)
-# 透天改用「單跑直梯 + 中央扶手」(使用者 2026-07-20 依實際樓梯平面圖定調):
-# 單跑不折返、梯跑較長,樓梯間(北帶)要加深才放得下整段梯——但南帶(客廳帶)
-# 不得淺於採光/使用下限,故加深有上限、且不得讓南帶低於 MIN_SOUTH_BAND_DEPTH。
-HOUSE_STAIR_TREAD = 250                # 級深(踏步深度,mm)
-HOUSE_STAIR_TOP_LANDING = 400          # 梯段頂與樓梯間北牆之間留的平台(mm)
+# 透天用**折返梯**(使用者 2026-08-14 依中間層樓梯參考圖定調:上下兩梯段夾一道
+# 梯井、兩端各一平台)。⚠️ 這推翻了 2026-07-20「單跑直梯 + 中央扶手」的決定,
+# 直梯的做法已整段刪掉——別再從 git 歷史撈回來混用。
+HOUSE_STAIR_TREAD = 250                # 級深(踏步深度,mm;參考圖 25cm)
+HOUSE_STAIR_TOP_LANDING = 400          # (直梯時代的遺留;折返梯的折返平台見 _house_stair)
 # 梯段**底端**與樓梯間門之間的起步平台(mm)。⚠️ 這一段以前是 0:門開在南牆上,
 # 離第一階只有一個牆縫 150mm ——「一開門就踩上踏step」,人沒有落腳處。
-# 兩帶式/集合住宅一直沒被抓到,因為 `_stair_boxes` 看不見單跑直梯(見那裡的說明)。
+# 一直沒被抓到,是因為 `_stair_boxes` 看不見直梯(見 narrow_house 那裡的說明)。
 HOUSE_STAIR_ENTRY_LANDING = 600
-STAIRWELL_MIN_DEPTH = 4900             # 直梯樓梯間(北帶)最小進深(mm)
-# = 牆縫 300 + 起步平台 600 + 法定最少級數×最小踏面 + 頂端平台 400,取整。
+# 折返梯的梯井縫(兩梯段之間的空隙,mm)。參考圖標的是 30cm。
+# ⚠️ 窄透天/淺透天用的是 narrow_house.STAIR_WELL_GAP=100 —— 那是面寬吃緊時的
+# 緊縮版,不要拿這裡的值去套過去(會讓窄透天的面寬下限往上跑)。
+HOUSE_STAIR_WELL_GAP = 300
+STAIRWELL_MIN_DEPTH = 4900             # 樓梯間(北帶)最小進深(mm)
+# 折返梯實際只需 起步平台600 + 梯段9×250 + 折返平台1100 + 牆縫300 = 4250,
+# 這裡仍留 4900 是刻意的:降低它會讓北帶變淺、動到所有既有格局,那是另一件事。
 MIN_SOUTH_BAND_DEPTH = 3000            # 南帶(客廳帶)最小進深,加深北帶時的下限(mm)
 WET_W = 2000                           # 透天濕區開間寬(1F/2F 衛浴、B1F 機房疊同管道)
 HALL_DEPTH = 1200                      # 單戶走道進深(臥室帶與公共帶之間,C1.5b)
@@ -1556,7 +1561,7 @@ def _solve_frame_program(slot_kinds: list[str], w_avail: float, d_avail: float,
     dn 會回頭改變樓梯間佔掉的面積,所以跑三輪讓它收斂(實測第二輪就穩定)。
 
     ⚠️ 硬約束(結構/法規/家具,**不是**美感偏好,故凌駕面積目標):
-      * dn ≥ STAIRWELL_MIN_DEPTH:單跑直梯要這麼長才放得下。
+      * dn ≥ STAIRWELL_MIN_DEPTH:折返梯(起步平台+梯段+折返平台)要這麼長才放得下。
       * dn + bonus ≤ DAYLIGHT_DEPTH_MAX:離北窗太遠就是暗房(C1.5c)。
       * ds ≥ MIN_SOUTH_BAND_DEPTH、≤ DAYLIGHT_DEPTH_MAX(南窗同理)。
       * 每格寬 ≥ 該房型的 min_width(擺得下家具)。
@@ -1920,41 +1925,50 @@ def _house_frame_at(brief: HouseBrief, margin: float) -> SimpleNamespace:
 
 
 def _house_stair(f: SimpleNamespace, label: str = "上"):
-    """樓梯間裡的單跑直梯 + 中央扶手(每層同一座、同一位置)。
+    """樓梯間裡的**折返梯**(中間層樓梯;每層同一座、同一位置)。
 
-    使用者 2026-07-20 依實際樓梯平面圖定調:透天用單跑直梯(不折返),
-    中央一道扶手 + 兩端立柱(畫圖層 draw_stair 負責)。級數由樓梯間可用
-    進深回推(填滿 f.dn,頂端留 HOUSE_STAIR_TOP_LANDING 平台),故北帶已
-    先加深(STAIRWELL_MIN_DEPTH),整段梯跑放得下、不會報放不下。
+    使用者 2026-08-14 給了中間層樓梯的參考圖(上下兩梯段夾一道梯井,兩端各一
+    平台)→ 改成折返梯。⚠️ 這推翻了 2026-07-20「透天用單跑直梯」的決定;
+    單跑直梯的做法整段刪掉了,別再從 git 歷史撈回來混用。
 
-    樓梯間在北帶東端,南緣 = f.yn(無天井時 = f.yd,有天井時 = 天井帶北緣)。
+    幾何(參考圖標的是 15|90|30|90|15 寬、平台100+梯段8@25+平台100 長)::
+
+        總寬  = 梯段 + 梯井縫(HOUSE_STAIR_WELL_GAP) + 梯段   ← 吃樓梯間開間寬
+        總長  = 起步平台 + 梯段水平長 + 折返平台            ← 吃北帶進深
+
+    ⚠️ **級數由層高決定,不是「填滿可用長」回推**。折返梯一層要走完兩段,
+    所以每段 = ceil(總級數 / 2);總級數 = ceil(層高 / 每階升高上限)。用長度回推
+    的話,平台一讓、梯跑一短,級數就變少、每階升高直接破法定上限。
+
+    ⚠️ **§33:折返端平臺深不得小於梯段寬**(轉身要站得住人),所以折返平台是
+    `max(TURN_LANDING_MIN, 梯段寬)`,不是固定值。
+
+    樓梯間在北帶東端,南緣 = f.yn(無天井時 = f.yd,有天井時 = 天井帶北緣);
+    門開在南牆上,所以**起步平台留在南端**(門一開先站平地再上第一階)。
     """
-    from src.design.layout.narrow_house import FLOOR_HEIGHT, MAX_RISER, MIN_TREAD
-    from src.drafting.stair import Stair
-    length = f.dn - 300                                    # 樓梯間內淨長(南北牆各縮 150)
-    # 級數下限由**層高**決定(每階升高不得超過 MAX_RISER),不是「填滿可用長」——
-    # 讓出起步平台之後梯跑變短,若還照舊用長度回推級數,級數會變少、每階升高
-    # 就超過法定上限。踏面則可以在 [MIN_TREAD, HOUSE_STAIR_TREAD] 之間縮。
-    steps_min = max(2, math.ceil(FLOOR_HEIGHT / MAX_RISER))
-    # 起步平台先給滿,真的塞不下就一級一級讓(同 STRUCT_MARGIN 的退讓階梯)——
-    # 「有圖可用」優先於「平台漂亮」,但踏面永遠不低於法定下限。
-    step_down = 50.0
-    landing = float(HOUSE_STAIR_ENTRY_LANDING)
-    while landing >= 0:
-        run = length - HOUSE_STAIR_TOP_LANDING - landing
-        if run >= steps_min * MIN_TREAD:
-            steps = max(steps_min, int(run / HOUSE_STAIR_TREAD))
-            tread = min(float(HOUSE_STAIR_TREAD), run / steps)
-            return Stair(origin=(f.xs + 150, f.yn + 150 + landing),
-                         width=STAIRWELL_W - 300, length=length - landing,
-                         direction="north", steps=steps, tread=tread, label=label)
-        landing -= step_down
-    # 連 0 平台都放不下 → 維持原本的填滿做法,讓 plan_check 去擋(不在這裡 raise)
-    run = length - HOUSE_STAIR_TOP_LANDING
-    return Stair(origin=(f.xs + 150, f.yn + 150), width=STAIRWELL_W - 300,
-                 length=length, direction="north",
-                 steps=max(2, int(run / HOUSE_STAIR_TREAD)),
-                 tread=HOUSE_STAIR_TREAD, label=label)
+    from src.design.layout.narrow_house import (
+        FLOOR_HEIGHT, MAX_RISER, MIN_TREAD, TURN_LANDING_MIN,
+    )
+    from src.drafting.stair import UStair
+
+    inner_w = STAIRWELL_W - 300                 # 樓梯間內淨寬(東西牆各縮 150)
+    inner_l = f.dn - 300                        # 樓梯間內淨長(南北牆各縮 150)
+    well = float(HOUSE_STAIR_WELL_GAP)
+    flight_w = (inner_w - well) / 2.0
+    turn = max(float(TURN_LANDING_MIN), flight_w)       # §33 折返平台
+    spf = max(2, math.ceil(math.ceil(FLOOR_HEIGHT / MAX_RISER) / 2))
+
+    # 退讓階梯:先給滿踏面 + 滿起步平台;放不下就先縮踏面(仍守法定下限),
+    # 再縮起步平台。「有圖可用」優先於「平台漂亮」,但級數與踏面不讓。
+    tread = float(HOUSE_STAIR_TREAD)
+    entry = inner_l - spf * tread - turn
+    while entry < HOUSE_STAIR_ENTRY_LANDING and tread > MIN_TREAD:
+        tread = max(MIN_TREAD, tread - 10.0)
+        entry = inner_l - spf * tread - turn
+    entry = max(0.0, entry)
+    return UStair(origin=(f.xs + 150, f.yn + 150 + entry), width=inner_w,
+                  length=inner_l - entry, direction="north",
+                  steps_per_flight=spf, tread=tread, well_gap=well, label=label)
 
 
 # ── Living Overflow 共用組件(1F 客廳 / 2F 起居室 共用)────────────────────
