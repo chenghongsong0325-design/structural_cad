@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import sys
-from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
@@ -39,6 +38,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from src.design.building_generator import BuildingSpec
 from src.drafting.apartment_plan import draw_floor_plan
+from src.drafting.preview_font import preview_font
 from src.drafting.section import draw_elevation, draw_section
 from src.standards.loader import apply_standard, load_standard, new_document
 
@@ -106,32 +106,8 @@ _SVG_CONFIG = Configuration(
     background_policy=BackgroundPolicy.BLACK,
 )
 
-# 預覽用替代字型——⚠️ default.yaml 的 STRUCT 樣式用「標楷體」kaiu.ttf(給
-# AutoCAD/競賽出圖),但 ezdxf 把 kaiu.ttf 的複雜筆畫中文字(樓梯間/衛浴/
-# 客廳…)轉成 SVG 路徑時,字形輪廓會自我相交、破碎成「打勾/裂開」的樣子
-# (kaiu.ttf 本身的字型檔問題,只在向量路徑轉換時出現,AutoCAD 原生渲染不會
-# 犯這個錯,使用者截圖抓到的就是這個)。實測換成微軟正黑體 msjh.ttc 完全乾淨。
-# 只覆寫「送去轉 SVG 的那份文件」的 STRUCT 樣式字型,不動 default.yaml——
-# DXF 下載檔仍是標楷體(競賽規範/AutoCAD 顯示都正常,不受影響)。
-_PREVIEW_FONT = "msjh.ttc"
-
-
-@contextmanager
-def _preview_font(doc):
-    """暫時把 STRUCT 樣式字型換成 msjh.ttc(向量轉換用),離開時還原。
-
-    kaiu.ttf 在「字形→向量路徑」轉換時複雜筆畫中文會破碎(SVG 與 PDF 的
-    渲染路徑相同),msjh.ttc 乾淨;DXF 下載檔不受影響(try/finally 還原)。
-    """
-    struct_style = doc.styles.get("STRUCT")
-    original_font = struct_style.dxf.font if struct_style is not None else None
-    if struct_style is not None:
-        struct_style.dxf.font = _PREVIEW_FONT
-    try:
-        yield
-    finally:
-        if struct_style is not None:
-            struct_style.dxf.font = original_font
+# 預覽用替代字型:標楷體轉向量路徑會破碎,轉圖時暫時換成正黑體。
+# 完整原因與已知入口清單寫在 src/drafting/preview_font.py 模組頭。
 
 
 def doc_to_svg(doc) -> str:
@@ -143,7 +119,7 @@ def doc_to_svg(doc) -> str:
     doc——字型覆寫用完就還原,不管呼叫順序(先存檔或先轉 SVG)都不會讓下載
     的 DXF 意外變成 msjh.ttc。
     """
-    with _preview_font(doc):
+    with preview_font(doc):
         backend = SVGBackend()
         Frontend(RenderContext(doc), backend, config=_SVG_CONFIG).draw_layout(
             doc.modelspace(), finalize=True)
@@ -180,7 +156,7 @@ def docs_to_pdf(docs: list, path) -> None:
             fig = plt.figure(figsize=_A3_INCHES)
             ax = fig.add_axes([0, 0, 1, 1])
             ax.set_axis_off()
-            with _preview_font(doc):
+            with preview_font(doc):
                 Frontend(RenderContext(doc), MatplotlibBackend(ax),
                          config=_PDF_CONFIG).draw_layout(
                     doc.modelspace(), finalize=True)

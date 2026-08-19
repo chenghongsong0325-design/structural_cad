@@ -35,6 +35,7 @@ from src.design.benchmark import render_png
 from src.design.building_generator import BuildingBrief, generate_building_auto
 from src.design.layout.plan_check import check_building
 from src.design.layout_generator import HouseBrief
+from src.drafting.preview_font import preview_font
 from src.web.render import build_sheets
 
 
@@ -72,7 +73,12 @@ def main() -> int:
     for sheet in build_sheets(building):
         doc = sheet.doc if args.sheet else (sheet.preview_doc or sheet.doc)
         path = out_dir / f"{sheet.label}.png"
-        render_png(doc, path, dpi=args.dpi, lineweight=args.lineweight, size=10)
+        # ⚠️ 一定要包 preview_font:STRUCT 樣式是標楷體,轉成向量路徑時中文會
+        #    破碎(原因見 src/drafting/preview_font.py)。網頁的 SVG/PDF 早就包了,
+        #    這支 PNG 以前漏掉 → 使用者看到的預覽圖中文全是裂的。
+        with preview_font(doc):
+            render_png(doc, path, dpi=args.dpi,
+                       lineweight=args.lineweight, size=10)
         print(f"  [OK] {path}")
 
     report = check_building([(f.label, f.spec) for f in building.floors])
