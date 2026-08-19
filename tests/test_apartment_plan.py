@@ -110,8 +110,11 @@ def test_draw_floor_plan_layers(doc_and_layers) -> None:
     # OTHER:A3 圖框 2 + 標題欄 1 + 電梯符號 3 + 設備家具圖塊 11 +
     #        流理台(2 段多義線 + 1 水槽圓)3 + 北向箭頭 1 = 21;
     #        2026-08-03 起再加圖面標註(對照丙級檢定參考圖):門窗編號圈 14 +
-    #        牆厚引線 2 種×2 段 4 + 剖切符號(線 1 + 兩端各 箭幹1+箭羽2)7 = 25。
-    assert by_layer.get("OTHER") == 21 + 25
+    #        牆厚引線 2 種×2 段 4 = 18。
+    #        ⚠️ 以前還有「剖切符號(線 1 + 兩端各 箭幹1+箭羽2)7 條」,使用者
+    #        2026-08-19 決定拿掉 → 25 減 7 = 18。要畫回來見 FloorPlanSpec
+    #        的 section_mark(功能沒刪,只是預設關)。
+    assert by_layer.get("OTHER") == 21 + 18
     # 尺度在 DIM:四邊三層尺寸鏈(細部 20 + 軸距 10 + 總長 4)= 34,
     # 加基地標註 8(下方/左方各:院|建築|院 3 段 + 基地總長 1)= 42 個。
     assert by_layer.get("DIM") == 42
@@ -163,3 +166,48 @@ def test_demo_runs_end_to_end(doc_and_layers) -> None:
     msp = doc.modelspace()
     draw_floor_plan(msp, demo_spec(), layers)
     assert len(list(msp)) > 50
+
+
+# ── 剖切符號:預設不畫,但功能還在(使用者 2026-08-19 決定拿掉)────────────
+def _cut_mark_lines(msp, spec) -> int:
+    """剖切符號畫在 OTHER 層:剖切線 1 + 兩端各(箭幹 1 + 箭羽 2)= 7 條。
+
+    用「線的條數」比對,不用位置 —— 位置會隨建築尺寸跑,條數不會。"""
+    return len(msp.query('LINE[layer=="OTHER"]'))
+
+
+def test_section_mark_is_off_by_default(doc_and_layers) -> None:
+    """★ 使用者 2026-08-19:「幫我拿掉」。預設出的圖上不可以有剖切符號。
+
+    判準用**代號文字**:剖切符號的「A」字高 CUT_TEXT_H(420),跟軸網編號
+    (字高 250)分得開,不會誤判。"""
+    from src.drafting.annotations import CUT_TEXT_H
+
+    doc, layers = doc_and_layers
+    msp = doc.modelspace()
+    spec = demo_spec()
+    assert spec.section_mark is None, "預設就該是關的"
+    draw_floor_plan(msp, spec, layers)
+
+    marks = [e for e in msp.query("TEXT")
+             if e.dxf.text.strip() == "A" and abs(e.dxf.height - CUT_TEXT_H) < 1]
+    assert marks == [], f"圖上還有 {len(marks)} 個剖切代號"
+
+
+def test_section_mark_can_still_be_switched_back_on(doc_and_layers) -> None:
+    """★ 拿掉的是「預設」,不是功能本身 —— 口試前想加回來要真的加得回來。
+
+    這條同時守住:上面那條測試不是因為 draw_section_mark 壞了才過的。"""
+    from dataclasses import replace
+
+    from src.drafting.annotations import CUT_TEXT_H
+
+    doc, layers = doc_and_layers
+    msp = doc.modelspace()
+    before = _cut_mark_lines(msp, None)
+    draw_floor_plan(msp, replace(demo_spec(), section_mark="A"), layers)
+
+    marks = [e for e in msp.query("TEXT")
+             if e.dxf.text.strip() == "A" and abs(e.dxf.height - CUT_TEXT_H) < 1]
+    assert len(marks) == 2, "剖切線兩端各要一個代號"
+    assert _cut_mark_lines(msp, None) - before >= 7, "剖切線 1 + 箭頭 6 條"

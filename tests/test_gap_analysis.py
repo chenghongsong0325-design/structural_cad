@@ -82,11 +82,22 @@ def test_known_gaps_are_reported_missing(report, code):
     "doors", "windows", "stairs", "balcony", "room_name", "furniture",
     "area_table", "opening_table",
     # 2026-08-03 補的四項(三個版本的參考圖都有,連空殼圖都有)
-    "opening_tags", "wall_thickness_note", "stair_steps", "section_mark",
+    # ⚠️ section_mark 不在這裡 —— 使用者 2026-08-19 決定不畫,見下面那條測試。
+    "opening_tags", "wall_thickness_note", "stair_steps",
 ])
 def test_things_we_really_do_have(report, code):
     """★ 這些是真的畫得出來的(探針在圖裡找得到實體/文字才算)。"""
     assert _item(report, code).status == HAVE, _item(report, code).ours
+
+
+def test_section_mark_reports_missing_because_we_chose_not_to_draw_it(report):
+    """★ 使用者 2026-08-19 說「幫我拿掉」剖切符號 → 圖上就真的沒有。
+
+    這條在守**報表不能說謊**:功能還在(改個開關就畫得回來),但只要預設是
+    關的,對照報表就該老實報缺,不可以因為「程式碼裡有這個函式」就報成做到了。
+    參考圖三個年份都有這個符號,所以它是真缺口,不是誤判。"""
+    item = _item(report, "section_mark")
+    assert item.status == MISSING, item.ours
 
 
 def test_every_item_is_classified(report):

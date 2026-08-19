@@ -163,14 +163,22 @@ class FloorPlanSpec:
     schedules: bool = False
 
     # ── 圖面標註(2026-08-03,對照丙級檢定參考圖補上)────────────────────
-    # 這三項在參考圖裡連「沒有家具、沒有室名的空殼圖」都有,屬於基本要求,
-    # 所以**預設開啟**(不像 schedules 是可選的旁註)。
     #   opening_marks:每個門窗洞口旁的帶圈編號(D1/W2…),與門窗表同一來源。
     #   wall_notes   :每種牆厚一條引線,寫「15cm RC Wall」。
     #   section_mark :剖切符號的代號("A" → 畫 A—A);None/"" = 不畫。
+    #
+    # 前兩項在參考圖裡連「沒有家具、沒有室名的空殼圖」都有,屬於基本要求,
+    # 所以預設開啟(不像 schedules 是可選的旁註)。
+    #
+    # ⚠️ section_mark 例外,**預設關閉**(使用者 2026-08-19 決定拿掉)。
+    #    功能本身沒刪:要畫回來只要把預設改回 "A",或建 spec 時帶
+    #    `section_mark="A"`。相關代價要知道:
+    #      * 丙級參考圖三個年份(107/104/92)都有這個符號,連空殼圖都畫,
+    #        所以 `gap_analysis` 會把「剖切指示符號」從 ✅ 退成 ❌,涵蓋率掉一項。
+    #      * 剖面圖是另一張圖,平面上沒有這個符號,看圖的人對不出「從哪裡剖」。
     opening_marks: bool = True
     wall_notes: bool = True
-    section_mark: Optional[str] = "A"
+    section_mark: Optional[str] = None
     section_mark_axis: str = "x"        # 對應 section.draw_section 的 axis
 
     # ── 樓梯(B1)/ 電梯與陽台(B3)/ 設備家具(B4)──────────────────────────
