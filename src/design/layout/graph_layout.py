@@ -16,6 +16,7 @@ room_graph.py 讓 LLM 當「設計師」提出**拓撲**(誰挨著誰,無尺寸)
 from __future__ import annotations
 
 import itertools
+import math
 import random
 import sys
 from pathlib import Path
@@ -38,10 +39,14 @@ SNAP = 1.0
 W_STRONG = 2.0           # door/open 相鄰有滿足 → 加分(這是硬需求)
 W_WEAK = 1.0             # near 相鄰有滿足 → 加分
 P_STRONG_MISS = 1.0      # door/open 相鄰沒滿足 → 扣分
-DAYLIGHT_BONUS = 0.5     # 要採光的房落在外框(有窗)→ 加分
+# 要採光的房落在**開得了窗的**外牆 → 加分。
+# ⚠️ 原本 0.5,比一條相鄰關係(W_STRONG=2.0)輕四倍 —— 但 §40 採光是法規硬
+#    要求,擺錯位置整份設計會被擋掉,相鄰關係頂多是「不夠好」。權重要反過來。
+DAYLIGHT_BONUS = 2.5
 ENTRY_FRONT_BONUS = 1.0  # 大門那間貼南面(臨路)→ 加分
 W_SIZE = 1.0             # 房間大小離「合理範圍」的扣分權重
 SIZE_CAP = 1.5           # 單間大小扣分上限(免得一間爆掉壓過相鄰)
+SIZE_HARD = 1.5          # 超出合理帶這個倍數以上 = 離譜,扣分不再封頂
 W_ASPECT = 1.0           # 房間細長(像走廊)的扣分權重
 ASPECT_OK = 2.2          # 長寬比在這以內算方正(真實住宅居室多為 1:1~1:2)
 ASPECT_CAP = 1.5         # 單間細長扣分上限
@@ -58,7 +63,20 @@ AREA_BAND = {
     "patio": (2, 9), "storage": (1.5, 6), "study": (6, 14),
     "elder_room": (9, 18), "garage": (12, 30), "balcony": (2, 8),
     "utility": (2, 8),
+    # ⚠️ family 是「溢位」房間(見 _grow_cells_until_no_giant)。沒有 band 的
+    #    kind 在 _score 裡**完全不扣分** → 等於可以無限長大,那正是這條產線
+    #    「一間房吃掉半層」的幫兇之一。新增 kind 一定要順手補一條 band。
+    "family": (10, 24),
 }
+
+# 一格切完仍然這麼大(㎡),就當它「太大」,再多切一格 —— 取 living 的上限,
+# 因為客廳是這裡面合理上限最大的居室,超過它就沒有房間撐得起這個面積了。
+GIANT_CELL_M2 = 32.0
+# 一層最多補幾間溢位房。
+# ⚠️ 原本設 3,結果 12×12m(每層 144㎡)這種大樓層補滿 3 間仍留著 37.6㎡ 的主臥
+#    —— 而 37.6㎡ 依 §40 要 3.92m 寬的窗,超過單扇窗 3.6m 的上限、旁邊又沒空檔
+#    開第二扇 → 整份設計被採光擋掉。上限要夠大,`GIANT_CELL_M2` 才真的是上限。
+MAX_OVERFLOW_ROOMS = 8
 
 # LLM 房間種類 → rooms_to_spec 認得的 kind(門/窗邏輯用)。
 # study 不映射(保留 → 家具引擎才會給書桌/書櫃而非床)。
@@ -106,6 +124,28 @@ def _can_split(c: Rect, min_cell: float) -> bool:
     return (x1 - x0) >= 2 * min_cell or (y1 - y0) >= 2 * min_cell
 
 
+#: 一刀切下去,兩邊各至少要佔這個比例 —— 也就是最偏只能切成 3:7。
+#
+# ⚠️ 原本這裡是 `rng.uniform(x0 + min_cell, x1 - min_cell)`:切點在整段上**均勻
+#    亂取**,所以一刀切成 1:9 跟切成 5:5 機率一樣大。格子因此忽大忽小,
+#    「一間房吃掉半層」與「4㎡ 的臥室」是同一個原因的一體兩面。
+#    真實住宅的隔間不會這樣切:一戶裡最大的居室跟最小的臥室差不多就 2~3 倍。
+#    夾在 [0.3, 0.7] 仍然保有隨機變化(同需求會給不同格局),但不會再歪到離譜。
+SPLIT_BALANCE = 0.3
+
+
+def _split_at(lo: float, hi: float, rng: random.Random, min_cell: float) -> float:
+    """在 [lo, hi] 裡挑一個切點,盡量靠近中間(見 SPLIT_BALANCE)。
+
+    min_cell 是硬下限,永遠優先——寧可切得偏,也不能切出放不下人的格子。"""
+    span = hi - lo
+    a = max(lo + min_cell, lo + span * SPLIT_BALANCE)
+    b = min(hi - min_cell, hi - span * SPLIT_BALANCE)
+    if a > b:                       # 平衡區間被 min_cell 吃掉 → 退回原本的範圍
+        a, b = lo + min_cell, hi - min_cell
+    return rng.uniform(a, b)
+
+
 def _split(c: Rect, rng: random.Random, min_cell: float) -> list[Rect]:
     x0, y0, x1, y1 = c
     w, h = x1 - x0, y1 - y0
@@ -114,10 +154,21 @@ def _split(c: Rect, rng: random.Random, min_cell: float) -> list[Rect]:
         dirs.append("V")
     if h >= 2 * min_cell:
         dirs.append("H")
-    if rng.choice(dirs) == "V":
-        cx = rng.uniform(x0 + min_cell, x1 - min_cell)
+    # ⚠️ 切哪個方向以前是 50/50 亂選。骨架給的 seed 是**整條進深的長條**
+    #    (核以東 7.4m × 12m),一路垂直切下去就會切出 2.6×8.2m 這種長條房間:
+    #    長寬比 3.2、外牆只有 2.6m 寬 → 窗開好開滿也不到 §40 要的樓地板 1/8,
+    #    整份設計被採光擋掉。改成**偏向切長的那一邊**,格子自然趨近方正。
+    #    仍留 1/4 機率切短邊,不然每張圖的切法會長得一模一樣。
+    if len(dirs) == 2:
+        longer = "V" if w >= h else "H"
+        other = "H" if longer == "V" else "V"
+        choice = rng.choices([longer, other], weights=[3, 1], k=1)[0]
+    else:
+        choice = dirs[0]
+    if choice == "V":
+        cx = _split_at(x0, x1, rng, min_cell)
         return [(x0, y0, cx, y1), (cx, y0, x1, y1)]
-    cy = rng.uniform(y0 + min_cell, y1 - min_cell)
+    cy = _split_at(y0, y1, rng, min_cell)
     return [(x0, y0, x1, cy), (x0, cy, x1, y1)]
 
 
@@ -129,13 +180,23 @@ def _partition_from(seed: list[Rect], n: int, rng: random.Random,
     cells = list(seed)
     if n < len(cells):
         return None
+    cap = GIANT_CELL_M2 * 1e6
     while len(cells) < n:
         splittable = [c for c in cells if _can_split(c, min_cell)]
         if not splittable:
             return None
-        # 依面積加權挑格子來切(大格較可能被切 → 尺寸較均勻,又保有隨機變化)
-        areas = [(c[2] - c[0]) * (c[3] - c[1]) for c in splittable]
-        c = rng.choices(splittable, weights=areas, k=1)[0]
+        area = lambda c: (c[2] - c[0]) * (c[3] - c[1])   # noqa: E731
+        # ⚠️ 只要還有「大到沒有房間撐得起」的格子,就**一定**先切最大的那格。
+        #    原本這裡一律是依面積加權亂抽 —— 大格比較容易被抽中,但只是「比較
+        #    容易」:巨無霸格子連續好幾輪沒被抽中是常事,切完仍然留著一格
+        #    55㎡ 的房間(實測 10×11m 的 2F 就是這樣跑出 55㎡ 的走道/浴廁)。
+        #    超標的格子不該交給運氣,剩下的才回到加權亂抽保留格局變化。
+        giants = [c for c in splittable if area(c) > cap]
+        if giants:
+            c = max(giants, key=area)
+        else:
+            c = rng.choices(splittable, weights=[area(c) for c in splittable],
+                            k=1)[0]
         cells.remove(c)
         cells.extend(_split(c, rng, min_cell))
     return cells
@@ -196,11 +257,21 @@ def _cell_adjacency(cells: list[Rect]) -> set[frozenset]:
             if _adjacent(cells[i], cells[j])}
 
 
-def _on_perimeter(c: Rect, env: Rect) -> bool:
+def _on_perimeter(c: Rect, env: Rect, party: bool = False) -> bool:
+    """這個格子貼到外牆沒有 —— party=True 時**只認前後(南北)**。
+
+    ⚠️ 共壁透天的東西兩面是跟鄰居共用的牆,開不了窗(`_fix_openings` 會把那側的
+    窗刪掉)。以前這裡四面都算,評分就以為「貼到東牆的臥室有採光」,實際上是
+    全暗的房間 → §40 擋掉整份設計。共壁與否產線本來就知道(`core_xlines is
+    None`),只是沒傳進評分。
+    """
     x0, y0, x1, y1 = c
     ex0, ey0, ex1, ey1 = env
-    return (abs(x0 - ex0) <= SNAP or abs(x1 - ex1) <= SNAP
-            or abs(y0 - ey0) <= SNAP or abs(y1 - ey1) <= SNAP)
+    if abs(y0 - ey0) <= SNAP or abs(y1 - ey1) <= SNAP:
+        return True
+    if party:
+        return False
+    return abs(x0 - ex0) <= SNAP or abs(x1 - ex1) <= SNAP
 
 
 def _on_front(c: Rect, env: Rect) -> bool:
@@ -210,7 +281,17 @@ def _on_front(c: Rect, env: Rect) -> bool:
 
 # ── 3) 把房間指派到格子:讓 LLM 要的相鄰滿足最多 ────────────────────────────
 def _size_penalty(area_m2: float, kind: str) -> float:
-    """房間面積離合理帶多遠(0=帶內;超出用相對誤差,上限 SIZE_CAP)。"""
+    """房間面積離合理帶多遠(0=帶內;超出用相對誤差)。
+
+    ⚠️ 上限 `SIZE_CAP` 存在的理由是「別讓一間房的面積誤差壓過所有相鄰關係」,
+    這對**小幅**超標是對的。但它以前無差別套用到所有超標,結果是
+
+        浴廁上限 6㎡ → 擺 12㎡ 罰 1.0,擺 32㎡ 也只罰 1.5
+
+    「大一倍」跟「大四倍」幾乎一樣痛 → 指派時把最大的格子丟給浴廁完全不吃虧,
+    實測就這樣生出 32㎡ 的廁所。所以超過 `SIZE_HARD` 倍之後改成**不封頂**:
+    小幅超標仍然溫和(格局有彈性),離譜到不像那個房間就一路罰下去。
+    """
     band = AREA_BAND.get(kind)
     if band is None:
         return 0.0
@@ -221,7 +302,9 @@ def _size_penalty(area_m2: float, kind: str) -> float:
         over = (area_m2 - hi) / hi
     else:
         return 0.0
-    return min(SIZE_CAP, over)
+    if over <= SIZE_HARD:
+        return min(SIZE_CAP, over)
+    return SIZE_CAP + (over - SIZE_HARD)      # 離譜區:不封頂
 
 
 def _aspect_penalty(c: Rect, kind: str) -> float:
@@ -241,7 +324,8 @@ def _aspect_penalty(c: Rect, kind: str) -> float:
 
 
 def _score(perm: tuple, rooms: list, edges: list, cells: list[Rect],
-           cell_adj: set[frozenset], env: Rect, entry_id: Optional[str]) -> float:
+           cell_adj: set[frozenset], env: Rect, entry_id: Optional[str],
+           party: bool = False) -> float:
     """perm[k] = 第 k 個房間放進哪個格子。回總分(越高越符合 LLM 的關係圖)。"""
     pos = {rooms[k]["id"]: perm[k] for k in range(len(rooms))}
     s = 0.0
@@ -255,7 +339,7 @@ def _score(perm: tuple, rooms: list, edges: list, cells: list[Rect],
             s += W_WEAK
     for k, r in enumerate(rooms):
         c = cells[perm[k]]
-        if r.get("wants_daylight") and _on_perimeter(c, env):
+        if r.get("wants_daylight") and _on_perimeter(c, env, party):
             s += DAYLIGHT_BONUS
         if entry_id and r["id"] == entry_id and _on_front(c, env):
             s += ENTRY_FRONT_BONUS
@@ -265,13 +349,13 @@ def _score(perm: tuple, rooms: list, edges: list, cells: list[Rect],
     return s
 
 
-def _best_perm(rooms, edges, cells, cell_adj, env, entry_id):
+def _best_perm(rooms, edges, cells, cell_adj, env, entry_id, party=False):
     """房間 ≤7 暴力枚舉最佳指派;更多用貪婪近似。回 (score, perm)。"""
     n = len(rooms)
     if n <= 7:
         best = None
         for perm in itertools.permutations(range(n)):
-            sc = _score(perm, rooms, edges, cells, cell_adj, env, entry_id)
+            sc = _score(perm, rooms, edges, cells, cell_adj, env, entry_id, party)
             if best is None or sc > best[0]:
                 best = (sc, perm)
         return best
@@ -287,12 +371,13 @@ def _best_perm(rooms, edges, cells, cell_adj, env, entry_id):
                 continue
             assign[k] = c
             sc = _score(tuple(x if x >= 0 else 0 for x in assign),
-                        rooms, edges, cells, cell_adj, env, entry_id)
+                        rooms, edges, cells, cell_adj, env, entry_id, party)
             if best_sc is None or sc > best_sc:
                 best_sc, best_cell = sc, c
         assign[k] = best_cell
         used.add(best_cell)
-    return (_score(tuple(assign), rooms, edges, cells, cell_adj, env, entry_id),
+    return (_score(tuple(assign), rooms, edges, cells, cell_adj, env, entry_id,
+                   party),
             tuple(assign))
 
 
@@ -346,6 +431,168 @@ def realize_floor(rooms: list, edges: list, entry_id: Optional[str],
     return spec, satisfied, len(edges), score
 
 
+# ── 走道:一律不做(使用者 2026-08-19 定調)────────────────────────────────
+# 「走道這麼大佔整個建築的一半根本不合理」「一般建築好像也沒有走道」。
+# 這跟使用者 2026-07-12 就定調、兩帶式產線早就照做的原則是同一條:
+#   走道 = 多房間共用的動線才設;房間少的小宅,動線融入客廳。
+# AI 這條產線一直沒套用,所以 LLM 想放就放。
+#
+# ⚠️ 走道跟天井/儲藏室**不一樣,不能直接刪**。天井、儲藏室是末端房間,刪掉不影響
+#    別人;走道是**動線樞紐**——臥室、浴廁的門全都開在它上面。直接刪 → 那些房間
+#    沒地方開門 → `room_no_door` / `circulation_blocked` → 整層無限重生。
+#
+# 所以這裡做的是**收縮(contract)**,不是刪除:把走道併進它「開放連通」的那間
+# (通常 1F 是客廳、樓上是樓梯間),原本開在走道上的門改開在那一間上。實體上就是
+# 真實小宅的做法——臥室門直接開向客廳或樓梯平台,不另闢走廊。
+_CONN_RANK = {"open": 3, "door": 2, "near": 1}
+
+
+def _corridor_host(cid: str, rooms: list, edges: list) -> Optional[str]:
+    """走道要併進誰。挑不到(孤立的走道)回 None → 那間就真的刪掉。
+
+    優先序刻意這樣排:
+      1. **開放連通的客廳/餐廳** —— 使用者定調的「動線融入客廳」。
+      2. 其他開放連通的房間(樓上通常是樓梯間 = 樓梯平台當緩衝)。
+      3. 樓梯間(就算只是 door/near 相連)。
+      4. 隨便一個鄰居,總比讓門無處可去好。
+    """
+    kind = {r["id"]: r.get("kind") for r in rooms}
+    nb = []                                    # [(對方 id, 連通方式)]
+    for a, b, conn in edges:
+        if a == cid and b != cid:
+            nb.append((b, conn))
+        elif b == cid and a != cid:
+            nb.append((a, conn))
+    if not nb:
+        return None
+    for want_open, want_kinds in ((True, ("living", "dining")),
+                                  (True, None),
+                                  (False, ("stair",)),
+                                  (False, None)):
+        for other, conn in nb:
+            if want_open and conn != "open":
+                continue
+            if want_kinds and kind.get(other) not in want_kinds:
+                continue
+            return other
+    return None
+
+
+def _overflow_rooms(n: int, free: list, floor_label: str,
+                    cell_w: float, cell_d: float) -> list:
+    """要多切 n 格,就補 n 間房來住它們。回新增的 room dict。
+
+    用途不是寫死的,交給 `room_program.select_overflow_program` 決定
+    ——兩帶式的北帶溢位用的是同一支,兩條產線切出來的「多出來那間」才會是
+    同一套邏輯(1F 偏書房、樓上偏家庭廳,已經有了就換多功能室)。
+    """
+    from src.design.room_program import select_overflow_program
+
+    kinds = [r.get("kind") for r in free]
+    bedrooms = sum(1 for k in kinds if k in ("bedroom", "master_bedroom"))
+    has_study = "study" in kinds
+    has_family = "family" in kinds
+    out = []
+    for i in range(n):
+        kind, name = select_overflow_program(
+            floor="public" if floor_label == "1F" else "upper",
+            bedrooms=bedrooms, want_study=False,
+            has_study=has_study, has_family=has_family,
+            width_mm=cell_w, depth_mm=cell_d)
+        # ⚠️ wants_daylight=False 是刻意的:溢位房間是「多出來的坪數」,不該跟
+        #    LLM 原本設計的臥室/客廳**搶外牆**。實測沒設 False 時,3F 的主臥被
+        #    擠到內間 → §40 採光不足 → 整份設計被擋掉。
+        out.append({"id": f"overflow{i}_{floor_label}", "kind": kind,
+                    "label": name, "wants_daylight": False,
+                    "overflow": True})
+        has_study = has_study or kind == "study"
+        has_family = has_family or kind == "family"
+    return out
+
+
+def _cells_without_a_giant(seed: list, m: int, rng: random.Random):
+    """切格子 —— 切到「格子數 = 房間數」**還不夠**,要切到沒有巨無霸格子。
+
+    ⚠️ 這是這條產線「一間房吃掉半層」的根。原本的停止條件只看數量:
+
+        建築 10×11m(每層 110㎡)、關係圖只有 5 間房
+          → 切成 5 格就收手 → [45.8, 19.0, 16.6, 8.5, 6.6] ㎡
+          → 那格 45.8㎡ 指給誰誰就變成 55㎡ 的走道 / 廁所
+
+    面積表 `AREA_BAND` 當時只在**事後評分**用,而且單間扣分有上限
+    (`SIZE_CAP`)—— 大 10 倍和大 2 倍扣一樣多,搜尋根本不在乎。
+
+    兩帶式產線 2026-08-13 踩過一模一樣的坑(`_west_zone_cut` 只切一刀 →
+    「讓兩間一起無限長大」),解法是切到每間都在合理範圍。這裡照做。
+
+    回 (cells, 要補幾間房)。切不動就回目前最好的,**絕不比原本差**。
+    """
+    # ⚠️ 房間數可能**少於** seed 的塊數(骨架把核以外切成兩塊,但這層只剩 1 間房
+    #    ——拿掉走道之後就會發生)。`_partition_from` 遇到 n < 塊數會直接回 None,
+    #    整層生不出來。這種情形要補房間去住那些塊,不是放棄。
+    extra = max(0, len(seed) - m)
+    cells = _partition_from(seed, m + extra, rng)
+    if cells is None:
+        return None, 0
+    while extra < MAX_OVERFLOW_ROOMS:
+        if max((c[2] - c[0]) * (c[3] - c[1]) for c in cells) <= GIANT_CELL_M2 * 1e6:
+            break
+
+        more = _partition_from(seed, m + extra + 1, rng)
+        if more is None:            # 再切就低於 MIN_CELL → 收手,留現有的
+            break
+        cells, extra = more, extra + 1
+    return cells, extra
+
+
+def drop_corridors(rooms: list, edges: list, entry_id: Optional[str]):
+    """把走道從一層的關係圖裡收掉,回 (rooms, edges, entry_id)。
+
+    沒有走道時原樣回傳(同一個 list 物件),既有樓層的輸出逐位元不變、不回歸。
+    """
+    corridors = [r["id"] for r in rooms if r.get("kind") == "corridor"]
+    if not corridors:
+        return rooms, edges, entry_id
+
+    host = {}
+    for cid in corridors:
+        h = _corridor_host(cid, rooms, edges)
+        # 走道併走道的話要一路追到非走道那間(LLM 偶爾會串兩段動線)。
+        seen = {cid}
+        while h in host and h not in seen:
+            seen.add(h)
+            h = host[h]
+        host[cid] = h
+
+    def resolve(x):
+        seen = set()
+        while x in host and x not in seen:
+            seen.add(x)
+            x = host[x]
+        return x
+
+    merged: dict = {}
+    for a, b, conn in edges:
+        na, nb = resolve(a), resolve(b)
+        if na is None or nb is None or na == nb:
+            continue                     # 走道自己那條邊、或併進同一間 → 沒了
+        key = (na, nb) if na < nb else (nb, na)
+        old = merged.get(key)
+        # 同一對房間收到兩條邊時留「比較開放」的那條(open > door > near):
+        # 併進客廳的走道口本來就是開放的,不該退化成一扇門。
+        if old is None or _CONN_RANK.get(conn, 0) > _CONN_RANK.get(old, 0):
+            merged[key] = conn
+    new_edges = [(a, b, c) for (a, b), c in merged.items()]
+
+    new_rooms = [r for r in rooms if r["id"] not in host]
+    new_entry = resolve(entry_id) if entry_id is not None else None
+    # 大門本來開在走道(玄關)上 → 改開在併進去的那間(客廳)。併不到就交給
+    # 落實端自己找外牆開大門,總之不能留一個指向不存在房間的 entry。
+    if new_entry is not None and new_entry not in {r["id"] for r in new_rooms}:
+        new_entry = None
+    return new_rooms, new_edges, new_entry
+
+
 def realize_graph_floor(graph: dict, floor: int, building_w: float,
                         building_d: float, setback: float = 2000.0,
                         rng: Optional[random.Random] = None, tries: int = 300,
@@ -358,6 +605,7 @@ def realize_graph_floor(graph: dict, floor: int, building_w: float,
     edges = [(e["a"], e["b"], e["connection"]) for e in graph["adjacencies"]
              if e["a"] in ids and e["b"] in ids]        # 只留同層的邊
     entry = graph.get("entry") if graph.get("entry") in ids else None
+    rooms, edges, entry = drop_corridors(rooms, edges, entry)   # 走道一律不做
 
     build_rect = (setback, setback, setback + building_w, setback + building_d)
     site_w, site_d = building_w + 2 * setback, building_d + 2 * setback
@@ -445,7 +693,8 @@ def _core_column(env: Rect):
     return stair_rect, shaft_rect, closet_rect, seed, cw, None   # None=柱距均分
 
 
-def _assign_core(free, fixed, allcells, cell_adj, env, entry_id, edges):
+def _assign_core(free, fixed, allcells, cell_adj, env, entry_id, edges,
+                 party=False):
     """free 房間指派到剩餘格;fixed=[(room, 固定格index)] 為核件(樓梯/管道間/天井)。
 
     核件位置固定,但仍參與相鄰評分(讓走道自然貼樓梯、廚房貼天井)。回 ((score, perm), rooms_full)。"""
@@ -456,7 +705,7 @@ def _assign_core(free, fixed, allcells, cell_adj, env, entry_id, edges):
         best = None
         for perm in itertools.permutations(range(m)):
             pf = perm + fixed_idx
-            sc = _score(pf, rooms_full, edges, allcells, cell_adj, env, entry_id)
+            sc = _score(pf, rooms_full, edges, allcells, cell_adj, env, entry_id, party)
             if best is None or sc > best[0]:
                 best = (sc, pf)
         return best, rooms_full
@@ -470,13 +719,13 @@ def _assign_core(free, fixed, allcells, cell_adj, env, entry_id, edges):
                 continue
             assign[k] = c
             pf = tuple(x if x >= 0 else 0 for x in assign) + fixed_idx
-            sc = _score(pf, rooms_full, edges, allcells, cell_adj, env, entry_id)
+            sc = _score(pf, rooms_full, edges, allcells, cell_adj, env, entry_id, party)
             if bs is None or sc > bs:
                 bs, bc = sc, c
         assign[k] = bc
         used.add(bc)
     pf = tuple(assign) + fixed_idx
-    return (_score(pf, rooms_full, edges, allcells, cell_adj, env, entry_id),
+    return (_score(pf, rooms_full, edges, allcells, cell_adj, env, entry_id, party),
             pf), rooms_full
 
 
@@ -638,16 +887,26 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
         if m >= len(banded):
             seed = banded
 
+    # 一格有多大才算合理:拿核外面積除以房間數當基準,量溢位房的尺寸用。
+    seed_area = sum((c[2] - c[0]) * (c[3] - c[1]) for c in seed)
+    side = math.sqrt(max(seed_area / max(1, m), 1.0))
+
     best = None
     for _ in range(tries):
-        cells = _partition_from(seed, m, rng)
+        cells, extra = _cells_without_a_giant(seed, m, rng)
         if cells is None:
             continue
+        # 多切的格子要有房間住(不然指派不完、格子變成沒人認領的空白)。
+        this_free = free + (_overflow_rooms(extra, free, floor_label,
+                                            side, side) if extra else [])
+        mm = len(this_free)
         allcells = cells + [stair_rect, shaft_rect, closet_rect]
         cadj = _cell_adjacency(allcells)
-        fixed = [(stair_room, m), (shaft_room, m + 1), (closet_room, m + 2)]
-        (sc, pf), rooms_full = _assign_core(free, fixed, allcells, cadj, env,
-                                            entry_id, edges)
+        fixed = [(stair_room, mm), (shaft_room, mm + 1), (closet_room, mm + 2)]
+        # party:西側核骨架=共壁透天,東西外牆開不了窗 → 採光評分只認南北面。
+        (sc, pf), rooms_full = _assign_core(this_free, fixed, allcells, cadj,
+                                            env, entry_id, edges,
+                                            party=core_xlines is None)
         if best is None or sc > best[0]:
             best = (sc, cells, pf, rooms_full)
     if best is None:
@@ -663,8 +922,16 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
     named = []
     for k, r in enumerate(rooms_full):
         x0, y0, x1, y1 = allcells[pf[k]]
-        named.append((KIND_MAP.get(r["kind"], r["kind"]),
-                      r.get("label") or LABEL.get(r["kind"], r["kind"]),
+        kind = r["kind"]
+        label = r.get("label") or LABEL.get(kind, kind)
+        # ⚠️ 溢位的書房若落到**沒有外牆**的格子,要降級成家庭廳:
+        #    `code_check.HABITABLE_KINDS` 把書房算「居室」,居室一定要有 §40 的
+        #    採光開口;家庭廳不在名單裡(它是起居空間的延伸,不是獨立居室)。
+        #    這不是規避法規——是「這塊沒有窗的空間本來就不該叫書房」。
+        if (r.get("overflow") and kind == "study"
+                and not _on_perimeter(allcells[pf[k]], env)):
+            kind, label = "family", "多功能室"
+        named.append((KIND_MAP.get(kind, kind), label,
                       [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]))
 
     setback = env[0]
@@ -726,14 +993,31 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
 CIRC_RETRIES = 6         # 某層落實不合格 → 換這麼多個切法種子重試找合格的
 
 
+#: 換個切法就能解決的法規違規 —— 併進重生條件(見 _floor_errors)。
+_RECUTTABLE_CODE = ("daylight_area", "vent_area")
+
+
 def _floor_errors(spec, env, level: int, label: str = "") -> list:
     """這層違反了哪些**硬規則**(沒門/斷開/穿牆家具/動線不通/門通往空中)。
 
     空清單 = 這層是合格圖。設計面問題(內間沒光、房間過大)不在此列——那要改設計,
-    不是換切法能解決的,由 critique/收斂迴圈回饋給 LLM。"""
+    不是換切法能解決的,由 critique/收斂迴圈回饋給 LLM。
+
+    ⚠️ 2026-08-19 補上 **§40/§43 居室採光通風**。它原本只在最後由 code_check 檢查,
+    網站看到違規就回 422 —— 但這條完全符合本專案「error = 同一份關係圖、換個切法
+    就能解決」的分界:書房被排到沒有外牆的格子,換個切法把它排到外牆邊就好了。
+    不併進來的話,產線明明有重生機制卻不會為了採光重生,只能整份設計被擋掉。
+    """
+    from src.design.layout.code_check import check_code_floor
     from src.design.layout.plan_check import check_floor
-    return [i for i in check_floor(spec, env, level, label)
-            if i.severity == "error"]
+    out = [i for i in check_floor(spec, env, level, label)
+           if i.severity == "error"]
+    try:
+        out += [i for i in check_code_floor(spec, env, level, label)
+                if i.code in _RECUTTABLE_CODE]
+    except Exception:                                 # noqa: BLE001
+        pass          # 法規檢查是加分項,它自己壞掉不該讓整層生不出來
+    return out
 
 
 def realize_graph_building(graph: dict, building_w: float, building_d: float,
@@ -751,9 +1035,13 @@ def realize_graph_building(graph: dict, building_w: float, building_d: float,
     floors = sorted({r["floor"] for r in graph["rooms"] if r["floor"] >= 1})
     env = (setback, setback, setback + building_w, setback + building_d)
     # 各層「核以外房間數」的最小值 → 決定骨架(中央核的房間圈需要 ≥4 間才填得滿)
+    # ⚠️ 這裡要排掉的是「不會變成房間的那些」:樓梯與天井本來就不算,
+    #    走道 2026-08-19 起會被 drop_corridors 收掉,同樣不能拿來湊房間數
+    #    (拿它湊 → 以為有 4 間 → 選了中央核骨架 → 實際只有 3 間填不滿)。
     min_free = min(
         sum(1 for r in graph["rooms"]
-            if r["floor"] == f and r["kind"] not in ("stair", "patio"))
+            if r["floor"] == f
+            and r["kind"] not in ("stair", "patio", "corridor"))
         for f in floors) if floors else 0
     core = _choose_core(env, min_free)             # 寬扁/方形→中央核,窄長→西側核
     top = max(floors)
@@ -765,6 +1053,7 @@ def realize_graph_building(graph: dict, building_w: float, building_d: float,
         edges = [(e["a"], e["b"], e["connection"]) for e in graph["adjacencies"]
                  if e["a"] in ids and e["b"] in ids]
         entry = graph.get("entry") if graph.get("entry") in ids else None
+        rooms, edges, entry = drop_corridors(rooms, edges, entry)   # 走道一律不做
         stair_label = "下" if f == top else "上"
 
         def realize(alt_rng, bay):

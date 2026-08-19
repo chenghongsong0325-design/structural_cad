@@ -34,13 +34,16 @@ MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 # 房間種類:對齊產生器已認得的 kind(living/dining/kitchen/bedroom/bathroom/
 # stair/storage/study…),多幾個生活化的(elder_room/garage/balcony)。
-# ⚠️ 沒有 patio(天井)、也沒有 storage/utility(儲藏室):住宅一律不設天井
-#    (2026-07-29)、不設獨立儲藏室(2026-07-30),兩者都由使用者定調,LLM 連提
-#    都不該提;真的提了也會在落實時丟掉(見 graph_layout._realize_floor_core)。
+# ⚠️ 沒有 patio(天井)、storage/utility(儲藏室)、corridor(走道):住宅一律
+#    不設天井(2026-07-29)、不設獨立儲藏室(2026-07-30)、不設走道(2026-08-19),
+#    三者都由使用者定調,LLM 連提都不該提;真的提了也會在落實時收掉
+#    (天井/儲藏室見 graph_layout._realize_floor_core,走道見 drop_corridors)。
+#    走道那條的理由:「一般建築好像也沒有走道」——小宅的動線融入客廳,臥室門
+#    直接開向客廳或樓梯平台,不另闢走廊。
 ROOM_KINDS = [
     "living", "dining", "kitchen", "bedroom", "master_bedroom", "bathroom",
     "toilet", "stair", "study", "elder_room",
-    "garage", "balcony", "corridor",
+    "garage", "balcony",
 ]
 
 # 結構化輸出的「填空表格」:LLM 只准回這個形狀(房間清單 + 相鄰邊 + 大門)。
@@ -65,7 +68,7 @@ ROOM_GRAPH_SCHEMA = {
                     "wants_daylight": {
                         "type": "boolean",
                         "description": "是否需要對外採光(客廳/臥室=true;"
-                                       "浴廁/走道/樓梯間通常=false)",
+                                       "浴廁/樓梯間通常=false)",
                     },
                 },
                 "required": ["id", "kind", "floor", "wants_daylight"],
@@ -132,7 +135,7 @@ REFINE_PROMPT = DESIGNER_PROMPT + """
 修正模式:輸入含「上一版關係圖(JSON)」與「落實後發現的問題」兩段。請針對每個
 問題修改關係圖,輸出**完整**的改良後關係圖(同格式,所有欄位齊全)。常見對策:
 - 某房太大 → 拆成兩間,或該層增加房間/機能,把多的面積吸收掉。
-- 內間沒對外採光 → 減少該層房間數,或把它換成不需採光的服務空間(衛浴/走道)。
+- 內間沒對外採光 → 減少該層房間數,或把它換成不需採光的服務空間(衛浴/樓梯間)。
 - 要求的相鄰沒排進去 → 簡化該層、確保關鍵相鄰(廚房挨餐廳、臥室挨走廊)。
 - 動線不通 → 該房別擠太多機能。
 保留原本合理的部分,只動有問題的地方。
