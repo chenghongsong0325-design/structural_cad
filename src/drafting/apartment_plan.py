@@ -85,6 +85,7 @@ from src.drafting.titleblock import (
     insert_title_block,
 )
 from src.drafting.wall import Wall
+from src.drafting.label_space import LabelSpace, relax_flight_labels
 from src.drafting.wall_join import draw_wall_hatch, draw_walls_joined
 
 Point = tuple[float, float]
@@ -361,10 +362,18 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
 
     # (8.5) 圖面標註:門窗編號 / 牆厚引線 / 剖切符號(對照丙級檢定參考圖)。
     #       放在門窗、房間標註之後,才不會被後面的圖元壓過去。
+    #       ⚠️ 這兩種字**可以移動**(門窗編號往外退、引線換個位置下),室名、
+    #       面積、軸網編號、樓梯的 UP/DN 不行(位置有意義)。所以先把圖上現有的
+    #       字全部登記進 LabelSpace,再讓這兩種從候選位置裡挑沒撞到的那個。
+    #       (使用者 2026-08-19:「字跟字不要黏在一起」)
+    space = LabelSpace()
+    # 樓梯的 UP/DN 也可以動(只要還落在梯段上就讀得懂),先讓它躲開室名與面積,
+    # 再拿同一本登記簿去排門窗編號與牆厚引線。
+    relax_flight_labels(msp, space)
     if spec.opening_marks:
-        draw_opening_marks(msp, spec, layers)
+        draw_opening_marks(msp, spec, layers, space)
     if spec.wall_notes:
-        draw_wall_notes(msp, spec, layers)
+        draw_wall_notes(msp, spec, layers, space)
     if spec.section_mark:
         draw_section_mark(msp, spec, layers, label=spec.section_mark,
                           axis=spec.section_mark_axis)

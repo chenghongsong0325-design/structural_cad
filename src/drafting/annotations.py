@@ -20,8 +20,11 @@
 from __future__ import annotations
 
 import math
+from typing import Optional
 
 from ezdxf.enums import TextEntityAlignment
+
+from src.drafting.label_space import LabelSpace, text_box
 
 Point = tuple[float, float]
 
@@ -96,7 +99,8 @@ def _building_center(spec) -> Point:
     return ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0)
 
 
-def draw_opening_marks(msp, spec, layers: dict[str, str]) -> int:
+def draw_opening_marks(msp, spec, layers: dict[str, str],
+                       space: Optional[LabelSpace] = None) -> int:
     """每個門窗洞口旁畫一個帶圈編號(D1/W2…)。回畫了幾個。
 
     編號取自 `schedule.opening_codes`(與門窗表同一來源)。位置在洞口中心往
@@ -121,8 +125,24 @@ def draw_opening_marks(msp, spec, layers: dict[str, str]) -> int:
         nx, ny = wall.normal_vector
         # 往背離建築中心的那一側擺(法線可能指向任一側,用內積決定正負)
         sign = 1.0 if (px - cx) * nx + (py - cy) * ny >= 0 else -1.0
-        d = wall.thickness / 2.0 + TAG_OFFSET + TAG_RADIUS
-        tx, ty = px + nx * d * sign, py + ny * d * sign
+        base = wall.thickness / 2.0 + TAG_OFFSET + TAG_RADIUS
+
+        # 候選位置:先照原本的距離,撞到字就一階一階往外退;外側全滿再試內側。
+        # (使用者 2026-08-19:「字跟字不要黏在一起」——D1/D2 最常壓到室名與面積。)
+        # 沿牆的單位向量 —— 退不開時可以沿著牆滑一點(編號還是貼著那個洞口)。
+        ux, uy = -ny, nx
+        cands = []
+        for s_ in (sign, -sign):
+            for k in (1.0, 1.7, 2.4, 3.1):
+                for slide in (0.0, 1.0, -1.0, 2.0, -2.0):
+                    tx = px + nx * base * k * s_ + ux * TAG_RADIUS * 2.2 * slide
+                    ty = py + ny * base * k * s_ + uy * TAG_RADIUS * 2.2 * slide
+                    cands.append((text_box(code, TAG_TEXT_H, tx, ty,
+                                           TextEntityAlignment.MIDDLE_CENTER),
+                                  (tx, ty)))
+        picked = space.take(cands) if space is not None else None
+        tx, ty = picked[1] if picked else cands[0][1]   # 都撞 → 照原位,寧可疊也不能不畫
+
         msp.add_circle((tx, ty), radius=TAG_RADIUS,
                        dxfattribs={"layer": line_layer})
         msp.add_text(
@@ -200,7 +220,8 @@ def wall_note_text(thickness: float) -> str:
     return f"{cm:.0f}cm {kind}"
 
 
-def draw_wall_notes(msp, spec, layers: dict[str, str]) -> int:
+def draw_wall_notes(msp, spec, layers: dict[str, str],
+                    space: Optional[LabelSpace] = None) -> int:
     """每一種牆厚挑一道代表牆,拉引線寫厚度(如「15cm RC Wall」)。回畫了幾條。
 
     只挑代表牆(每種厚度最長的那道):每道牆都標會把圖蓋滿,參考圖也是各標一次。"""
@@ -217,19 +238,32 @@ def draw_wall_notes(msp, spec, layers: dict[str, str]) -> int:
     cx, cy = _building_center(spec)
     n = 0
     for t, wall in sorted(best.items(), key=lambda kv: -kv[0]):
-        px, py = wall.point_at(wall.length / 2.0)
-        nx, ny = wall.normal_vector
-        sign = 1.0 if (px - cx) * nx + (py - cy) * ny >= 0 else -1.0
-        p1 = (px + nx * sign * NOTE_LEG, py + ny * sign * NOTE_LEG)
-        tail = NOTE_TAIL if p1[0] >= cx else -NOTE_TAIL
-        p2 = (p1[0] + tail, p1[1])
+        text = wall_note_text(t)
+        # 候選:沿這道牆挑幾個下引線的點 × 幾種引線長度。原本只有「牆中點 +
+        # 固定長度」一種,撞到室名/面積/軸網編號就只能疊上去 —— 這是實測裡
+        # 最大宗的疊字來源(每層每個尺寸都撞「15cm RC Wall」× 軸網編號 B)。
+        cands = []
+        for frac in (0.5, 0.35, 0.65, 0.2, 0.8):
+            px, py = wall.point_at(wall.length * frac)
+            nx, ny = wall.normal_vector
+            sign = 1.0 if (px - cx) * nx + (py - cy) * ny >= 0 else -1.0
+            for leg in (NOTE_LEG, NOTE_LEG * 1.8, NOTE_LEG * 2.6):
+                p1 = (px + nx * sign * leg, py + ny * sign * leg)
+                tail = NOTE_TAIL if p1[0] >= cx else -NOTE_TAIL
+                p2 = (p1[0] + tail, p1[1])
+                align = (TextEntityAlignment.MIDDLE_LEFT if tail > 0
+                         else TextEntityAlignment.MIDDLE_RIGHT)
+                tp = (p2[0] + math.copysign(120.0, tail), p2[1])
+                cands.append((text_box(text, NOTE_TEXT_H, tp[0], tp[1], align),
+                              ((px, py), p1, p2, tp, align)))
+        picked = space.take(cands) if space is not None else None
+        (px, py), p1, p2, tp, align = picked[1] if picked else cands[0][1]
+
         msp.add_line((px, py), p1, dxfattribs={"layer": line_layer})
         msp.add_line(p1, p2, dxfattribs={"layer": line_layer})
-        align = (TextEntityAlignment.MIDDLE_LEFT if tail > 0
-                 else TextEntityAlignment.MIDDLE_RIGHT)
         msp.add_text(
-            wall_note_text(t), height=NOTE_TEXT_H,
+            text, height=NOTE_TEXT_H,
             dxfattribs={"layer": text_layer, "style": "STRUCT"},
-        ).set_placement((p2[0] + math.copysign(120.0, tail), p2[1]), align=align)
+        ).set_placement(tp, align=align)
         n += 1
     return n
