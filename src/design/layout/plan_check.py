@@ -11,6 +11,7 @@
     no_entry            1F 沒有對外大門(進不了建築)
     entry_upstairs      樓上外牆開門(門通往空中)
     furniture_in_wall   家具嵌進牆體(畫出來是穿牆)
+    opening_on_column   門窗開口壓在柱上(柱穿過窗框/門洞,蓋不出來)
     door_in_corner      門洞卡在房間角落(人走不進那個角)
     stair_blocks_door   門直接開在階梯上(缺起步平台,門扇會掃到踏step)
     stair_side_open     梯段有一側沒牆(人走上去會從旁邊掉下去)
@@ -52,6 +53,7 @@ SKINNY_OK_KINDS = {"corridor", "pipe_shaft", "patio", "balcony", "storage",
 
 EDGE_TOL = 60.0             # 貼邊/貼牆的容差(mm)
 WALL_OVERLAP_TOL = 1000.0   # 家具與牆重疊超過這個面積(mm²)算穿牆
+OPENING_COLUMN_BITE = 10.0  # 柱吃掉開口沿牆這麼多 mm 以上算「開口壓柱」
 OVERSIZE_RATIO = 1.5        # 面積超過理想上限這麼多倍算過大
 
 # 併合/開放式的房名 → 它其實是哪幾間併起來的。「餐廚」= 餐廳+廚房、
@@ -159,6 +161,34 @@ def _wall_bodies(spec) -> list:
     return [LineString([w.start, w.end]).buffer(w.thickness / 2.0,
                                                 cap_style=2, join_style=2)
             for w in spec.walls]
+
+
+def opening_body(wall, op) -> Polygon:
+    """一個門窗開口在圖上佔的實體(沿牆 op.width × 牆厚)。
+
+    量「開口跟誰打架」一律用這塊,判準才跟畫出來的圖一致。"""
+    ux, uy = wall.unit_vector
+    nx, ny = wall.normal_vector
+    cx, cy = wall.point_at(op.position)
+    h, t = op.width / 2.0, wall.thickness / 2.0
+    return Polygon([
+        (cx - ux * h - nx * t, cy - uy * h - ny * t),
+        (cx + ux * h - nx * t, cy + uy * h - ny * t),
+        (cx + ux * h + nx * t, cy + uy * h + ny * t),
+        (cx - ux * h + nx * t, cy - uy * h + ny * t),
+    ])
+
+
+def column_bite(wall, op, cols) -> float:
+    """柱吃掉這個開口沿牆多少 mm(0 = 沒壓到)。
+
+    回「沿牆的 mm」而不是面積:使用者看圖問的是「這扇窗被柱吃掉多寬」,
+    面積得再心算除以牆厚才看得懂。"""
+    if not cols:
+        return 0.0
+    body = opening_body(wall, op)
+    area = sum(body.intersection(c).area for c in cols)
+    return area / wall.thickness if wall.thickness else 0.0
 
 
 def _openings_of(spec, poly: Polygon, kind: str) -> list:
@@ -309,6 +339,23 @@ def check_floor(spec, env=None, level: int = 1, label: str = "") -> list[PlanIss
             issues.append(PlanIssue(
                 "warning", "furniture_in_column", lb, getattr(o, "tag", "家具"),
                 f"家具壓在柱上 {overlap/1e6:.3f}㎡(柱角凸出牆面,擺不進去)"))
+
+    # ④c 門窗開口不得壓在柱上(使用者 2026-08-20:「柱子會在窗戶裡面」)
+    #     ⚠️ 這條跟 ④b 家具壓柱**不同級**,是 error:柱穿過窗框/門洞根本蓋不出來,
+    #     而且開口是**沿著牆挪就能解**的(四條產線都有躲柱機制,
+    #     narrow_house._column_blocks / layout_generator._blocked),換個切法必定救得動。
+    #     ⚠️ 判準只認「真的重疊」,不是 COLUMN_CLEARANCE(300mm 淨距)——那是產生端
+    #     排洞口時要留的餘裕,拿來當關卡會把只差幾十 mm、其實蓋得出來的圖也擋掉。
+    for w in spec.walls:
+        for op in w.openings:
+            bite = column_bite(w, op, cols)
+            if bite > OPENING_COLUMN_BITE:
+                px, py = w.point_at(op.position)
+                what = "窗" if op.kind == "window" else "門"
+                issues.append(PlanIssue(
+                    "error", "opening_on_column", lb, "",
+                    f"{what}洞({px:.0f},{py:.0f})壓在柱上,柱吃掉洞口 {bite:.0f}mm"
+                    f"(柱穿過{what}框,蓋不出來)"))
 
     # ⑤ 門不得卡在房間角落(人走不進那個角 → 動線判不通,看圖卻不明顯)
     from src.design.layout.narrow_house import DOOR_CORNER_MIN, _door_pos_ok

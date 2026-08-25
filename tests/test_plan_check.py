@@ -104,13 +104,93 @@ def test_detects_open_stair_side():
     assert "stair_side_open" in codes
 
 
+def test_detects_opening_on_column():
+    """★ 人為把一個門窗洞挪到柱心上 → 檢查器必須抓到「開口壓柱」。
+
+    使用者 2026-08-20 在 CAD 上看到的就是這個:柱(洋紅方塊)整根坐在窗框中間。
+    釘的是**意圖**(洞口與柱重疊要被抓到),不是某一張圖的長相。"""
+    from src.design.column_design import column_footprints
+    from src.design.layout.plan_check import column_bite
+
+    floors, env = _build()
+    spec = floors[0][1]
+    assert not any(i.code == "opening_on_column"
+                   for i in check_floor(spec, env, 1, "1F"))    # 原本是乾淨的
+
+    cols = column_footprints(spec)
+    assert cols, "這條產線本來就該有柱,沒柱的話這個測試沒在測東西"
+    moved = False
+    for w in spec.walls:
+        if not w.openings:
+            continue
+        (sx, sy), (ex, ey) = w.start, w.end
+        vertical = abs(sx - ex) < 1.0
+        for c in cols:                       # 找一根坐在這道牆上的柱
+            cx, cy = c.centroid.x, c.centroid.y
+            off = abs(cx - sx) if vertical else abs(cy - sy)
+            if off > w.thickness:
+                continue
+            along = abs((cy if vertical else cx) - (sy if vertical else sx))
+            op = w.openings[0]
+            op.position = along               # 洞口中心對準柱心 = 柱穿過洞口
+            moved = column_bite(w, op, cols) > 0
+            break
+        if moved:
+            break
+    assert moved, "找不到坐在牆上的柱可以造反例"
+    codes = [i.code for i in check_floor(spec, env, 1, "1F")]
+    assert "opening_on_column" in codes
+
+
+def test_shifter_moves_openings_off_columns():
+    """★ 修復器要真的救得動:把門挪到柱上 → shift_openings_off_columns 挪回來,
+    而且挪完不能變成「門卡在牆角」(那只是把問題換一隻手)。
+
+    這條釘的是 error 分類的前提 —— 判成 error 卻救不動,產線會無限重生。"""
+    from src.design.column_design import column_footprints
+    from src.design.layout.narrow_house import (
+        DOOR_CORNER_MIN, _door_pos_ok, shift_openings_off_columns,
+    )
+    from src.design.layout.plan_check import column_bite
+
+    floors, _env = _build()
+    spec = floors[0][1]
+    cols = column_footprints(spec)
+    target = None
+    for w in spec.walls:
+        (sx, sy), (ex, ey) = w.start, w.end
+        vertical = abs(sx - ex) < 1.0
+        for op in w.openings:
+            if op.kind != "door":
+                continue
+            for c in cols:
+                cx, cy = c.centroid.x, c.centroid.y
+                off = abs(cx - sx) if vertical else abs(cy - sy)
+                if off > w.thickness:
+                    continue
+                op.position = abs((cy if vertical else cx)
+                                  - (sy if vertical else sx))
+                if column_bite(w, op, cols) > 0:
+                    target = (w, op)
+                break
+            if target:
+                break
+        if target:
+            break
+    assert target, "找不到可以造反例的門"
+    w, op = target
+    shift_openings_off_columns(spec)
+    assert column_bite(w, op, cols) == 0, "門還壓在柱上,修復器沒救動"
+    assert _door_pos_ok(spec, w, op.position, op.width, DOOR_CORNER_MIN),         "門躲開柱之後卡進牆角了"
+
+
 def test_error_vs_warning_split():
     """★ 只有「換切法就能解」的問題算 error;設計面問題是 warning。"""
     floors, env = _build()
     rep = check_building(floors, env)
     hard = {"room_no_door", "floor_split", "no_entry", "entry_upstairs",
             "furniture_in_wall", "circulation_blocked", "door_in_corner",
-            "stair_blocks_door", "stair_side_open"}
+            "stair_blocks_door", "stair_side_open", "opening_on_column"}
     for i in rep.issues:
         if i.severity == "error":
             assert i.code in hard, f"{i.code} 不該是硬錯誤"

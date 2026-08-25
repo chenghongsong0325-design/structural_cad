@@ -300,6 +300,7 @@ _ERROR_HELP = {
     "no_entry": "一樓沒有對外大門",
     "entry_upstairs": "樓上的外牆開了門(門會通往空中)",
     "furniture_in_wall": "家具嵌進牆裡(畫出來是穿牆)",
+    "opening_on_column": "門窗開口壓在柱子上(柱會穿過窗框/門洞)",
     "door_in_corner": "門卡在房間角落,人走不進那個角",
     "stair_blocks_door": "門直接開在階梯上,門前沒有站人的平地",
     "stair_side_open": "樓梯有一側沒有牆,走上去會從旁邊掉下去",
