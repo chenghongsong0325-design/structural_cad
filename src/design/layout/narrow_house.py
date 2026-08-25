@@ -903,7 +903,7 @@ def _column_centers(spec) -> list:
     return [(x, y) for x in gx for y in gy]
 
 
-def _column_blocks(spec, wall, along):
+def _column_blocks(spec, wall, along, clear: float = COLUMN_CLEARANCE):
     """柱子在這道牆上佔掉的沿牆區間(洞口不能壓柱)。
 
     窄透天/淺透天沒有柱(column_centers 空),這裡就回空清單;兩帶式與集合住宅
@@ -923,8 +923,8 @@ def _column_blocks(spec, wall, along):
         t = abs(c - along)
         # 淨距用 validate_spec 的同一個標準(柱半徑 + COLUMN_CLEARANCE),
         # 不能只留 WINDOW_GAP —— 那樣補完窗還是會被判「洞口壓柱」。
-        out.append((t - size / 2.0 - COLUMN_CLEARANCE - 10.0,
-                    t + size / 2.0 + COLUMN_CLEARANCE + 10.0))
+        out.append((t - size / 2.0 - clear - 10.0,
+                    t + size / 2.0 + clear + 10.0))
     return out
 
 
@@ -956,6 +956,112 @@ def _free_intervals(wall, lo, hi, along, blocks=(), edge_clear=None):
     return sorted(free, key=lambda t: -(t[1] - t[0]))
 
 
+def shift_openings_off_columns(spec) -> int:
+    """把開在柱上的**門窗**沿著牆挪開。回挪了幾扇。
+
+    ⚠️ 使用者 2026-08-19:「柱子怎麼還能放在窗戶裡?」——實測一張圖有 3 個窗被柱
+    壓掉約 300mm(整根柱寬)。
+
+    成因是**時序**,不是缺機制:躲柱的 `_column_blocks` 一直都在,但
+
+      * 真正**開窗**的 `_fix_openings` 從來沒有呼叫它(只有「補窗/加寬窗」那段有);
+      * 而且柱以前是在開口收尾**之後**才掛上 spec,那時查也是空的。
+
+    門沒事,是因為柱定案後還有一次 `repair_doors` ——**窗沒有對應的第二次**。
+    這支就是窗的那一次,要在柱定案之後、家具之前跑。
+
+    做法只挪不縮:窗寬牽動 §40 採光(樓地板 1/8),縮窗會把採光問題變出來。
+    挪不開就原地不動,交給圖面關卡回報,不要偷偷縮小。
+
+    ⚠️ 2026-08-20 補上**門**(原本只做窗)。以為門有 `repair_doors` 兜底是錯的:
+    那支修的是「門扇打開會撞到什麼」,門洞**本身**跨在柱上它不管 —— 柱在牆內、
+    只凸出牆面 (柱寬−牆厚)/2,門開 90 度掃過的方塊常常閃得過去,於是
+    `door_swing_blocked` 一聲不吭,圖上卻是柱穿過門框。實測 19×13 三層,
+    1F 與 3F 各有一扇門被柱吃掉約 270mm。
+
+    門比窗多一道限制:挪完仍要離房間角落夠遠(`_door_pos_ok`),否則換成
+    `door_in_corner`,問題只是搬家。所以門在可用區間裡**逐點試**,
+    找不到合格點就不動。
+    """
+    moved = 0
+    for w in spec.walls:
+        (sx, sy), (ex, ey) = w.start, w.end
+        vertical = abs(sx - ex) < 1.0
+        along = sy if vertical else sx           # 牆起點的沿牆座標
+        lo, hi = (sy, ey) if vertical else (sx, ex)
+        blocks = _column_blocks(spec, w, along)
+        if not blocks:
+            continue
+        for op in list(w.openings):
+            if op.kind not in ("window", "door"):
+                continue
+            a0, b0 = op.position - op.width / 2.0, op.position + op.width / 2.0
+            if not any(t0 < b0 and a0 < t1 for t0, t1 in blocks):
+                continue                          # 這扇沒壓到柱
+            others = [o for o in w.openings if o is not op]
+            # ⚠️ 柱淨距走退讓階梯:先求 COLUMN_CLEARANCE(300)的舒適淨距,牆上排不下
+            #    就一級一級降到 0(= 只求「不重疊」)。少了這道階梯,一道排滿洞口的
+            #    牆會因為「湊不出 300 淨距」整個放棄,柱就繼續留在窗框裡 ——
+            #    貼著柱邊的窗雖然不漂亮,但至少蓋得出來,關卡也才過得了。
+            new_pos = None
+            for clear in COLUMN_CLEAR_STEPS:
+                blk = _column_blocks(spec, w, along, clear)
+                keep = list(w.openings)
+                w.openings = others               # 算空間時要先把自己拿掉
+                free = _free_intervals(w, lo, hi, along, blk)
+                w.openings = keep
+                spans = [(a, b) for a, b in free if b - a >= op.width]
+                if not spans:
+                    continue                      # 這級淨距排不下 → 再讓一級
+                new_pos = _nearest_ok_position(spec, w, op, spans)
+                if new_pos is not None:
+                    break
+            if new_pos is None:
+                continue        # 真的挪不開 → 原地不動,交給關卡回報,不偷偷縮小
+            op.position = new_pos
+            moved += 1
+    return moved
+
+
+#: 洞口躲柱的淨距退讓階梯:先求舒適的 300,排不下就一級一級降到 0(只求不重疊)。
+COLUMN_CLEAR_STEPS = (COLUMN_CLEARANCE, 150.0, 50.0, 0.0)
+
+#: 門挪位時沿著可用區間試的取樣間距(mm)。50 夠細(門角淨距的級距是 100),
+#: 又不會讓一道牆試上千點。
+_SHIFT_STEP = 50.0
+
+
+def _nearest_ok_position(spec, wall, op, spans) -> float | None:
+    """在可用區間裡挑「離原位最近、而且合格」的洞口中心位置;沒有回 None。
+
+    窗只要塞得進去就好;門還要 `_door_pos_ok`(離房間角落夠遠、門前站得住人)
+    —— 少了這道,躲柱會直接換來 `door_in_corner`,問題只是從左手換到右手。
+
+    門角淨距走全產線共用的 `DOOR_CLEAR_STEPS` 退讓階梯(先求舒適的 350,不行才
+    一級一級放寬),最後一級是關卡自己的下限 `DOOR_CORNER_MIN` —— 寧可門貼近牆角,
+    也不要留一根柱子插在門框裡。"""
+    half = op.width / 2.0
+    positions = []
+    for a, b in spans:
+        lo_p, hi_p = a + half, b - half
+        if hi_p < lo_p:
+            continue
+        positions.append(min(max(op.position, lo_p), hi_p))
+        positions += [lo_p, hi_p]
+        n = int((hi_p - lo_p) / _SHIFT_STEP)
+        positions += [lo_p + i * _SHIFT_STEP for i in range(1, n + 1)]
+    if not positions:
+        return None
+    positions.sort(key=lambda t: abs(t - op.position))   # 離原位最近的先試
+    if op.kind != "door":
+        return positions[0]
+    for clear in (*DOOR_CLEAR_STEPS, DOOR_CORNER_MIN):
+        for pos in positions:
+            if _door_pos_ok(spec, wall, pos, op.width, clear):
+                return pos
+    return None
+
+
 def _need_window_width(room) -> float:
     """這間房要多寬的窗(mm)。
 
@@ -980,13 +1086,26 @@ def _window_cap(seg_len: float) -> float:
     return max(WINDOW_MAX_W, seg_len / 2.0)
 
 
-def _ensure_room_windows(spec, bx0, by0, bx1, by1, party_walls: bool = True) -> int:
+def _ensure_room_windows(spec, bx0, by0, bx1, by1, party_walls: bool = True,
+                         min_col_clear: float = COLUMN_CLEARANCE) -> int:
     """保證居室採光:窗開得**夠大**(§40 樓地板 1/8),不是有一扇就算。
 
     為什麼要自己補:透天是共壁,東西外牆不能開窗(_fix_openings 會刪),但配窗時是挑
     「最長的外牆邊」——深長的客廳最長邊正是東側共壁,窗開了又被刪 → 房間全暗。這裡在
     刪窗收尾後補回,並且**依面積把窗加寬/加開第二扇**,直到滿足 1/8(牆面不夠長就
-    盡量開,由 code_check 回報)。回補了幾扇窗。"""
+    盡量開,由 code_check 回報)。回補了幾扇窗。
+
+    min_col_clear:窗最少要離柱面多遠。預設 COLUMN_CLEARANCE(300)= **不退讓**。
+
+    ⚠️ 為什麼這是參數而不是固定值:兩個關卡對同一件事的判準不一樣。
+         `plan_check.opening_on_column`(AI 產線的關卡)只認「窗框真的穿過柱」
+         `layout_generator.validate_spec`(規則版的關卡)要求柱面 300mm 淨距
+       所以「窗貼著柱」在 AI 產線是合格圖、在規則版是不合格圖。只有前者能退讓。
+       實測把退讓開給全部產線 → 規則版三條全部 raise「洞口壓柱」,383 條測試連鎖倒。
+
+    真正該做的是**讓兩個關卡用同一把尺**(300 是排洞口時想留的餘裕,不是硬規則),
+    但那要動 validate_spec 這支老檢核,影響四條產線,不在這次範圍。
+    """
     from src.drafting.apartment_plan import WindowPlacement
     from src.drafting.door_window import Window
 
@@ -1004,71 +1123,79 @@ def _ensure_room_windows(spec, bx0, by0, bx1, by1, party_walls: bool = True) -> 
         # 多要 WINDOW_MARGIN:法規是「不得小於 1/8」,補到剛好等於時常被浮點誤差
         # 判掉(實測 6.45㎡ < 6.45㎡),多給 2cm 就穩。
         deficit = _need_window_width(room) + WINDOW_MARGIN - have
-        # ① 先**加寬既有的窗**:牆上剩下的空檔常常各只有 40~50cm(開不了一扇新窗
-        #    的下限 60cm),但把原本那扇拉寬就綽綽有餘。真實圖也是這樣處理。
-        # ① 先**加寬既有的窗**:牆上剩下的空檔常常各只有 40~50cm(開不了一扇新窗的
-        #    下限 60cm),但把原本那扇拉寬就綽綽有餘。真實圖也是這樣處理。
-        #    做法:把那扇窗暫時拿掉,算出它所在的那段可用區間(已扣掉其他洞口與柱),
-        #    再在區間內盡量拉寬。兩輪:正常淨距(300)不夠才放寬到 150。
-        for edge_clear in (WINDOW_EDGE_CLEAR, WINDOW_EDGE_CLEAR / 2.0):
+
+        # 柱淨距**退讓階梯**(300 → 150 → 50 → 0),踩到 min_col_clear 為止。
+        #
+        # 為什麼需要退讓:柱改成在開窗之前定案之後(2026-08-19,為了修使用者說的
+        # 「柱子怎麼還能放在窗戶裡」),一根 400mm 的柱連兩側淨距會吃掉整整 1m
+        # 牆面。實測 12×12m 的 2F 臥室因此差 215mm 補不滿 §40 → 網站回 422。
+        # **寧可窗貼著柱,也不要為了餘裕讓房間變暗房。**
+        for col_clear in [c for c in COLUMN_CLEAR_STEPS if c >= min_col_clear]                 or [min_col_clear]:
+            if deficit <= 1.0:
+                break
+            # ① 先**加寬既有的窗**:牆上剩下的空檔常常各只有 40~50cm(開不了一扇新窗
+            #    的下限 60cm),但把原本那扇拉寬就綽綽有餘。真實圖也是這樣處理。
+            #    做法:把那扇窗暫時拿掉,算出它所在的那段可用區間(已扣掉其他洞口與柱),
+            #    再在區間內盡量拉寬。兩輪:正常淨距(300)不夠才放寬到 150。
+            for edge_clear in (WINDOW_EDGE_CLEAR, WINDOW_EDGE_CLEAR / 2.0):
+                for _rank, wi, lo, hi, along in segs:
+                    if deficit <= 1.0:
+                        break
+                    w = spec.walls[wi]
+                    blocks = _column_blocks(spec, w, along, col_clear)
+                    for op in list(w.openings):
+                        if deficit <= 1.0:
+                            break
+                        if op.kind != "window":
+                            continue
+                        if poly.exterior.distance(Point(*w.point_at(op.position))) >= 60:
+                            continue
+                        others = [o for o in w.openings if o is not op]
+                        keep_all = list(w.openings)
+                        w.openings = others                     # 暫時拿掉自己再算空間
+                        free = _free_intervals(w, lo, hi, along, blocks, edge_clear)
+                        w.openings = keep_all
+                        span = next(((a, b) for a, b in free
+                                     if a - 1 <= op.position <= b + 1), None)
+                        if span is None:
+                            continue
+                        a, b = span
+                        width = min(b - a, _window_cap(hi - lo), op.width + deficit)
+                        if width <= op.width + 1.0:
+                            continue
+                        deficit -= width - op.width
+                        op.width = width
+                        op.position = min(max(op.position, a + width / 2),
+                                          b - width / 2)
+            # ② 還不夠才開新的窗
             for _rank, wi, lo, hi, along in segs:
                 if deficit <= 1.0:
                     break
                 w = spec.walls[wi]
-                blocks = _column_blocks(spec, w, along)
-                for op in list(w.openings):
-                    if deficit <= 1.0:
+                blocks = _column_blocks(spec, w, along, col_clear)   # 洞口不能壓柱
+                while deficit > 1.0:
+                    free = _free_intervals(w, lo, hi, along, blocks)
+                    if not free:
                         break
-                    if op.kind != "window":
-                        continue
-                    if poly.exterior.distance(Point(*w.point_at(op.position))) >= 60:
-                        continue
-                    others = [o for o in w.openings if o is not op]
-                    keep_all = list(w.openings)
-                    w.openings = others                     # 暫時拿掉自己再算空間
-                    free = _free_intervals(w, lo, hi, along, blocks, edge_clear)
-                    w.openings = keep_all
-                    span = next(((a, b) for a, b in free
-                                 if a - 1 <= op.position <= b + 1), None)
-                    if span is None:
-                        continue
-                    a, b = span
-                    width = min(b - a, _window_cap(hi - lo), op.width + deficit)
-                    if width <= op.width + 1.0:
-                        continue
-                    deficit -= width - op.width
-                    op.width = width
-                    op.position = min(max(op.position, a + width / 2),
-                                      b - width / 2)
-        # ② 還不夠才開新的窗
-        for _rank, wi, lo, hi, along in segs:
-            if deficit <= 1.0:
-                break
-            w = spec.walls[wi]
-            blocks = _column_blocks(spec, w, along)   # 洞口不能壓柱
-            while deficit > 1.0:
-                free = _free_intervals(w, lo, hi, along, blocks)
-                if not free:
-                    break
-                a, b = free[0]
-                # 差額不足一扇窗的下限時,仍開一扇最小窗(寧可略大於法定,也不要
-                # 差 5cm 就判不合格)。
-                width = min(max(deficit, WINDOW_MIN_W), b - a, _window_cap(hi - lo))
-                if width < WINDOW_MIN_W:
-                    # 空檔不足一扇標準窗:差額若這段補得完,就開一扇窄高窗補滿
-                    # (見 WINDOW_LAST_MIN);否則這段真的沒用,換下一段。
-                    if b - a >= WINDOW_LAST_MIN and deficit <= b - a + 1.0:
-                        width = b - a
-                    else:
+                    a, b = free[0]
+                    # 差額不足一扇窗的下限時,仍開一扇最小窗(寧可略大於法定,也不要
+                    # 差 5cm 就判不合格)。
+                    width = min(max(deficit, WINDOW_MIN_W), b - a, _window_cap(hi - lo))
+                    if width < WINDOW_MIN_W:
+                        # 空檔不足一扇標準窗:差額若這段補得完,就開一扇窄高窗補滿
+                        # (見 WINDOW_LAST_MIN);否則這段真的沒用,換下一段。
+                        if b - a >= WINDOW_LAST_MIN and deficit <= b - a + 1.0:
+                            width = b - a
+                        else:
+                            break
+                    pos = (a + b) / 2 if b - a <= width + 1 else a + width / 2
+                    if pos - width / 2 < 0 or pos + width / 2 > w.length:
                         break
-                pos = (a + b) / 2 if b - a <= width + 1 else a + width / 2
-                if pos - width / 2 < 0 or pos + width / 2 > w.length:
-                    break
-                w.openings.append(Opening(pos, width, "window"))
-                spec.windows.append(
-                    WindowPlacement(wi, len(w.openings) - 1, Window()))
-                added += 1
-                deficit -= width
+                    w.openings.append(Opening(pos, width, "window"))
+                    spec.windows.append(
+                        WindowPlacement(wi, len(w.openings) - 1, Window()))
+                    added += 1
+                    deficit -= width
     return added
 
 

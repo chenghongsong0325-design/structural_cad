@@ -19,6 +19,8 @@ import pytest
 from shapely.geometry import Point, Polygon
 
 from src.design.layout.graph_layout import (
+    COLUMN_MAX_SPAN,
+    bay_lines,
     partition_envelope,
     realize_graph_building,
 )
@@ -303,3 +305,142 @@ def test_wide_building_multibay_columns_hidden():
     assert floating <= 1, f"孤立內柱過多:{floating}"   # 藏牆內(容 1 根動線退讓)
     for lb, sp, _, _ in floors:
         assert analyze_room_circulation(sp).ok, lb
+
+
+# ---------------------------------------------------------------------------
+# 柱線:等分,而不是「別的東西決定完剩下的副產品」
+# ---------------------------------------------------------------------------
+#
+# 使用者 2026-08-19:「柱子的位子不合邏輯,我覺得是柱線的問題」。
+# 中央核骨架以前直接拿**服務核的左右牆**當柱線 —— 核寬固定 3.4m,兩側跨度卻跟著
+# 建築寬長大:19m 寬 → [7.8, 3.4, 7.8](2.29 倍);30m 寬 → [13.3, 3.4, 13.3]
+# (3.91 倍,13m 的樑做不出來)。柱根根坐在牆上,柱網照樣不能看。
+def test_bay_lines_等分且不超過經濟上限() -> None:
+    for length in (7000.0, 12000.0, 14000.0, 19000.0, 26000.0, 30000.0):
+        lines, span = bay_lines(0.0, length)
+        assert span <= COLUMN_MAX_SPAN + 1e-6, (length, span)
+        assert lines == pytest.approx([span * (k + 1) for k in range(len(lines))])
+        assert (len(lines) + 1) * span == pytest.approx(length)
+
+
+def test_bay_lines_不多切一跨() -> None:
+    """跨數越少柱越少 —— 只要不超過上限就不該再切。
+
+    14m 切 2 跨(各 7m)就夠了,切 3 跨(各 4.67m)柱多了一排、跨度還掉出經濟區間。
+    """
+    assert len(bay_lines(0.0, 14000.0)[0]) == 1          # 2 跨 → 1 條內柱線
+    assert len(bay_lines(0.0, 9000.0)[0]) == 0           # 剛好上限 → 不切
+    assert len(bay_lines(0.0, 9001.0)[0]) == 1           # 超過一點點 → 才切
+
+
+def test_bay_lines_起點會平移() -> None:
+    lines, _ = bay_lines(2000.0, 14000.0)
+    assert lines == pytest.approx([9000.0])
+
+
+def test_中央核骨架的柱網是等距的() -> None:
+    """★ 端到端:寬建築走中央核骨架,柱網要等分、落在 6~9m,不是核寬的副產品。"""
+    from src.design.column_design import grid_regularity
+
+    for bw, bd in ((14000.0, 12000.0), (19000.0, 11000.0), (26000.0, 14000.0)):
+        floors = realize_graph_building(GRAPH, bw, bd, rng=random.Random(7))
+        for lb, spec, _a, _b in floors:
+            r = grid_regularity(spec)
+            assert r.ratio == pytest.approx(1.0, abs=0.01), f"{bw}x{bd} {lb} {r.summary()}"
+            assert not r.outside_economic, f"{bw}x{bd} {lb} {r.summary()}"
+
+
+def test_score_查表版與逐項相加只差浮點誤差() -> None:
+    """加速用的查表(_fit_table/_edge_index/_adj_matrix)不能改變評分的意義。
+
+    ⚠️ 但也**不是逐位元相同**:四項單間房得分先加成一個數再加進總分,浮點加法
+    順序變了 → 差 1e-15 上下。這條釘住「差距必須小到只是浮點誤差」,不是釘
+    「完全相等」——寫成相等會是假的(我第一版就這樣寫錯)。
+    """
+    import itertools
+
+    from src.design.layout import graph_layout as gl
+
+    rng = random.Random(3)
+    env = (0.0, 0.0, 14000.0, 12000.0)
+    kinds = ["living", "bedroom", "kitchen", "dining", "study", "bathroom"]
+    checked = 0
+    for _ in range(12):
+        n = rng.randint(4, 6)
+        rooms = [{"id": f"r{k}", "kind": rng.choice(kinds),
+                  "wants_daylight": rng.random() < 0.6} for k in range(n)]
+        cells = gl.partition_envelope(env, n, rng)
+        if cells is None or len(cells) != n:
+            continue
+        adj = gl._cell_adjacency(cells)
+        edges = [(f"r{rng.randrange(n)}", f"r{rng.randrange(n)}",
+                  rng.choice(["door", "open", "near"])) for _ in range(n)]
+        table = gl._fit_table(rooms, cells, env, "r0")
+        eidx = gl._edge_index(rooms, edges)
+        adjm = gl._adj_matrix(adj, len(cells))
+        for perm in itertools.permutations(range(n)):
+            slow = gl._score(perm, rooms, edges, cells, adj, env, "r0")
+            fast = gl._score(perm, rooms, edges, cells, adj, env, "r0",
+                             False, table, eidx, adjm)
+            assert slow == pytest.approx(fast, abs=1e-9)
+            checked += 1
+    assert checked > 1000
+
+
+def test_柱旁的窗仍然補得滿採光() -> None:
+    """★ 回歸:12×12m 的 AI 案子曾因為「柱的禮貌距離」而讓房間變暗房。
+
+    成因是 2026-08-19 的修正把柱改成在**開窗之前**定案(為了修「柱子開在窗戶裡」)。
+    補窗時 `_column_blocks` 一律留 COLUMN_CLEARANCE(300mm),於是一根 400mm 的柱
+    連兩側淨距吃掉整整 1m 牆面 —— 實測 2F 臥室差 215mm 補不滿 §40,網站回 422。
+
+    ⚠️ 300mm 是**餘裕**不是硬規則:硬規則是「洞口不得真的壓到柱」
+    (plan_check.opening_on_column)。所以補窗改走退讓階梯 300→150→50→0,
+    寧可窗貼著柱,也不要為了餘裕讓房間沒採光。
+    """
+    from src.design.layout.code_check import check_code_floor
+
+    floors = realize_graph_building(GRAPH, 12000.0, 12000.0,
+                                    rng=random.Random(1))
+    for lb, spec, _a, _b in floors:
+        bad = [i for i in check_code_floor(spec, label=lb)
+               if i.code in ("daylight_area", "vent_area")]
+        assert not bad, f"{lb}:{[str(i) for i in bad]}"
+
+
+# ---------------------------------------------------------------------------
+# 柱網驗收標準(使用者 2026-08-21 定調):柱藏牆內 **且** 跨度等分
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("bw,bd", [
+    (14940.0, 9000.0),     # 使用者指定的那張圖的尺寸(1F (36).dxf)
+    (12000.0, 12000.0),
+    (19000.0, 11000.0),
+    (22000.0, 13000.0),
+])
+def test_柱網同時滿足藏牆內與等距(bw, bd) -> None:
+    """★ 兩個條件要**同時**成立,分開驗會自我感覺良好。
+
+    `column_seating` 一直回報藏牆率 100%(柱確實坐在牆上),但同一時期的柱網其實是
+    [13.3, 3.4, 13.3] —— 13m 的梁蓋不出來。反過來只追等分,柱線處沒牆,柱就浮在
+    房間中央。所以這條測試兩個一起斷言,少一個都不算合格。
+    """
+    from src.design.column_design import column_seating, grid_regularity
+
+    for lb, spec, _a, _b in realize_graph_building(GRAPH, bw, bd,
+                                                   rng=random.Random(7)):
+        seat = column_seating(spec)
+        grid = grid_regularity(spec)
+        assert seat.orphan == 0, f"{bw:.0f}x{bd:.0f} {lb} 有孤柱:{seat.summary()}"
+        assert grid.ok, f"{bw:.0f}x{bd:.0f} {lb} 柱網不合格:{grid.summary()}"
+
+
+def test_跨數越少越好_9m深只切一跨() -> None:
+    """9.0m 深剛好在經濟上限內 → 一跨,不要切成兩跨 4.5m。
+
+    使用者拿來當基準的那張圖(8/14 產)在這個尺寸切了兩跨 3.83/5.17m,兩跨都不到
+    6m、不經濟,而且多一整排柱與梁。現在同尺寸是 9 根柱 → 6 根,每根都是交點柱。
+    """
+    _lb, spec, _a, _b = realize_graph_building(GRAPH, 14940.0, 9000.0,
+                                               rng=random.Random(7))[0]
+    assert spec.y_spacings == pytest.approx([9000.0])
+    assert spec.x_spacings == pytest.approx([7470.0, 7470.0])

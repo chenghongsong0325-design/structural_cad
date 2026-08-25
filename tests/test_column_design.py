@@ -27,6 +27,7 @@ from src.design.column_design import (
     column_visibility,
     design_building_columns,
     empirical_start_side,
+    grid_regularity,
     required_side,
     tributary_areas,
 )
@@ -585,3 +586,88 @@ def test_settle_skips_a_fixture_that_moved_since_the_dodge() -> None:
     before = fx.insert
     assert settle_fixtures_to_wall(spec) == 0
     assert fx.insert == before
+
+
+# ---------------------------------------------------------------------------
+# 5) 柱網規則性(跨度等不等距、在不在經濟區間)
+# ---------------------------------------------------------------------------
+#
+# 為什麼要有這一節(使用者 2026-08-19 指出「柱子的位子不合邏輯」):
+# `column_seating` 只回答「柱有沒有坐在牆上」,實測一直是 100% —— 但柱網本身
+# 可以同時是荒謬的(中央核骨架把核的左右牆當柱線,核寬固定 3.4m,兩側跨度卻
+# 跟著建築寬長大,30m 寬時變成 [13.3, 3.4, 13.3])。兩件事要分開量,才講得出
+# 「柱網規則性我們有量測」,而不是憑感覺。
+class _GridSpec:
+    """只帶柱網間距的假 spec —— grid_regularity 只讀這兩個欄位(單位 mm)。"""
+
+    def __init__(self, xs=(), ys=()):
+        self.x_spacings = list(xs)
+        self.y_spacings = list(ys)
+
+
+def test_grid_equal_spans_是合格的() -> None:
+    r = grid_regularity(_GridSpec([6330.0] * 3, [5500.0] * 2))
+    assert r.spans_x == [6.33, 6.33, 6.33]
+    assert r.ratio == pytest.approx(1.0)
+    assert r.ok
+
+
+def test_grid_短跨躲不掉時不算缺點() -> None:
+    """11m 深切 2 跨 = 5.5m(短),但切 1 跨變 11m —— 超過 9m 上限。
+
+    ⚠️ 這條釘的是我第一版判錯的地方:把這種「建築尺寸逼出來的短跨」報成不合格
+    是誣賴,設計師沒有更好的做法可選。它要進 forced_short、不進 outside_economic。
+    """
+    r = grid_regularity(_GridSpec([], [5500.0, 5500.0]))
+    assert r.outside_economic == []
+    assert r.forced_short == [5.5, 5.5]
+    assert r.ok
+
+
+def test_grid_等分之後不短的短跨要算缺點() -> None:
+    """[7.8, 3.4, 7.8] 的 3.4m 躲得掉 —— 同樣 3 跨等分就是 6.33m,完全落在區間內。
+
+    ⚠️ 這條釘的是我第二版判錯的地方:當時問的是「能不能少切一跨」(19/2=9.5>9
+    → 以為躲不掉),但該問的是「**等分**之後還短不短」。問錯問題就會放過真正的
+    不規則柱網。
+    """
+    r = grid_regularity(_GridSpec([7800.0, 3400.0, 7800.0], []))
+    assert 3.4 in r.outside_economic
+    assert r.forced_short == []
+    assert r.ratio == pytest.approx(7.8 / 3.4, rel=1e-3)
+    assert not r.ok
+
+
+def test_grid_過長跨永遠是缺點() -> None:
+    """30m 寬的舊柱網 [13.3, 3.4, 13.3]:13m 的樑做不出來,長短跨都要報。"""
+    r = grid_regularity(_GridSpec([13300.0, 3400.0, 13300.0], []))
+    assert 13.3 in r.outside_economic and 3.4 in r.outside_economic
+    assert not r.ok
+
+
+def test_grid_兩個方向不能混在一起比() -> None:
+    """長方形房子本來就是「面寬 3 跨、進深 2 跨」,兩向跨度不同不是不規則。
+
+    X 各 7m、Y 各 5.5m:混著比會得到 7/5.5 = 1.27 倍(誤判),各自比都是 1.00。
+    """
+    r = grid_regularity(_GridSpec([7000.0] * 3, [5500.0] * 2))
+    assert r.ratio == pytest.approx(1.0)
+    assert max(r.spans) / min(r.spans) > 1.15      # 混著比就會誤判成不規則
+
+
+def test_grid_單跨沒有柱網也算合格() -> None:
+    """窄透天只有一跨(甚至沒填 spacings)——沒有柱網就沒有規則性問題。"""
+    r = grid_regularity(_GridSpec([], []))
+    assert r.ratio == pytest.approx(1.0)
+    assert r.ok and r.spans == []
+
+
+def test_grid_report_可序列化() -> None:
+    """照專案慣例:每個 Report 都要有 summary() / to_dict() / to_json()。"""
+    r = grid_regularity(_GridSpec([7800.0, 3400.0, 7800.0], [5500.0, 5500.0]))
+    d = r.to_dict()
+    assert set(d) == {"spans_x", "spans_y", "ratio", "outside_economic",
+                      "forced_short", "ok"}
+    assert d["spans_x"] == [7.8, 3.4, 7.8]
+    assert json.loads(r.to_json()) == d
+    assert "柱網" in r.summary() and "不合格" in r.summary()

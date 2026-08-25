@@ -252,6 +252,125 @@ def design_building_columns(building) -> ColumnDesignReport:
 
 
 # ---------------------------------------------------------------------------
+# 柱網規則性(跨度合不合理)
+# ---------------------------------------------------------------------------
+#: 經濟跨度區間(m)——使用者 2026-07-12 定調「跨度 6~9m 最經濟」。
+ECONOMIC_SPAN_M = (6.0, 9.0)
+#: 最大跨 / 最小跨 超過這個倍數就算「不規則」。1.0 = 完全等距。
+SPAN_RATIO_OK = 1.15
+
+
+@dataclass
+class GridRegularityReport:
+    """柱網規則性 —— 跨度等不等距、在不在經濟區間。
+
+    為什麼要有這支(使用者 2026-08-19:「柱子的位子不合邏輯,我覺得是柱線的問題」):
+    `column_seating` 只回答「柱有沒有坐在牆上」,答案一直是 100% —— 但柱網本身可以
+    同時是荒謬的。實測中央核骨架把**服務核的左右牆**直接當柱線用,核寬固定 3.4m、
+    兩側跨度卻跟著建築寬長大:
+
+        建築寬 19m → 跨度 [7.8, 3.4, 7.8]   最大/最小 2.29 倍
+        建築寬 30m → 跨度 [13.3, 3.4, 13.3] 最大/最小 3.91 倍(13m 跨的樑做不出來)
+
+    柱根根坐在牆上,柱網照樣不能看。兩件事要分開量。
+
+    ⚠️ 這裡量的是**幾何規則性**,不是結構安全。跨度 6~9m 是經濟性的經驗區間
+       (見模組頭的免責說明),不是法規上限;超出只代表樑會變深、不代表會塌。
+    """
+
+    spans_x: list[float] = field(default_factory=list)   # 公尺
+    spans_y: list[float] = field(default_factory=list)
+
+    @property
+    def spans(self) -> list[float]:
+        return list(self.spans_x) + list(self.spans_y)
+
+    @property
+    def ratio(self) -> float:
+        """最大跨 / 最小跨(X 與 Y 各自算,取較差的那個)。1.0 = 完全等距。
+
+        ⚠️ X 與 Y **不能混在一起比**:長方形的房子本來就會是「面寬 3 跨、進深
+        2 跨」,兩個方向的跨度不同是正常的,不是不規則。"""
+        out = 1.0
+        for v in (self.spans_x, self.spans_y):
+            if len(v) >= 2 and min(v) > 0:
+                out = max(out, max(v) / min(v))
+        return out
+
+    @staticmethod
+    def _avoidable(spans: list[float]) -> list[float]:
+        """這個方向有哪些跨度是「本來可以更好卻沒做好」的。
+
+        ⚠️ **短跨不一定是缺點。** 11m 深的房子切 2 跨就是 5.5m,切 1 跨變 11m ——
+        超過 9m 上限。這種短跨是建築尺寸逼出來的,躲不掉,報成不合格是誣賴
+        (第一版就這樣誣賴了 5.5m,所以特地寫在這裡)。
+        只有「少切一跨仍在上限內」時,現有的短跨才算真的沒做好。
+        """
+        lo, hi = ECONOMIC_SPAN_M
+        if not spans:
+            return []
+        long = [s for s in spans if s > hi + 1e-6]        # 超長跨永遠是缺點
+        short = [s for s in spans if s < lo - 1e-6]
+        if short and len(spans) >= 2:
+            total = sum(spans)
+            # ⚠️ 判「躲不掉」要問的是「**等分**之後還短不短」,不是「能不能少一跨」。
+            #    [7.8, 3.4, 7.8] 的 3.4 躲得掉 —— 同樣 3 跨等分就是 6.33m。
+            #    第一版只看「少一跨會不會爆上限」(19/2=9.5>9),就把它誤判成躲不掉。
+            if total / len(spans) < lo - 1e-6 and total / (len(spans) - 1) > hi + 1e-6:
+                short = []                                # 等分也短、又不能再少 → 真的躲不掉
+        return long + short
+
+    @property
+    def outside_economic(self) -> list[float]:
+        """在 6~9m 之外、而且**可以避免**的跨度。"""
+        return (self._avoidable(self.spans_x)
+                + self._avoidable(self.spans_y))
+
+    @property
+    def forced_short(self) -> list[float]:
+        """建築尺寸逼出來的短跨(躲不掉,不算缺點,但要讓人看得到)。"""
+        lo, _hi = ECONOMIC_SPAN_M
+        out = []
+        for v in (self.spans_x, self.spans_y):
+            avoid = set(map(id, self._avoidable(v)))
+            out += [s for s in v if s < lo - 1e-6 and id(s) not in avoid]
+        return out
+
+    @property
+    def ok(self) -> bool:
+        return self.ratio <= SPAN_RATIO_OK and not self.outside_economic
+
+    def summary(self) -> str:
+        lo, hi = ECONOMIC_SPAN_M
+        bad = self.outside_economic
+        forced = self.forced_short
+        note = f",另有 {len(forced)} 跨受建築尺寸所限偏短(躲不掉)" if forced else ""
+        return (f"柱網:X {[round(s, 2) for s in self.spans_x]}m、"
+                f"Y {[round(s, 2) for s in self.spans_y]}m —— "
+                f"最大/最小 {self.ratio:.2f} 倍、"
+                f"{len(bad)} 跨在 {lo:g}~{hi:g}m 之外{note}"
+                f"({'合格' if self.ok else '不合格'})")
+
+    def to_dict(self) -> dict:
+        return {"spans_x": [round(s, 3) for s in self.spans_x],
+                "spans_y": [round(s, 3) for s in self.spans_y],
+                "ratio": round(self.ratio, 3),
+                "outside_economic": [round(s, 3) for s in self.outside_economic],
+                "forced_short": [round(s, 3) for s in self.forced_short],
+                "ok": self.ok}
+
+    def to_json(self, **kw) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False, **kw)
+
+
+def grid_regularity(spec) -> GridRegularityReport:
+    """量一層樓的柱網規則性。沒有柱網(窄透天單跨)回空報告,ratio=1.0。"""
+    xs = [float(v) / 1000.0 for v in (getattr(spec, "x_spacings", None) or [])]
+    ys = [float(v) / 1000.0 for v in (getattr(spec, "y_spacings", None) or [])]
+    return GridRegularityReport(spans_x=xs, spans_y=ys)
+
+
+# ---------------------------------------------------------------------------
 # 柱座落品質(柱有沒有藏進牆裡)
 # ---------------------------------------------------------------------------
 @dataclass

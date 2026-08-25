@@ -58,6 +58,10 @@ SKINNY_OK_KINDS = {"corridor", "pipe_shaft", "patio", "balcony", "storage",
 # 依台灣住宅常識抓的粗範圍——不是要精準,是要把「浴廁 9㎡、玄關 14㎡」這種腫房間壓下去。
 AREA_BAND = {
     "living": (16, 32), "dining": (6, 14), "kitchen": (5, 11),
+    # ⚠️ 這張表跟 room_program.ROOM_PROGRAM 是**同一個判準的兩份實作**,改一邊
+    #    漏一邊就會出現「AI 版說合格、規則版說過大」。下限兩邊必須一致;上限
+    #    這邊可以更嚴(AI 產線靠它觸發重切,寬鬆就切不動),但不得比規則版寬鬆。
+    #    有測試釘住(test_room_program.test_兩條產線用同一把尺)。
     "bedroom": (9, 18), "master_bedroom": (12, 24), "bathroom": (2.5, 6),
     "toilet": (1.5, 4), "stair": (3.5, 7), "corridor": (2, 8),
     "patio": (2, 9), "storage": (1.5, 6), "study": (6, 14),
@@ -105,6 +109,7 @@ STAIR_DEPTH = 4600.0
 # 還給房間;管道帶剩下的長度做成壁櫃(房間要鋪滿建築,牆才推得出來)。
 COLUMN_SIZE = 400.0      # 結構柱斷面(mm 見方)
 COLUMN_SPAN = 6000.0     # 柱距目標(沿進深,6m 經濟跨度;藏外牆內、上下對齊)
+COLUMN_MAX_SPAN = 9000.0  # 跨度上限(超過就多一道柱線;使用者定調 6~9m 最經濟)
 
 # AI 設計師模式(混合式收斂管線)實測可穩定落實的建築尺寸範圍。與 narrow_house
 # 的規則產生器分開:這個搜尋式引擎比規則版更耐尺寸,而且會**依平面比例自動換骨架**:
@@ -323,39 +328,103 @@ def _aspect_penalty(c: Rect, kind: str) -> float:
     return min(ASPECT_CAP, (ar - ASPECT_OK) / ASPECT_OK)
 
 
+def _fit_table(rooms: list, cells: list[Rect], env: Rect,
+               entry_id: Optional[str], party: bool = False) -> list[list[float]]:
+    """table[k][c] = 第 k 間房放進第 c 格「自己」得幾分(採光/朝前/大小/細長)。
+
+    這四項**只跟這一間房和這一格有關**,跟別的房間放哪裡無關 —— 所以同一組格子
+    只要算一次(m×m 次),就能餵給全部 m! 種排列。以前是每個排列重算一次,
+    7 間房 = 5040 排列 × 7 間 = 35280 次幾何運算,現在 49 次。
+
+    ⚠️ **不是逐位元相同。** 原本這四項是一項一項加進總分,現在先加成一個數再加,
+       浮點數的加法順序一變,結果會差 1e-15 上下(實測 5.4 萬個排列裡 2.2 萬個
+       有差,最大 7.1e-15)。分數幾乎一樣、但**同分排列的勝負可能對調** ——
+       所以選出來的格局可能換一個(同等好的另一個),不是「完全不變」。
+       實測換過去的結果反而更好(22×13 的孤柱 1 → 0),但這件事要講清楚,
+       不能宣稱成無副作用的重構。
+    """
+    return [[(DAYLIGHT_BONUS
+              if r.get("wants_daylight") and _on_perimeter(c, env, party) else 0.0)
+             + (ENTRY_FRONT_BONUS
+                if entry_id and r["id"] == entry_id and _on_front(c, env) else 0.0)
+             - W_SIZE * _size_penalty((c[2] - c[0]) * (c[3] - c[1]) / 1e6, r["kind"])
+             - W_ASPECT * _aspect_penalty(c, r["kind"])
+             for c in cells]
+            for r in rooms]
+
+
+def _edge_index(rooms: list, edges: list) -> list[tuple[int, int, bool]]:
+    """關係圖的邊改用**房間序號**表示:[(ka, kb, 是不是強連結)]。
+
+    原本每算一個排列都要重建一次 id→格子 的 dict、再逐條邊查字典;序號版只要
+    `perm[ka]` 一次索引。兩端有房間不在這層的邊在這裡就先濾掉(原本是每次重濾)。
+    """
+    idx = {r["id"]: k for k, r in enumerate(rooms)}
+    out = []
+    for a, b, conn in edges:
+        ka, kb = idx.get(a), idx.get(b)
+        if ka is None or kb is None:
+            continue
+        out.append((ka, kb, conn in ("door", "open")))
+    return out
+
+
+def _adj_matrix(cell_adj: set[frozenset], n: int) -> list[list[bool]]:
+    """格子相鄰關係改用二維表:`adjm[i][j]`,取代每次配一個 frozenset 去查 set。"""
+    m = [[False] * n for _ in range(n)]
+    for fs in cell_adj:
+        pair = tuple(fs)
+        i = pair[0]
+        j = pair[1] if len(pair) > 1 else i      # 同一格 = frozenset 只有一個元素
+        if i < n and j < n:
+            m[i][j] = m[j][i] = True
+    return m
+
+
 def _score(perm: tuple, rooms: list, edges: list, cells: list[Rect],
            cell_adj: set[frozenset], env: Rect, entry_id: Optional[str],
-           party: bool = False) -> float:
-    """perm[k] = 第 k 個房間放進哪個格子。回總分(越高越符合 LLM 的關係圖)。"""
-    pos = {rooms[k]["id"]: perm[k] for k in range(len(rooms))}
+           party: bool = False, table: Optional[list[list[float]]] = None,
+           eidx: Optional[list] = None,
+           adjm: Optional[list[list[bool]]] = None) -> float:
+    """perm[k] = 第 k 個房間放進哪個格子。回總分(越高越符合 LLM 的關係圖)。
+
+    table / eidx / adjm 是預先算好的查表(見 `_fit_table` / `_edge_index` /
+    `_adj_matrix`)。這三個東西**同一組格子算一次就能餵給全部 m! 種排列**,
+    不給的話這裡自己算(結果一樣,只差在快慢;浮點誤差見 `_fit_table` 的說明)。
+
+    ⚠️ 為什麼要在意快慢:這支被呼叫 300 萬次以上(4 層 × 300 種切法 × 最多
+    5040 種排列)。柱線牆改成必做之後格子變多、排列數跟著爆炸,出一張圖從
+    15 秒變 72 秒 —— 網站(免費方案有請求逾時)會直接跑不出來。
+    """
+    if table is None:
+        table = _fit_table(rooms, cells, env, entry_id, party)
+    if eidx is None:
+        eidx = _edge_index(rooms, edges)
+    if adjm is None:
+        adjm = _adj_matrix(cell_adj, len(cells))
     s = 0.0
-    for a, b, conn in edges:
-        if a not in pos or b not in pos:
-            continue
-        near = frozenset((pos[a], pos[b])) in cell_adj
-        if conn in ("door", "open"):
+    for ka, kb, strong in eidx:
+        near = adjm[perm[ka]][perm[kb]]
+        if strong:
             s += W_STRONG if near else -P_STRONG_MISS
         elif near:
             s += W_WEAK
-    for k, r in enumerate(rooms):
-        c = cells[perm[k]]
-        if r.get("wants_daylight") and _on_perimeter(c, env, party):
-            s += DAYLIGHT_BONUS
-        if entry_id and r["id"] == entry_id and _on_front(c, env):
-            s += ENTRY_FRONT_BONUS
-        area_m2 = (c[2] - c[0]) * (c[3] - c[1]) / 1e6
-        s -= W_SIZE * _size_penalty(area_m2, r["kind"])       # 房間大小合不合理
-        s -= W_ASPECT * _aspect_penalty(c, r["kind"])         # 房間會不會細長像走廊
+    for k in range(len(rooms)):
+        s += table[k][perm[k]]
     return s
 
 
 def _best_perm(rooms, edges, cells, cell_adj, env, entry_id, party=False):
     """房間 ≤7 暴力枚舉最佳指派;更多用貪婪近似。回 (score, perm)。"""
     n = len(rooms)
+    table = _fit_table(rooms, cells, env, entry_id, party)
+    eidx = _edge_index(rooms, edges)
+    adjm = _adj_matrix(cell_adj, len(cells))
     if n <= 7:
         best = None
         for perm in itertools.permutations(range(n)):
-            sc = _score(perm, rooms, edges, cells, cell_adj, env, entry_id, party)
+            sc = _score(perm, rooms, edges, cells, cell_adj, env, entry_id,
+                        party, table, eidx, adjm)
             if best is None or sc > best[0]:
                 best = (sc, perm)
         return best
@@ -371,13 +440,14 @@ def _best_perm(rooms, edges, cells, cell_adj, env, entry_id, party=False):
                 continue
             assign[k] = c
             sc = _score(tuple(x if x >= 0 else 0 for x in assign),
-                        rooms, edges, cells, cell_adj, env, entry_id, party)
+                        rooms, edges, cells, cell_adj, env, entry_id, party,
+                        table, eidx, adjm)
             if best_sc is None or sc > best_sc:
                 best_sc, best_cell = sc, c
         assign[k] = best_cell
         used.add(best_cell)
     return (_score(tuple(assign), rooms, edges, cells, cell_adj, env, entry_id,
-                   party),
+                   party, table, eidx, adjm),
             tuple(assign))
 
 
@@ -624,6 +694,27 @@ COURT_STAIR_W = 2600.0       # 中央核裡樓梯間的面寬(容 U 形折返梯
 RING_MIN = 2800.0            # 中央核四周「房間圈」每一帶的最小厚度(擺得下居室)
 
 
+def bay_lines(x0: float, length: float,
+              max_span: float = COLUMN_MAX_SPAN) -> tuple[list[float], float]:
+    """把一段長度等分成柱跨,回 (內部柱線座標, 跨度)。
+
+    規則很簡單,就是使用者 2026-07-12 定調的那條:**規則等距、跨度 6~9m 最經濟**。
+    先用上限求最少跨數,再看能不能更少(跨數越少柱越少,只要不超過上限)。
+
+    ⚠️ 這支是「柱線該長什麼樣」的**單一出處**。以前三個骨架各算各的:
+        AI 西側核  建築寬等分            ← 唯一算對的
+        AI 中央核  直接拿服務核的左右牆  ← 30m 寬會生出 [13.3, 3.4, 13.3]
+        兩帶式     拿帶的分界線          ← 全部 <6m
+    柱線變成「別的東西決定完剩下的副產品」,而不是自己被設計出來的,這就是使用者
+    2026-08-19 說「柱子的位子不合邏輯」的根。
+    """
+    n = max(1, math.ceil(length / max_span - 1e-9))
+    while n > 1 and length / (n - 1) <= max_span + 1e-9:
+        n -= 1
+    span = length / n
+    return [x0 + k * span for k in range(1, n)], span
+
+
 def _core_courtyard(env: Rect):
     """中央核骨架(Phase 3):樓梯+管道柱擺在平面**中央**,房間繞成一圈。
 
@@ -634,7 +725,8 @@ def _core_courtyard(env: Rect):
 
     回 (stair_rect, shaft_rect, patio_rect, seed, core_w, xlines);
     seed = 中央核以外鋪滿的四塊(南帶/北帶/西帶/東帶),交給房間去細分。
-    xlines = 中央核的左右邊 → 柱軸線落在核的牆上(柱藏牆內,不會站在房間中央)。
+    xlines = **建築寬等分**的柱線(見 bay_lines);核吸附到其中一條,所以核的
+             西牆也長在柱線上。以前這裡回的是核的左右邊,跨度因此完全被核寬綁架。
     放不下(基地太小)回 None,由呼叫端退回長條骨架。"""
     ex0, ey0, ex1, ey1 = env
     W, D = ex1 - ex0, ey1 - ey0
@@ -644,7 +736,19 @@ def _core_courtyard(env: Rect):
     if W - core_w < 2 * RING_MIN or D - core_d < 2 * RING_MIN:
         return None                                  # 兩側/前後圈不夠厚 → 不適用
 
+    # 柱線:建築寬等分(見 bay_lines)。**不再拿服務核的左右牆當柱線** ——
+    # 那會讓跨度變成「核多寬就多寬」,30m 的房子跑出 [13.3, 3.4, 13.3](13m 跨的
+    # 樑做不出來)。柱線先定,核再去配合柱線。
+    xlines, _span = bay_lines(ex0, W)
+
+    # 核水平置中,但**吸附到最近的柱線**:這樣核的西牆就長在柱線上,那一排柱直接
+    # 藏在核的牆裡。吸附後若貼太近外牆就放棄吸附,退回純置中(寧可柱靠 bay 牆,
+    # 也不能讓核擠掉外圈房間)。
     cx0 = ex0 + (W - core_w) / 2.0                   # 水平置中
+    for line in sorted(xlines, key=lambda v: abs(v - cx0)):
+        if ex0 + RING_MIN <= line <= ex1 - core_w - RING_MIN:
+            cx0 = line
+            break
     cy0 = ey0 + max(RING_MIN, (D - core_d) * 0.45)   # 前段(南)略大於後段
     cy0 = min(cy0, ey1 - core_d - RING_MIN)
     cx1, cy1 = cx0 + core_w, cy0 + core_d
@@ -657,7 +761,7 @@ def _core_courtyard(env: Rect):
             (ex0, cy1, ex1, ey1),                    # 北帶
             (ex0, cy0, cx0, cy1),                    # 西帶
             (cx1, cy0, ex1, cy1)]                    # 東帶
-    return stair_rect, shaft_rect, closet_rect, seed, core_w, [cx0, cx1]
+    return stair_rect, shaft_rect, closet_rect, seed, core_w, xlines
 
 
 def _choose_core(env: Rect, min_free_rooms: int = 99):
@@ -701,11 +805,16 @@ def _assign_core(free, fixed, allcells, cell_adj, env, entry_id, edges,
     rooms_full = free + [r for r, _ in fixed]
     fixed_idx = tuple(i for _, i in fixed)
     m = len(free)
+    # 單間房的得分先算成表(m! 種排列共用同一張,見 _fit_table)。
+    table = _fit_table(rooms_full, allcells, env, entry_id, party)
+    eidx = _edge_index(rooms_full, edges)
+    adjm = _adj_matrix(cell_adj, len(allcells))
     if m <= 7:
         best = None
         for perm in itertools.permutations(range(m)):
             pf = perm + fixed_idx
-            sc = _score(pf, rooms_full, edges, allcells, cell_adj, env, entry_id, party)
+            sc = _score(pf, rooms_full, edges, allcells, cell_adj, env, entry_id,
+                        party, table, eidx, adjm)
             if best is None or sc > best[0]:
                 best = (sc, pf)
         return best, rooms_full
@@ -719,13 +828,15 @@ def _assign_core(free, fixed, allcells, cell_adj, env, entry_id, edges,
                 continue
             assign[k] = c
             pf = tuple(x if x >= 0 else 0 for x in assign) + fixed_idx
-            sc = _score(pf, rooms_full, edges, allcells, cell_adj, env, entry_id, party)
+            sc = _score(pf, rooms_full, edges, allcells, cell_adj, env, entry_id,
+                        party, table, eidx, adjm)
             if bs is None or sc > bs:
                 bs, bc = sc, c
         assign[k] = bc
         used.add(bc)
     pf = tuple(assign) + fixed_idx
-    return (_score(pf, rooms_full, edges, allcells, cell_adj, env, entry_id, party),
+    return (_score(pf, rooms_full, edges, allcells, cell_adj, env, entry_id,
+                   party, table, eidx, adjm),
             pf), rooms_full
 
 
@@ -879,12 +990,18 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
                   "wants_daylight": False}
     m = len(free)
 
-    # 多跨(>9m 寬):在內柱軸線處預切 seed → 每層同位置都有隔間牆,內柱藏其中、
-    # 上下對齊。房間夠多才強制(否則分帶填不滿 → 退回原 seed,寧可少一道柱線牆)。
+    # 多跨:在柱線處預切 seed → 每層同位置都有隔間牆,柱藏其中、上下對齊。
+    #
+    # ⚠️ 以前的條件是「房間數 ≥ 切完的格數才切」,不夠就整個放棄。柱線改成建築寬
+    #    等分之後(2026-08-19)柱線變多,這個條件幾乎永遠不成立 → 牆不長在柱線上
+    #    → 柱浮在房間中央(實測藏牆率 100% 掉到 91.7%、每層冒出 1 根孤柱)。
+    #    **柱線牆不能是「有空才做」的加分項** —— 它是柱藏牆內的唯一保證。
+    #    房間不夠就補房間(`_cells_without_a_giant` 會依 seed 塊數補溢位房),
+    #    不要反過來放棄柱線牆。
     xlines = ((core_xlines or _bay_xlines(env)) if bay_walls else [])
     if xlines:
         banded = _apply_bay_walls(seed, xlines)
-        if m >= len(banded):
+        if len(banded) - m <= MAX_OVERFLOW_ROOMS:      # 補得完就切
             seed = banded
 
     # 一格有多大才算合理:拿核外面積除以房間數當基準,量溢位房的尺寸用。
@@ -943,8 +1060,37 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
     from src.design.layout.narrow_house import (
         _add_stair_guard_walls, _door_kinds, _ensure_floor_connected,
         _ensure_room_doors, _ensure_room_windows, _fix_openings,
-        _remove_openings, _stair,
+        _remove_openings, _stair, shift_openings_off_columns,
     )
+    # 結構柱:面寬與進深各每 ~6m 一道軸線,柱放外框軸網交點(藏牆內、每層同位=上下
+    # 對齊)。面寬 >9m 時分多跨,內柱落在上面預切的柱線牆內,不孤立在房間中央。
+    #
+    # ⚠️ **這段一定要在開口收尾之前**(使用者 2026-08-19:「柱子怎麼還能放在
+    #    窗戶裡?」)。躲柱的機制(`_column_blocks`)一直都在,但柱以前是在
+    #    `_ensure_room_windows` **之後**才掛上 spec —— 開窗當下 spec 上沒有柱,
+    #    查到的是空的,窗就開在柱上了。門沒事是因為後面還有一次 `repair_doors`,
+    #    窗沒有對應的第二次。
+    #    柱位只跟建築外框(env)與核的軸線(core_xlines)有關,兩個在這裡都已經
+    #    知道,所以提前定案沒有任何依賴問題。
+    W, D = env[2] - env[0], env[3] - env[1]
+    spec.grid_origin = (env[0], env[1])
+    if core_xlines:                             # 中央核骨架:柱線已由 bay_lines 等分
+        xs = [env[0], *core_xlines, env[2]]
+        spec.x_spacings = [b - a for a, b in zip(xs, xs[1:])]
+    else:
+        nx = _n_bays_x(W)
+        spec.x_spacings = [W / nx] * nx
+    # ⚠️ 進深方向也要走 bay_lines,不能用「除以 6m 四捨五入」。
+    #    舊公式 round(D / 6000) 會把 9.0m 深切成 2 跨 × 4.5m —— 但 9.0m 一跨就
+    #    在經濟上限內,多切那一排柱是純浪費,而且 4.5m 掉出 6~9m 區間。
+    #    只修面寬、不修進深 = 只做半套:30 案隨機掃描裡有 8 案柱網被判不合格,
+    #    全部是這個原因(X 方向都是 1.00 倍等分,Y 方向卻不是)。
+    yl, yspan = bay_lines(env[1], D)
+    spec.y_spacings = [yspan] * (len(yl) + 1)
+    spec.column_centers = None                 # None → 自動放在軸網交點
+    spec.column_size = COLUMN_SIZE
+    spec.floor_label = floor_label
+
     level = int(floor_label[:-1]) if floor_label[:-1].isdigit() else 1
     sx0, sy0, sx1, sy1 = stair_rect              # 先掛樓梯:開口收尾才避得開梯段
     spec.stairs = [_stair(sx0, sx1, sy0, sy1, stair_label)]
@@ -959,23 +1105,14 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
     #   ③ 居室補窗(前後外牆或天井側;共壁窗被刪後不能讓房間全暗)
     _ensure_floor_connected(spec)
     _ensure_room_doors(spec, env[0], env[1], env[2], level)
-    _ensure_room_windows(spec, env[0], env[1], env[2], env[3], party_walls=party)
-
-    # 結構柱:面寬與進深各每 ~6m 一道軸線,柱放外框軸網交點(藏牆內、每層同位=上下
-    # 對齊)。面寬 >9m 時分多跨,內柱落在上面預切的柱線牆內,不孤立在房間中央。
-    W, D = env[2] - env[0], env[3] - env[1]
-    ny = max(1, round(D / COLUMN_SPAN))
-    spec.grid_origin = (env[0], env[1])
-    if core_xlines:                             # 中央核骨架:柱軸線=中央核的左右牆
-        xs = [env[0], *core_xlines, env[2]]
-        spec.x_spacings = [b - a for a, b in zip(xs, xs[1:])]
-    else:
-        nx = _n_bays_x(W)
-        spec.x_spacings = [W / nx] * nx
-    spec.y_spacings = [D / ny] * ny
-    spec.column_centers = None                 # None → 自動放在軸網交點
-    spec.column_size = COLUMN_SIZE
-    spec.floor_label = floor_label
+    # min_col_clear=0:這條產線的關卡是 plan_check(只擋「窗框真的穿過柱」),
+    # 所以窗可以貼著柱 —— 規則版走 validate_spec(要求 300mm 淨距)就不行。
+    _ensure_room_windows(spec, env[0], env[1], env[2], env[3], party_walls=party,
+                         min_col_clear=0.0)
+    # 門窗的「柱定案後再修一次」。柱在上面已經定案,這裡把開在柱上的洞口沿牆
+    # 挪開(只挪不縮,縮窗會破 §40 採光)。
+    # ⚠️ 門也要 —— repair_doors 只管「門扇打開撞到什麼」,門洞本身跨在柱上它不管。
+    shift_openings_off_columns(spec)
 
     if furnish:
         from src.design.layout.auto_furnish import furnish_spec
