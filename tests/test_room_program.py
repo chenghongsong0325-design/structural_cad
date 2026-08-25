@@ -243,3 +243,47 @@ def test_single_floor_master_no_longer_unbounded():
     got = _areas(spec)
     cap = ROOM_PROGRAM["master_bedroom"].max_area * (1 + AREA_TOLERANCE)
     assert got["主臥室"] <= cap, f"主臥 {got['主臥室']:.1f}m² 仍然沒有上限"
+
+
+# ---------------------------------------------------------------------------
+# 同一個判準的兩份實作,不能各走各的
+# ---------------------------------------------------------------------------
+def test_兩條產線用同一把尺() -> None:
+    """★ AI 產線的 AREA_BAND 必須跟規則版的 ROOM_PROGRAM 對得上。
+
+    ⚠️ AGENTS.md 明講過這個坑:同一個判準有兩份實作,改一邊漏一邊就會出現
+    「AI 版說合格、規則版說過大」。plan_check 的 room_oversize 查的也是
+    AREA_BAND,所以連圖面關卡一起釘住。
+
+    下限必須**完全一致**(那是「住不住得下」,沒有商量空間);上限允許 AI 版
+    更嚴 —— 它靠上限觸發重切,太寬就切不動 —— 但**不得比規則版更寬鬆**,
+    那會變成 AI 版放行、規則版報過大。
+    """
+    from src.design.layout.graph_layout import AREA_BAND
+
+    kinds = ("bedroom", "master_bedroom", "bathroom", "living",
+             "kitchen", "dining", "study")
+    for kind in kinds:
+        _lo, hi = AREA_BAND[kind]
+        req = ROOM_PROGRAM[kind]
+        assert req.max_area is None or hi <= req.max_area, f"{kind} AI 版上限更寬鬆"
+    # 下限只釘臥室:room_oversize 與「一間房吃掉半層」都繞著臥室轉,這兩項
+    # 一定要兩邊一致。
+    for kind in ("bedroom", "master_bedroom"):
+        assert AREA_BAND[kind][0] == ROOM_PROGRAM[kind].min_area, f"{kind} 下限"
+    # 長輩房也是臥室,跟次臥同一把尺
+    assert AREA_BAND["elder_room"] == AREA_BAND["bedroom"]
+
+    # ⚠️ 已知還沒解的落差(不是這條測試放水,是**先讓它現形**):
+    #    浴室 AI 版下限 2.5㎡、規則版 4㎡ —— 同一種房間兩條產線差快一倍,
+    #    AI 版可能生出規則版認為住不了人的浴室。改它會動到 AI 產線的評分,
+    #    要另外驗證,所以這裡先釘住「現況就是這樣」,改掉的時候會被這行擋下來
+    #    強迫你回來更新說明,而不是靜悄悄地改掉。
+    assert (AREA_BAND["bathroom"][0], ROOM_PROGRAM["bathroom"].min_area) == (2.5, 4)
+
+
+# 📐 台灣**一般住宅(公寓)**的臥室大小(使用者 2026-08-20 提供,供對照):
+#       單人房 / 次臥   2~3 坪 = 6.6~9.9 ㎡
+#       雙人房 / 主臥   3~5 坪 = 9.9~16.5 ㎡
+# 沒有寫成測試,因為這個專案主力做**透天**,尺度本來就比公寓大(19×13m 透天的
+# 次臥 4 坪是正常的)。理由與後續做法寫在 room_program.ROOM_PROGRAM 的註解。
