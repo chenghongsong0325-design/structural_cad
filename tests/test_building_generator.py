@@ -318,15 +318,26 @@ def test_house_deep_sites_generate(site_depth):
         assert not check_column_alignment(b)
 
 
-def test_house_divider_columns_tucked_off_south_band():
+@pytest.mark.parametrize("site_depth", [12000, 16000])
+def test_house_divider_columns_tucked_off_south_band(site_depth):
     """使用者反饋 2026-07-15(附 AutoCAD 截圖):分界牆上的 T 型柱不能凸進
     南側大客廳/起居室——柱南面要貼齊分界牆南皮。三種樓層都查,且各層該排
-    柱心一致(上下對齊)。"""
+    柱心一致(上下對齊)。
+
+    ⚠️ 2026-08-21 起分界牆那排柱**不一定存在**:進深在經濟跨度上限(9m)以內
+    時整排拿掉(使用者定調「跨數越少越好」),分界牆照樣是牆、只是牆裡不站柱。
+    那種情況下本測試的意圖(柱不得凸進南帶)自動成立——根本沒有那排柱。
+
+    但**不能就這樣放過**:柱消失只有在「進深真的只有一跨」時才合格,所以用
+    y_spacings 的長度釘住;深基地(16m)那組進深超過 9m、分界柱仍在,原本的
+    貼齊檢查照跑,最後再確認它真的跑到了(免得整條測試變成空轉還顯示綠燈)。
+    """
     from src.design.layout_generator import (
         INT, generate_house_basement, generate_house_public,
         generate_house_upper)
-    brief = HouseBrief(site_width=30000, site_depth=12000, bedrooms=2)
+    brief = HouseBrief(site_width=30000, site_depth=site_depth, bedrooms=2)
     centers_by_floor = []
+    checked_tuck = False
     for spec in (generate_house_public(brief), generate_house_upper(brief),
                  generate_house_basement(brief)):
         assert spec.column_centers is not None
@@ -335,14 +346,22 @@ def test_house_divider_columns_tucked_off_south_band():
         half = spec.column_size / 2
         divider = sorted(c for c in spec.column_centers
                          if abs(c[1] - half + INT / 2 - yd) < 1)  # 南面≈yd 的柱
-        assert len(divider) == len(spec.x_spacings) + 1, \
-            f"{spec.floor_label} 分界牆那排柱數不對"
-        for cx, cy in divider:
-            assert cy - half >= yd - INT / 2 - 1, \
-                f"{spec.floor_label} 柱南面 {cy-half} 凸過分界牆南皮 {yd-INT/2}"
+        if len(spec.y_spacings) == 1:               # 進深一跨 → 沒有分界柱
+            assert divider == [], (
+                f"{spec.floor_label} 進深只有一跨,不該有分界牆柱")
+        else:
+            assert len(divider) == len(spec.x_spacings) + 1, (
+                f"{spec.floor_label} 分界牆那排柱數不對")
+            for cx, cy in divider:
+                assert cy - half >= yd - INT / 2 - 1, (
+                    f"{spec.floor_label} 柱南面 {cy-half} 凸過分界牆南皮 "
+                    f"{yd-INT/2}")
+            checked_tuck = True
         centers_by_floor.append(sorted(spec.column_centers))
-    assert centers_by_floor[0] == centers_by_floor[1] == centers_by_floor[2], \
-        "各層柱心不一致 → 上下對不齊"
+    assert centers_by_floor[0] == centers_by_floor[1] == centers_by_floor[2], (
+        "各層柱心不一致 → 上下對不齊")
+    if site_depth >= 16000:                     # 深基地一定要真的驗到貼齊
+        assert checked_tuck, "深基地竟然沒有分界柱,貼齊檢查等於沒跑"
 
 
 # ---------------------------------------------------------------------------

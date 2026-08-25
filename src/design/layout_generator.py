@@ -920,7 +920,10 @@ def _generate_house_at(brief: HouseBrief, margin: float) -> FloorPlanSpec:
                        (brief.site_width, brief.site_depth), (0, brief.site_depth)],
         setback=brief.setback,
         x_spacings=[grid_x[i + 1] - grid_x[i] for i in range(nx)],
-        y_spacings=[ds, dn],
+        # ⚠️ 與 _house_frame_at 是**兩個入口**(單層走這支、多層走那支),
+        #    改一邊會漏掉另一邊 —— 實測就是這樣漏過一次。
+        y_spacings=([ds, dn] if ds + dn > BAY_SPAN_LIMITS[1] + 1e-6
+                    else [ds + dn]),
         grid_origin=(bx0, by0),
         column_size=col,
         walls=walls, rooms=rooms, doors=doors, windows=windows, fixtures=fixtures,
@@ -1893,6 +1896,14 @@ def _house_frame_at(brief: HouseBrief, margin: float) -> SimpleNamespace:
     # 對齊(check_column_alignment 照過)。
     s_div = brief.column_size / 2 - INT / 2         # 往北推、南面貼分界牆南皮
     div_rows = [yd] + ([yn] if has_patio else [])   # 帶分界牆的 y(天井時兩條)
+    # ⚠️ 進深的柱線以前**一律**撿南北帶分界線 → 8.45m 深被切成 [4.25, 4.2],
+    #    兩跨都遠低於 6m 經濟下緣,白白多一整排柱和梁。進深在經濟跨度上限(9m)
+    #    以內就整排拿掉:分界牆照樣是牆,只是牆裡不再站柱(使用者 2026-08-21
+    #    定調「跨數越少越好」)。
+    #    ⚠️ 這招只對 Y 安全:拿掉柱不會有人凸進房間。X 方向不能照做 —— 那邊
+    #    等分會讓柱線離開豎牆,柱角就凸進房間了(實測 42 條測試倒)。
+    if not has_patio and (by1 - by0) <= BAY_SPAN_LIMITS[1] + 1e-6:
+        div_rows = []
     y_axes = [by0] + div_rows + [by1]
 
     def _tuck(x: float, y: float) -> Point:
@@ -1907,7 +1918,9 @@ def _house_frame_at(brief: HouseBrief, margin: float) -> SimpleNamespace:
                        (0, brief.site_depth)],
         setback=brief.setback,
         x_spacings=[grid_x[i + 1] - grid_x[i] for i in range(len(grid_x) - 1)],
-        y_spacings=[ds, dp, dn] if has_patio else [ds, dn],
+        # y_spacings 要跟上面的 y_axes 一致(畫軸線/標尺寸用的)。
+        y_spacings=([ds, dp, dn] if has_patio
+                    else ([ds, dn] if div_rows else [ds + dn])),
         grid_origin=(bx0, by0),
         column_size=brief.column_size,
         column_centers=column_centers,
