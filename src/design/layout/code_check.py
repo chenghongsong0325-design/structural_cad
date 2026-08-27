@@ -52,6 +52,15 @@ MIN_BEDROOM_SIDE = 1800.0       # 臥室最短邊(擺得下床)
 # 需要採光/通風的「居室」(廚房、浴廁、走道、儲藏、豎井不在此列)。
 HABITABLE_KINDS = {"living", "dining", "bedroom", "master_bedroom", "study",
                    "elder_room"}
+
+# §41:居室的採光開口不一定要開在建築外緣 —— 開向**天井/內庭**的窗一樣算採光,
+# 這正是連棟街屋中段唯一的採光來源(左右是共同壁,只有前後兩端能對外)。以前
+# `_is_exterior` 只認建築外緣,等於「天井開了窗也不算」,天井就完全沒有意義。
+# ⚠️ 但天井不能無限小 —— 一條 30cm 的縫採不到光。真正的 §41 有一套隨建築高度
+#    變化的最小尺寸公式(還牽涉遮蔽角),**本專案未實作**,這裡用一組保守的
+#    下限代替:短邊 ≥1.5m 且面積 ≥3㎡ 才算數。這是**簡化**,不是法規檢討。
+PATIO_MIN_SIDE = 1500.0
+PATIO_MIN_AREA_M2 = 3.0
 EDGE_TOL = 60.0
 
 
@@ -131,6 +140,37 @@ def _is_exterior(wall, env) -> bool:
     return abs(sy - env[1]) < EDGE_TOL or abs(sy - env[3]) < EDGE_TOL
 
 
+def daylight_patios(spec) -> list:
+    """這一層裡「大到可以當採光來源」的天井(→ Polygon 清單)。
+
+    太小的天井不算(見 PATIO_MIN_SIDE / PATIO_MIN_AREA_M2 的說明)。"""
+    out = []
+    for room in spec.rooms:
+        if room.kind != "patio":
+            continue
+        poly = Polygon(room.points)
+        x0, y0, x1, y1 = poly.bounds
+        if min(x1 - x0, y1 - y0) < PATIO_MIN_SIDE:
+            continue
+        if poly.area / 1e6 < PATIO_MIN_AREA_M2:
+            continue
+        out.append(poly)
+    return out
+
+
+def _faces_daylight(wall, env, patios) -> bool:
+    """這道牆是不是採光面:建築外緣,**或**貼著夠大的天井(§41)。"""
+    if _is_exterior(wall, env):
+        return True
+    if not patios:
+        return False
+    (sx, sy), (ex, ey) = wall.start, wall.end
+    mx, my = (sx + ex) / 2.0, (sy + ey) / 2.0
+    probes = [Point(mx + dx, my + dy)
+              for dx, dy in ((250, 0), (-250, 0), (0, 250), (0, -250))]
+    return any(p.contains(q) for p in patios for q in probes)
+
+
 def _stair_dims(stair, floor_height: float):
     """→ (級高, 級深, 梯段淨寬, 平臺深);拿不到的回 None。"""
     tread = getattr(stair, "tread", None)
@@ -191,12 +231,13 @@ def check_code_floor(spec, env=None, level: int = 1, label: str = "",
                 f"平臺深 {landing:.0f}mm 小於梯段寬 {fw:.0f}mm"))
 
     # ② §40/§43 居室採光與通風(窗高用 1.2m 估算)
+    patios = daylight_patios(spec)          # §41:開向天井的窗一樣算採光
     for room in spec.rooms:
         if room.kind not in HABITABLE_KINDS:
             continue
         poly = Polygon(room.points)
         win_w = sum(op.width for w, op in _openings_on_room(spec, poly, "window")
-                    if _is_exterior(w, env))
+                    if _faces_daylight(w, env, patios))
         # §40 講的是「採光用窗**或開口**」:通往陽台的落地玻璃門就是實務上最主要的
         # 採光開口(客廳落地窗)。不算的話,4m 面寬的套房北牆要同時塞 1.9m 的窗與
         # 0.9m 的門,只剩 10cm 的牆垛 —— 那不是設計問題,是判準漏了一項。

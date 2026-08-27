@@ -111,6 +111,9 @@ class Door:
     """
 
     sliding: bool = False   # 橫拉門:門扇沿牆滑開,平面不畫開門弧(門前空間不足時用)
+    # sliding 門扇旁邊註記的字。捲門(車庫)平面上也是「沿牆滑開、不畫弧」的畫法,
+    # 但圖上不能寫「拉門」——看圖的師傅要知道那是往上捲的鐵捲門。
+    label: str = "拉門"
     hinge: str = "left"
     swing: str = "out"
     width: float | None = None
@@ -161,7 +164,7 @@ class Door:
 
 
     def _place_sliding(self, msp, wall: Wall, opening: Opening, layers: dict):
-        """橫拉門:門扇畫成貼著牆面、與洞口等寬的一條線 + 「拉門」字樣。"""
+        """橫拉門:門扇畫成貼著牆面、與洞口等寬的一條線 + `label` 字樣。"""
         import math
 
         d0, d1 = _opening_jambs(opening)
@@ -177,7 +180,7 @@ class Door:
         mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
         # ⚠️ 中文一定要指定 style="STRUCT":預設的 Standard 樣式用 txt.shx,沒有
         #    中文字形,AutoCAD 會把「拉門」畫成「??」(2026-08-03 在圖上看到)。
-        txt = msp.add_text("拉門", height=150,
+        txt = msp.add_text(self.label, height=150,
                            dxfattribs={"layer": layers.get("A-TEXT",
                                                            layers["A-DOOR"]),
                                        "style": "STRUCT"})

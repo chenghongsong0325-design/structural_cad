@@ -225,3 +225,42 @@ def test_narrow_doors_clear_of_columns(bw, bd):
             if hit > SWING_OVERLAP_TOL:
                 bad.append((lb, round(hit / 1e6, 3)))
     assert not bad, f"這些門被柱擋住:{bad}"
+
+
+def test_swing_obstacles_builds_wall_bodies_once():
+    """★★ `_swing_obstacles` 不得「每檢查一道牆就把全部牆體重算一次」。
+
+    舊寫法在迴圈裡呼叫 `_wall_bodies(spec)`(它一次會做出**全部**牆的實體),
+    再從結果裡只拿第 i 個 —— N 道牆就做了 N×N 個 buffer,其中 N²−N 個當場丟掉。
+    一層樓約 50 道牆 → 每檢查一扇門就白算 2400 次 buffer,而修門會對每扇門
+    反覆檢查。這條釘住「算一次就好」,順便釘住**內容不能變**(除了自己那道牆,
+    其餘全在)。
+    """
+    from src.design.layout import door_rules as dr
+
+    spec = generate_narrow_building(5000.0, 12000.0, floors=1)[0][1]
+    wall = next(w for w in spec.walls
+                if any(op.kind == "door" for op in w.openings))
+    op = next(o for o in wall.openings if o.kind == "door")
+
+    calls = {"n": 0}
+    real = dr._wall_bodies
+
+    def counted(sp):
+        calls["n"] += 1
+        return real(sp)
+
+    dr._wall_bodies = counted
+    try:
+        bodies = dr._swing_obstacles(spec, wall, op)
+    finally:
+        dr._wall_bodies = real
+
+    assert calls["n"] == 1, (
+        f"_wall_bodies 被呼叫 {calls['n']} 次 —— 每道牆重算一次全部牆體")
+
+    # 內容:自己那道牆除外,其餘牆體一個都不能少(用面積比對,不比物件identity)
+    want = [b.area for w, b in zip(spec.walls, real(spec)) if w is not wall]
+    got = [b.area for b in bodies]
+    for a in want:
+        assert any(abs(a - g) < 1.0 for g in got), "少了某道牆的實體"

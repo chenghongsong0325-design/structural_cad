@@ -126,7 +126,11 @@ def _crowded_pairs(spec):
 def test_rule_pipeline_has_no_crowded_labels(w, d, floors):
     brief = BuildingBrief(
         typical=HouseBrief(site_width=w * 1000, site_depth=d * 1000,
-                           bedrooms=3, setback=0, seed=0),
+                           bedrooms=3, setback=0, seed=0,
+                           # ⚠️ 這是**建築物**尺寸(setback=0 的老慣用法)。不明講
+                           #    的話「建築 7×12」會被當成「基地 7×12」→ 套建蔽率
+                           #    → 建築 7×7.2m → 低於下限 raise(見 zoning.py)。
+                           dimension_basis="building"),
         floors=floors, differentiated=True)
     for f in generate_building_auto(brief).floors:
         bad = _crowded_pairs(f.spec)
@@ -140,3 +144,74 @@ def test_ai_pipeline_has_no_crowded_labels(w, d):
             GRAPH, w, d, setback=0, rng=random.Random(7)):
         bad = _crowded_pairs(spec)
         assert not bad, f"{w}x{d} {label} 這些字黏在一起:{bad}"
+
+
+# ---------------------------------------------------------------------------
+# 字不只會疊到字,也會疊到線(2026-08-21)
+# ---------------------------------------------------------------------------
+def _doc():
+    import ezdxf
+    d = ezdxf.new(setup=True)
+    for name in ("WALL", "OTHER", "TEXT"):
+        if name not in d.layers:
+            d.layers.add(name)
+    return d, d.modelspace()
+
+
+def test_occupy_lines_把多段線逐段拆開() -> None:
+    """★ 一條封閉多段線**不能**用整條的外接框登記。
+
+    ⚠️ 這是實際踩過的坑:牆體是一條封閉多段線,它的外接框就是整棟建築 ——
+    一登記下去整張圖都成了障礙物,10 間房全部判「髒」、一組都挪不動。
+    「外接框略大比較安全」這個直覺對短線段成立,對大輪廓完全不成立。
+    """
+    from src.drafting.label_space import LabelSpace
+
+    d, msp = _doc()
+    msp.add_lwpolyline([(0, 0), (10000, 0), (10000, 10000), (0, 10000)],
+                       close=True, dxfattribs={"layer": "WALL"})
+    sp = LabelSpace()
+    assert sp.occupy_lines(msp) == 4                 # 四邊各一段,不是一整框
+    # 正中央(離四邊都很遠)必須是乾淨的 —— 用整框登記的話這裡會是髒的
+    assert sp.is_clear((4000.0, 4000.0, 6000.0, 6000.0))
+    assert not sp.is_clear((-100.0, 4000.0, 100.0, 6000.0))   # 壓在左邊那道線上
+
+
+def test_occupy_lines_只認會蓋住字的圖層() -> None:
+    """尺寸線與軸線畫在圖外圍,算進來會讓室名無處可去。"""
+    from src.drafting.label_space import LabelSpace
+
+    d, msp = _doc()
+    d.layers.add("DIM")
+    msp.add_line((0, 0), (10000, 0), dxfattribs={"layer": "DIM"})
+    assert LabelSpace().occupy_lines(msp) == 0
+
+
+def test_relax_room_labels_讓開障礙物但不出房間() -> None:
+    """★ 室名整組讓開線條;房間小到放不下時維持原位(少一個室名比放錯位置嚴重)。"""
+    from src.drafting.label_space import LabelSpace, relax_room_labels
+    from src.drafting.room import Room, draw_room_label
+
+    # 大房間:形心處橫著一條線(當作沙發),旁邊有空地 → 應該挪得動
+    big = Room("客廳", [(0, 0), (8000, 0), (8000, 8000), (0, 8000)])
+    d, msp = _doc()
+    ents = draw_room_label(msp, big, "TEXT", text_height=250)
+    before = tuple(ents[0].dxf.align_point)
+    msp.add_line((2000, 4000), (6000, 4000), dxfattribs={"layer": "OTHER"})
+    sp = LabelSpace()
+    sp.occupy_lines(msp)
+    assert relax_room_labels(msp, [(big, ents)], sp, text_height=250) == 1
+    assert tuple(ents[0].dxf.align_point) != before      # 真的挪了
+    assert ents[0].dxf.align_point.y != before[1] or \
+        ents[0].dxf.align_point.x != before[0]
+
+    # 小房間:整間都被線蓋住,挪不出去 → 不動
+    tiny = Room("管道間", [(0, 0), (900, 0), (900, 700), (0, 700)])
+    d2, msp2 = _doc()
+    ents2 = draw_room_label(msp2, tiny, "TEXT", text_height=250)
+    kept = tuple(ents2[0].dxf.align_point)
+    msp2.add_line((0, 350), (900, 350), dxfattribs={"layer": "OTHER"})
+    sp2 = LabelSpace()
+    sp2.occupy_lines(msp2)
+    assert relax_room_labels(msp2, [(tiny, ents2)], sp2, text_height=250) == 0
+    assert tuple(ents2[0].dxf.align_point) == kept       # 原位不動

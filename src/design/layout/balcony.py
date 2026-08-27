@@ -333,8 +333,13 @@ def add_balconies(spec, level: int, *, sides=SIDES, env=None) -> BalconyReport:
             if pos is None:
                 continue
             wall.openings.append(Opening(pos, door_w, "door"))
-            # 採光讓路:門吃掉牆之後,這間房還開得出 §40 要求的窗嗎?
-            if _daylight_capacity(spec, room, env) + 1.0 >= _need_window_width(room):
+            # 採光讓路:門吃掉牆之後,這間房還開得出 §40 差額的窗嗎?
+            # ⚠️ 要**扣掉落地門自己**:§40 講的是「採光用窗**或開口**」,通往陽台
+            #    的落地玻璃門就是開口,`code_check` 就是這樣算的。這裡以前只算窗,
+            #    等於用比關卡更嚴的尺擋掉自己的陽台 —— 同一件事兩個地方兩把尺,
+            #    實測 7×15m 的臥室差 30mm 就被判「放了門就開不滿窗」,其實合格。
+            need = _need_window_width(room) - door_w
+            if _daylight_capacity(spec, room, env) + 1.0 >= need:
                 chosen = (pos, door_w)
                 break
             wall.openings.pop()

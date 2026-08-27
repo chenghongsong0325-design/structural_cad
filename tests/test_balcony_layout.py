@@ -158,8 +158,21 @@ def test_balcony_door_counts_as_daylight_opening():
 
 
 # ── 加了陽台之後,兩道關卡仍全過 ────────────────────────────────────────────
-@pytest.mark.parametrize("bw", [3500.0, 5000.0, 7000.0])
-@pytest.mark.parametrize("bd", [10000.0, 12000.0, 15000.0])
+def test_balcony_door_counts_toward_daylight():
+    """★★ §40 講的是「採光用窗**或開口**」—— 通往陽台的落地玻璃門就是開口,
+    `code_check` 一直是這樣算的。擺陽台的那支以前只算窗,等於**用比關卡更嚴的
+    尺擋掉自己的陽台**:7×15m 的臥室差 30mm 就被判「放了門就開不滿窗」。
+
+    同一件事不能兩個地方兩把尺 —— 這條測試釘住深房間仍配得出陽台。"""
+    floors = generate_narrow_building(7000.0, 15000.0, floors=3)
+    plan, code = check_building(floors), check_code_building(floors)
+    assert plan.ok, [(i.code, i.floor, i.room) for i in plan.errors]
+    assert code.ok, [(i.code, i.floor, i.room) for i in code.violations]
+    assert sum(len(s.balconies) for _l, s in floors) >= 2
+
+
+@pytest.mark.parametrize("bw", [3500.0, 5000.0, 7000.0, 8000.0])
+@pytest.mark.parametrize("bd", [10000.0, 12000.0, 15000.0, 18000.0])
 @pytest.mark.slow
 def test_narrow_domain_still_passes_both_gates(bw, bd):
     """★★ 窄透天定義域:配了陽台之後 plan_check + code_check 仍零錯誤。"""

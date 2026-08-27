@@ -154,6 +154,37 @@ def draw_opening_marks(msp, spec, layers: dict[str, str],
 
 
 # ---------------------------------------------------------------------------
+# 基地註記(基地 / 建築 / 建蔽率 / 前後院)
+# ---------------------------------------------------------------------------
+LOT_NOTE_H = 260.0              # 基地註記字高(比室名小、比門窗編號大)
+LOT_NOTE_GAP = 900.0            # 註記與地界線下緣的距離
+LOT_NOTE_LINE = 380.0           # 行距
+
+
+def draw_lot_note(msp, spec, layers: dict[str, str]) -> int:
+    """把 `spec.lot_note` 寫在地界線**下方**(左對齊地界線左緣)。回畫了幾行。
+
+    為什麼要有這段字:圖上只看得到建築尺寸的話,人會以為「基地尺寸被無視了」;
+    而「這塊地為什麼只蓋這麼深」的答案是**建蔽率**,不寫出來沒有人看得出來
+    (使用者 2026-08-25 指出參考圖的建蔽率其實高達 93%,那是舊市區街屋才有的
+    密度 —— 這種判斷要看得到數字才做得出來)。
+
+    ⚠️ 放在地界線外側,不進圖內,才不會跟室名/家具搶位置。
+    """
+    xs = [p[0] for p in spec.site_boundary]
+    ys = [p[1] for p in spec.site_boundary]
+    x0, y0 = min(xs), min(ys)
+    lines = [ln for ln in str(spec.lot_note).splitlines() if ln.strip()]
+    for i, line in enumerate(lines):
+        msp.add_text(
+            line, height=LOT_NOTE_H,
+            dxfattribs={"layer": layers["A-TEXT"], "style": "STRUCT"},
+        ).set_placement((x0, y0 - LOT_NOTE_GAP - i * LOT_NOTE_LINE),
+                        align=TextEntityAlignment.TOP_LEFT)
+    return len(lines)
+
+
+# ---------------------------------------------------------------------------
 # 剖切符號
 # ---------------------------------------------------------------------------
 def draw_section_mark(msp, spec, layers: dict[str, str], *, label: str = "A",

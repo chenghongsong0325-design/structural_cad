@@ -237,6 +237,14 @@ class HouseBrief:
                                           # (building)尺寸;AI 設計師模式據此換算建築
                                           # 尺寸(基地=共壁不退側院、建築=直接用),
                                           # 一般路徑不讀此欄(維持原行為)
+    # ── 都市計畫(連棟街屋才用得到,見 design/zoning.py)──────────────────
+    zone: Optional[str] = None            # 使用分區(住宅區/商業區/工業區);
+                                          # 決定法定建蔽率上限 → 決定建築進深
+    coverage: Optional[float] = None      # 直接指定建蔽率(0~1)。有都市計畫書的
+                                          # 實際數字時用它,比分區的常見值可信
+    patio: bool = False                   # 中段開天井(連棟街屋常見)。⚠️ 它**不會**
+                                          # 讓你蓋更深(實測 0.0m,見 narrow_house),
+                                          # 是拿每層約 3㎡ 換浴廁/樓梯間有自然採光
 
 
 @dataclass
@@ -3017,7 +3025,8 @@ def _mirror_spec(spec: FloorPlanSpec, mx: bool, my: bool) -> FloorPlanSpec:
                                 width=dp.door.width,
                                 # 橫拉門要跟著翻過去,否則鏡射後又變回平開門,
                                 # 原本「門前不夠開弧線」才改拉門的修復就白做了。
-                                sliding=dp.door.sliding))
+                                sliding=dp.door.sliding,
+                                label=dp.door.label))
              for dp in spec.doors]
     windows = [WindowPlacement(wp.wall_index, wp.opening_index,
                                Window(lines=wp.window.lines, width=wp.window.width))

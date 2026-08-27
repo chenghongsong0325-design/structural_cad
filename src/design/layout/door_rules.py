@@ -178,11 +178,10 @@ def _swing_sector(wall, op, door) -> Polygon:
 def _swing_obstacles(spec, wall, op):
     """會擋住這扇門的東西:牆體(自己這道除外)、柱、家具、其他門的開啟弧線。"""
     from src.design.collision.geometry import fixture_obstacles
-    bodies = []
-    for i, w in enumerate(spec.walls):
-        if w is wall:
-            continue
-        bodies.append(_wall_bodies(spec)[i])
+    # ⚠️ `_wall_bodies` 一次做出**全部**牆的實體。以前這段寫在迴圈裡、每圈只取
+    #    第 i 個 —— N 道牆就做了 N×N 個 buffer,丟掉 N²−N 個。修門會對每扇門反覆
+    #    呼叫這支,白算的量很可觀。算一次、再篩掉自己那道就好(結果完全相同)。
+    bodies = [b for w, b in zip(spec.walls, _wall_bodies(spec)) if w is not wall]
     # ⚠️ 以前這裡寫 `spec.column_centers or []` —— 但 `column_centers is None`
     #    的意思是「柱放在每個軸網交點」(AI 產線與窄/淺透天都用這種存法),
     #    `None or []` 會變成空清單 → **這條規則對那幾條產線從來沒有生效過**。

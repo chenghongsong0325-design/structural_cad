@@ -66,6 +66,7 @@ from src.drafting.gridlines import (
 from src.drafting.members import Column, column_corners, draw_column
 from src.drafting.annotations import (
     draw_floor_label,
+    draw_lot_note,
     draw_opening_marks,
     draw_section_mark,
     draw_wall_notes,
@@ -85,7 +86,8 @@ from src.drafting.titleblock import (
     insert_title_block,
 )
 from src.drafting.wall import Wall
-from src.drafting.label_space import LabelSpace, relax_flight_labels
+from src.drafting.label_space import (
+    LabelSpace, relax_flight_labels, relax_room_labels)
 from src.drafting.wall_join import draw_wall_hatch, draw_walls_joined
 
 Point = tuple[float, float]
@@ -179,6 +181,11 @@ class FloorPlanSpec:
     #      * 剖面圖是另一張圖,平面上沒有這個符號,看圖的人對不出「從哪裡剖」。
     opening_marks: bool = True
     wall_notes: bool = True
+    # 基地註記(2026-08-25):連棟街屋的「基地 / 建築 / 建蔽率 / 前後院」一段字,
+    # 畫在地界線下方。⚠️ 使用者只看到建築尺寸時會以為基地尺寸被無視 —— 而且
+    # 「這塊地為什麼只蓋這麼深」的答案就是建蔽率,不寫在圖上沒人看得出來。
+    # None = 不畫(獨棟/直接給建築尺寸的案子沒有這段推導)。
+    lot_note: Optional[str] = None
     section_mark: Optional[str] = None
     section_mark_axis: str = "x"        # 對應 section.draw_section 的 axis
 
@@ -277,7 +284,13 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
     msp.add_lwpolyline(spec.site_boundary, close=True, dxfattribs={"layer": layers["BORDER"]})
 
     # (2) 建築線(ARCH,CENTER):地界線退縮 setback。
-    msp.add_lwpolyline(building_line(spec), close=True, dxfattribs={"layer": layers["ARCH"]})
+    #     ⚠️ 連棟街屋 setback=0(共同壁中心線就是地界線),這條會與地界線重合 ——
+    #        那是對的:街屋的前後院是**建蔽率**吃剩的法定空地,不是建築線退縮。
+    if spec.setback > 1e-6:
+        msp.add_lwpolyline(building_line(spec), close=True,
+                           dxfattribs={"layer": layers["ARCH"]})
+    if spec.lot_note:
+        draw_lot_note(msp, spec, layers)
 
     # (3) 軸網 + 尺寸標註。
     #     開尺寸鏈時:編號圈退到最外層尺寸(2800)之外,並用 dim_chains 標四邊三層;
@@ -328,9 +341,15 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
         wp.window.place_in_wall(msp, wall, wall.openings[wp.opening_index], layers)
 
     # (7) 房間標註(名稱 + 面積)+ 房型帶框標籤(有 code 的房間)。
+    #     ⚠️ 這裡畫的位置只是**起點**:樓梯踏step與家具要到 (7.5)、(7.7) 才畫,
+    #     現在還看不到它們。畫完整張圖之後在 (8.5) 讓這些字整組讓開
+    #     (見 label_space.relax_room_labels)。
+    label_groups = []
     for room in spec.rooms:
-        draw_room_label(msp, room, layers["A-TEXT"], text_height=spec.room_text_height)
-        draw_room_tag(msp, room, layers["A-TEXT"])
+        ents = list(draw_room_label(msp, room, layers["A-TEXT"],
+                                    text_height=spec.room_text_height) or [])
+        ents += list(draw_room_tag(msp, room, layers["A-TEXT"]) or [])
+        label_groups.append((room, ents))
 
     # (7.5) 樓梯(踏步線/折斷線/方向箭頭,HANDRAIL 層;直梯或折返梯)。
     for stair in spec.stairs:
@@ -367,6 +386,10 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
     #       字全部登記進 LabelSpace,再讓這兩種從候選位置裡挑沒撞到的那個。
     #       (使用者 2026-08-19:「字跟字不要黏在一起」)
     space = LabelSpace()
+    # ⚠️ 除了字,**線也會把字蓋掉**(樓梯踏step、家具、牆體)。2026-08-19 只修了
+    #    字疊字,實測 6 層圖仍有 28 段字壓在線上 —— 最大宗是「樓梯間 / 面積 /
+    #    房號」三段一起坐在踏step上。所以先把線登記成障礙物。
+    space.occupy_lines(msp)
     # 樓梯的 UP/DN 也可以動(只要還落在梯段上就讀得懂),先讓它躲開室名與面積,
     # 再拿同一本登記簿去排門窗編號與牆厚引線。
     relax_flight_labels(msp, space)
@@ -374,6 +397,14 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
         draw_opening_marks(msp, spec, layers, space)
     if spec.wall_notes:
         draw_wall_notes(msp, spec, layers, space)
+    # 室名/面積/代碼框整組讓開線條(只在房間內挪;挪不動就維持原位)。
+    #
+    # ⚠️ **一定要排在門窗編號之後。** 反過來的話室名先挪走、把編號原本要用的位置
+    #    占掉,編號挑不到候選就退回原位,結果變成「樓梯 10.9㎡」黏著「D1」——
+    #    修好了字疊線、卻製造出字疊字(實測 test_ai_pipeline_has_no_crowded_labels
+    #    當場變紅)。室名的可去之處最多,所以讓它最後挑。
+    relax_room_labels(msp, label_groups, space,
+                      text_height=spec.room_text_height)
     if spec.section_mark:
         draw_section_mark(msp, spec, layers, label=spec.section_mark,
                           axis=spec.section_mark_axis)

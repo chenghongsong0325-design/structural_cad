@@ -52,7 +52,11 @@ def test_random_scan_has_no_hard_errors():
         brief = BuildingBrief(
             typical=HouseBrief(site_width=c["w"], site_depth=c["d"],
                                bedrooms=c["bedrooms"], setback=0,
-                               seed=c["seed"]),
+                               seed=c["seed"],
+                               # ⚠️ 掃描的尺寸是**建築物**尺寸(docstring 已註明)。
+                               #    不明講會被當成連棟街屋基地再套一次建蔽率,
+                               #    窄的那批就整批 raise(見 design/zoning.py)。
+                               dimension_basis="building"),
             floors=c["floors"], differentiated=c["floors"] > 1)
         try:
             building = generate_building_auto(brief)

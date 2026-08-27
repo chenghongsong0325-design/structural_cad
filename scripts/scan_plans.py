@@ -43,7 +43,11 @@ def run_case(case: dict) -> dict:
     brief = BuildingBrief(
         typical=HouseBrief(
             site_width=case["w"], site_depth=case["d"],
-            bedrooms=case["bedrooms"], setback=0, seed=case["seed"]),
+            bedrooms=case["bedrooms"], setback=0, seed=case["seed"],
+            # ⚠️ 掃描的尺寸一律是**建築物**尺寸(見 skill 說明),不是基地 ——
+            #    不講明的話會被當成連棟街屋基地再套一次建蔽率(design/zoning.py),
+            #    掃「建築 5×15」會變成「基地 5×15 → 建築 5×9」直接 raise。
+            dimension_basis="building"),
         floors=case["floors"],
         # 跟 nl_parser 一致:透天只要多層就走層別分化(1F 公共層/2F+ 臥室層)。
         # 不開的話 2F 會整層複製 1F、連大門一起 → 掃出來全是假的 entry_upstairs。

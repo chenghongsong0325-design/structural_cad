@@ -199,12 +199,39 @@ def _narrow_to_building(named_floors, floor_height: float) -> BuildingSpec:
     return building
 
 
+def _townhouse_lot(house, min_w: float, max_w: float):
+    """這個需求是不是「連棟街屋基地」?是的話回 `zoning.TownhouseLot`,否則 None。
+
+    判準是**面寬**:3.5~8m 的基地退完側院就不成立(5m 退掉左右各 2m 只剩 1m),
+    在台灣只可能是與鄰戶共壁的連棟街屋。再寬的基地兩種都可能,維持原本的獨棟
+    規則(四面退縮),免得既有尺寸的行為整批改變。
+
+    ⚠️ 只有使用者講的是**基地**尺寸(`dimension_basis == "site"`)才適用。
+       講「建築物 7×12」的人已經自己扣好了,再套建蔽率會扣兩次。
+    """
+    if getattr(house, "dimension_basis", "site") != "site":
+        return None
+    if not min_w <= house.site_width <= max_w:
+        return None
+    from src.design.zoning import townhouse_envelope
+
+    return townhouse_envelope(house.site_width, house.site_depth,
+                              zone=house.zone, coverage=house.coverage)
+
+
 def generate_building_auto(brief: BuildingBrief) -> BuildingSpec:
-    """依建築面寬自動選骨架:**窄面寬單戶透天**(建築寬 3.5~7m)走 narrow_house
-    的前後串聯+中段天井+單樓梯骨架;其餘走既有兩帶式 generate_building。
+    """依建築面寬自動選骨架:**窄面寬單戶透天**(建築寬 3.5~8m)走 narrow_house
+    的前後串聯+中段核+單樓梯骨架;其餘走既有兩帶式 generate_building。
 
     ⚠️ 只有單戶透天(HouseBrief)才有窄面寬版;窄透天暫不含地下室(basements 忽略)。
-    這是「建築物 7×12」這類窄基地能生得出來的入口。"""
+    這是「建築物 7×12」這類窄基地能生得出來的入口。
+
+    ⚠️ **基地窄到只可能是連棟街屋時,用的是另一套基地→建築規則**(見下方
+       `_townhouse_lot` 與 `design/zoning.py`):街屋左右與鄰戶共壁、**側邊不
+       退縮**,建築進深由**建蔽率**決定。四面各退 2m 是**獨棟**的規則,拿它去
+       算 5m 寬的街屋基地會得到「建築 1m 寬」然後直接 raise —— 那正是使用者
+       2026-08-25 拿真實透天基地(5×20m)進來時撞到的。
+    """
     if isinstance(brief.typical, HouseBrief):
         setback = brief.typical.setback
         bw = brief.typical.site_width - 2 * setback
@@ -215,6 +242,18 @@ def generate_building_auto(brief: BuildingBrief) -> BuildingSpec:
             MIN_WIDTH,
             generate_narrow_building,
         )
+        lot = _townhouse_lot(brief.typical, MIN_WIDTH, MAX_WIDTH)
+        # 窄透天的 `car_spaces` 是**1F 車庫**(前段整段停車、捲門臨路),不是
+        # 兩帶式那種地下車庫 —— 4~8m 面寬的透天挖地下室不合成本,真實街屋一律
+        # 把車停在一樓前段。
+        want_garage = brief.typical.car_spaces > 0
+        if lot is not None:
+            floors = generate_narrow_building(
+                lot.building_w, brief.typical.site_depth,
+                floors=max(1, brief.floors),
+                bedrooms=brief.typical.bedrooms, seed=brief.typical.seed,
+                lot=lot, patio=brief.typical.patio, garage=want_garage)
+            return _narrow_to_building(floors, brief.floor_height)
         from src.design.layout.narrow_house import min_depth_for
         from src.design.layout.shallow_house import (
             MAX_WIDTH as SH_MAX_W,
@@ -233,7 +272,8 @@ def generate_building_auto(brief: BuildingBrief) -> BuildingSpec:
             # 同一個需求換個 seed 就是**另一種格局**,不會每次都長一樣。
             floors = generate_narrow_building(
                 bw, bd, floors=max(1, brief.floors),
-                bedrooms=brief.typical.bedrooms, seed=brief.typical.seed)
+                bedrooms=brief.typical.bedrooms, seed=brief.typical.seed,
+                patio=brief.typical.patio, garage=want_garage)
             return _narrow_to_building(floors, brief.floor_height)
     return generate_building(brief)
 

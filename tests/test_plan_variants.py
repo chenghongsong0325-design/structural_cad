@@ -98,13 +98,26 @@ def test_options_are_valid_and_different():
 
 
 def test_distance_and_signature():
-    """指紋比對:同一張圖距離 0,鏡射後距離明顯 >0。"""
-    a = generate_narrow_building(W, D, floors=1)[0][1]
+    """指紋比對:同一張圖距離 0,鏡射後距離明顯 >0。
+
+    ⚠️ 拿**分間版**(open_kitchen=False)來比。開放餐廚是一間通長的房間,
+       左右鏡射它等於沒動 —— 會動的只剩中段核,距離自然小(實測 0.19)。
+       那不是指紋失效,是「通長房間左右對稱」的事實,所以開放版另外用
+       「>0 但較小」來釘,不是把門檻調鬆。"""
+    V = type(all_variants()[0])
+    a = generate_narrow_building(W, D, floors=1,
+                                 variant=V(open_kitchen=False))[0][1]
     b = generate_narrow_building(
-        W, D, floors=1, variant=type(all_variants()[0])(mirror=True))[0][1]
+        W, D, floors=1, variant=V(mirror=True, open_kitchen=False))[0][1]
     sa, sb = _signature(a, env_of(a)), _signature(b, env_of(b))
     assert _distance(sa, sa) == 0.0
     assert _distance(sa, sb) > 0.2
+
+    # 開放餐廚版:鏡射後差別較小,但仍看得出來(不能變成 0)。
+    c = generate_narrow_building(W, D, floors=1)[0][1]
+    d = generate_narrow_building(W, D, floors=1, variant=V(mirror=True))[0][1]
+    open_dist = _distance(_signature(c, env_of(c)), _signature(d, env_of(d)))
+    assert 0.0 < open_dist < _distance(sa, sb)
 
 
 def test_report_serialisable():

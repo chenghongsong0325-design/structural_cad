@@ -283,17 +283,22 @@ def draw_room_label(
     cx, cy = room.label_point
     half_gap = text_height * 0.8   # 放置點上下各半行距
 
-    msp.add_text(
+    name = msp.add_text(
         name_line,
         height=text_height,
         dxfattribs={"layer": layer, "style": style},
-    ).set_placement((cx, cy + half_gap), align=TextEntityAlignment.BOTTOM_CENTER)
+    )
+    name.set_placement((cx, cy + half_gap), align=TextEntityAlignment.BOTTOM_CENTER)
 
-    msp.add_text(
+    area = msp.add_text(
         area_line,
         height=text_height,
         dxfattribs={"layer": layer, "style": style},
-    ).set_placement((cx, cy - half_gap), align=TextEntityAlignment.TOP_CENTER)
+    )
+    area.set_placement((cx, cy - half_gap), align=TextEntityAlignment.TOP_CENTER)
+    # 回傳畫出來的實體:室名與面積是**一組**,事後要讓開樓梯踏step/家具時必須
+    # 整組一起挪(見 label_space.relax_room_labels),分開挪會拆散這兩行。
+    return [name, area]
 
 
 def draw_room_tag(
@@ -316,7 +321,7 @@ def draw_room_tag(
     room.code 為空時不畫(直接 return)。
     """
     if not room.code:
-        return
+        return []
     text = room.code
     cx, cy = room.label_point
     px, py = cx + offset[0], cy + offset[1]
@@ -325,15 +330,17 @@ def draw_room_tag(
     half_w = est_w / 2 + text_height * 0.5
     half_h = text_height * 0.9
 
-    msp.add_lwpolyline(
+    frame = msp.add_lwpolyline(
         [(px - half_w, py - half_h), (px + half_w, py - half_h),
          (px + half_w, py + half_h), (px - half_w, py + half_h)],
         close=True, dxfattribs={"layer": layer},
     )
-    msp.add_text(
+    code = msp.add_text(
         text, height=text_height,
         dxfattribs={"layer": layer, "style": "STRUCT"},
-    ).set_placement((px, py), align=TextEntityAlignment.MIDDLE_CENTER)
+    )
+    code.set_placement((px, py), align=TextEntityAlignment.MIDDLE_CENTER)
+    return [frame, code]
 
 
 # =============================================================================

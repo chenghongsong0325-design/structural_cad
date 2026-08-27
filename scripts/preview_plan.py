@@ -52,12 +52,32 @@ def main() -> int:
     ap.add_argument("--dpi", type=int, default=110, help="PNG 解析度")
     ap.add_argument("--lineweight", type=float, default=6,
                     help="線粗倍率(預設 6:牆不糊成一團,標註文字看得清楚)")
+    ap.add_argument("--site", action="store_true",
+                    help="尺寸改當**基地**尺寸(連棟街屋:面寬共壁不退縮,"
+                         "建築進深由建蔽率決定,剩下的是前後院)")
+    ap.add_argument("--zone", default=None,
+                    help="使用分區(住宅區/商業區/工業區),只在 --site 時有意義")
+    ap.add_argument("--coverage", type=float, default=None,
+                    help="直接指定建蔽率 0~1(比分區的常見值可信),同上")
+    ap.add_argument("--garage", action="store_true",
+                    help="1F 做車庫(前段整段停車 + 臨路捲門;客廳往上挪到 2F)。"
+                         "⚠️ 需要建築進深 ≥13.1m,面寬也要夠(3.5m 放不下)")
+    ap.add_argument("--patio", action="store_true",
+                    help="中段開天井(每層約 -3㎡,換浴廁/樓梯間有自然採光;"
+                         "⚠️ 不會讓建築蓋得更深,實測 0.0m)")
     args = ap.parse_args()
 
     brief = BuildingBrief(
         typical=HouseBrief(site_width=args.width * 1000,
                            site_depth=args.depth * 1000,
-                           bedrooms=args.bedrooms, setback=0, seed=args.seed),
+                           bedrooms=args.bedrooms, setback=0, seed=args.seed,
+                           # ⚠️ 預覽的尺寸**預設是建築物尺寸**,跟 scan_plans 同
+                           #    一套慣例;不講明會被當成基地再套一次建蔽率。
+                           #    --site 才切回基地基準(連棟街屋)。
+                           dimension_basis="site" if args.site else "building",
+                           zone=args.zone, coverage=args.coverage,
+                           patio=args.patio,
+                           car_spaces=1 if args.garage else 0),
         floors=args.floors,
         # 跟 nl_parser / scan_plans 一致:透天只要多層就走層別分化
         # (1F 公共層 / 2F+ 臥室層)。不開的話 2F 會整層複製 1F、連大門一起。

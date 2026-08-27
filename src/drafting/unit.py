@@ -158,7 +158,8 @@ def place_unit(
             Door(hinge=dp.door.hinge,
                  swing=_t_swing(mirrored, dp.door.swing),
                  width=dp.door.width,
-                 sliding=dp.door.sliding),      # 橫拉門(陽台落地門)要跟著翻
+                 sliding=dp.door.sliding,       # 橫拉門(陽台落地門)要跟著翻
+                 label=dp.door.label),
         ))
     for wp in unit.windows:
         target.windows.append(WindowPlacement(

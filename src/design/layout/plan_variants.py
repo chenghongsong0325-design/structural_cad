@@ -76,7 +76,8 @@ class PlanOption:
         v = self.variant
         return {
             "variant": {"mirror": v.mirror, "bath_north": v.bath_north,
-                        "rear_swap": v.rear_swap, "entry_frac": v.entry_frac},
+                        "open_kitchen": v.open_kitchen,
+                        "entry_frac": v.entry_frac},
             "labels": [lb for lb, _sp in self.floors],
             "n_issues": self.n_issues,
             "plan_check": self.plan.to_dict(),
@@ -118,7 +119,7 @@ class VariantReport:
                 f"挑出 {len(self.options)} 個方案(平均差異 {self.diversity:.0%})")
         body = [f"  方案{i + 1}:鏡射{'✓' if o.variant.mirror else '✗'} "
                 f"浴廁{'北' if o.variant.bath_north else '南'} "
-                f"後段{'廚房在西' if o.variant.rear_swap else '餐廳在西'} "
+                f"後段{'開放餐廚' if o.variant.open_kitchen else '餐廳|廚房'} "
                 f"大門{o.variant.entry_frac:.0%} → 待改 {o.n_issues} 項"
                 for i, o in enumerate(self.options)]
         return "\n".join([head, *body])
