@@ -219,14 +219,20 @@ def _suggestions(brief, building: BuildingSpec) -> list[dict]:
 def _ai_generate(brief_text: str, brief, client):
     """AI 設計師模式:跑混合式收斂管線 → (BuildingSpec, 額外回應欄位)。
 
-    LLM 自由設計房間關係圖 → 搜尋落實成對齊多層透天(核/柱/機電/家具)→ 挑毛病
-    回饋 Gemini 重設計 → 留 fitness 最高那版(design_loop.design_building)。
-    目前只做窄面寬透天(建築寬 5~7m);其餘尺寸請走一般模式。
+    **連棟透天走「選配版」**(`townhouse_options`):骨架是我們的透天骨架,LLM 只
+    在上面挑選項(哪一款核 / 幾層幾房 / 車庫 / 天井 / 鏡射 / 大門位置),照樣跑
+    「選→蓋→挑毛病→重選」的收斂迴圈。
+
+    ⚠️ 使用者 2026-08-28:「AI 做的圖不是正確的,不會分成這麼多的間格,AI 只要從
+       我做的格局稍加修改變更就好。」自由生關係圖那條路(`design_loop`)會把 7m
+       面寬切出兩間「客廳」加一間 0.5㎡ 管道間,不是真實街屋的樣子。骨架放不下的
+       尺寸(面寬 >8m)才退回原本的關係圖版。
     """
     from src.design.building_generator import _narrow_to_building
     from src.design.layout.design_loop import design_building
     from src.design.layout.graph_layout import (
         AI_MAX_WIDTH, AI_MIN_DEPTH, AI_MIN_WIDTH)
+    from src.design.layout.narrow_house import MIN_WIDTH
 
     t = brief.typical
     if not isinstance(t, HouseBrief):
@@ -240,23 +246,37 @@ def _ai_generate(brief_text: str, brief, client):
     else:
         bw = t.site_width                       # 共壁,無側院
         bd = t.site_depth - t.setback           # 前院退縮,後貼界
-    if not (AI_MIN_WIDTH <= bw <= AI_MAX_WIDTH and bd >= AI_MIN_DEPTH):
+    # ⚠️ 定義域是**兩條的聯集**:選配版走透天骨架(3.5~8m),關係圖版走 BSP
+    #    (5~30m)。只拿關係圖版的下限去擋,4~5m 的真實街屋(最常見的面寬)會
+    #    在這裡就被踢掉,永遠走不到選配版。
+    from src.design.layout import townhouse_options as topts
+    if not (topts.applicable(bw, bd)
+            or (AI_MIN_WIDTH <= bw <= AI_MAX_WIDTH and bd >= AI_MIN_DEPTH)):
         raise ValueError(
-            f"AI 設計師模式目前做透天(建築寬 {AI_MIN_WIDTH/1000:.0f}~"
+            f"AI 設計師模式目前做透天(建築寬 {MIN_WIDTH/1000:.1f}~"
             f"{AI_MAX_WIDTH/1000:.0f} 米、深 ≥{AI_MIN_DEPTH/1000:.0f} 米);你的建築約 "
             f"{bw/1000:.1f}×{bd/1000:.1f} 米,請關掉 AI 模式改用一般生成。")
 
-    best, history = design_building(brief_text, bw, bd, iterations=2, client=client)
-    building = _narrow_to_building(
-        [(lb, sp) for lb, sp, _s, _t in best["floors"]], brief.floor_height)
+    if topts.applicable(bw, bd):                # 連棟透天 → 在我們的骨架上選選項
+        best, history = topts.design_townhouse(brief_text, bw, bd,
+                                               iterations=2, client=client,
+                                               verbose=False)
+        fl = list(best["floors"])
+        env = None                              # 外框由 spec 自己推(建築會封頂)
+        style = best["options"]["core_style"]
+    else:                                       # 骨架放不下 → 原本的關係圖版
+        best, history = design_building(brief_text, bw, bd, iterations=2,
+                                        client=client)
+        fl = [(lb, sp) for lb, sp, _s, _t in best["floors"]]
+        from src.design.layout.design_loop import SETBACK as _SB
+        env = (_SB, _SB, _SB + bw, _SB + bd)
+        style = "graph"
+    building = _narrow_to_building(fl, brief.floor_height)
 
     # 圖面正確性檢查(硬規則):產線已在每層落實時把關,這裡再驗一次整棟並回報,
     # 讓使用者/我們看得到「這張圖過了哪些檢查」。
-    from src.design.layout.design_loop import SETBACK as _SB   # 落實時用的退縮
     from src.design.layout.code_check import check_code_building
     from src.design.layout.plan_check import check_building
-    env = (_SB, _SB, _SB + bw, _SB + bd)
-    fl = [(lb, sp) for lb, sp, _s, _t in best["floors"]]
     check = check_building(fl, env)
     code = check_code_building(fl, env)          # 法規尺寸(樓梯/採光…)
     from src.design.layout.balcony import balcony_report
@@ -271,6 +291,8 @@ def _ai_generate(brief_text: str, brief, client):
         "door_table": doors.to_dict(),
         "ai_iter": best["iter"],
         "ai_fitness": round(best["fitness"], 1),
+        "ai_core_style": style,                 # 選配版挑了哪一款核("graph"=關係圖版)
+        "ai_options": best.get("options"),      # 選配版:LLM 實際採用的那組選項
         "plan_check": check.to_dict(),          # 圖面檢查:ok / 錯誤數 / 警告數 / 明細
         "code_check": code.to_dict(),           # 法規檢查:建築技術規則尺寸
         "balconies": balcony_report(fl).to_dict(),   # 陽台清單(AI 版目前不配)
@@ -290,7 +312,10 @@ def _ai_applicable(brief) -> bool:
         bw, bd = t.site_width - 2 * t.setback, t.site_depth - 2 * t.setback
     else:
         bw, bd = t.site_width, t.site_depth - t.setback
-    return AI_MIN_WIDTH <= bw <= AI_MAX_WIDTH and bd >= AI_MIN_DEPTH
+    from src.design.layout import townhouse_options as topts
+    return (topts.applicable(bw, bd)                    # 選配版(透天骨架)
+            or (AI_MIN_WIDTH <= bw <= AI_MAX_WIDTH      # 關係圖版(BSP)
+                and bd >= AI_MIN_DEPTH))
 
 
 # 硬錯誤代碼 → 給使用者看的白話說明(圖面/法規/門與動線三道關卡共用)。
