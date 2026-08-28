@@ -99,6 +99,7 @@ FURNITURE_CONSTRAINTS: dict[str, FurnitureConstraint] = {
     "toilet": FurnitureConstraint("toilet", ANY_WALL, 500.0),
     "basin": FurnitureConstraint("basin", ANY_WALL, 550.0),
     "bathtub": FurnitureConstraint("bathtub", ANY_WALL, 600.0),
+    "shower": FurnitureConstraint("shower", ANY_WALL, 600.0),        # 進出/擦身
     # 臥室:床頭/櫃背靠牆
     "bed_single": FurnitureConstraint("bed_single", ANY_WALL, 700.0),
     "bed_double": FurnitureConstraint("bed_double", ANY_WALL, 700.0),
@@ -110,7 +111,10 @@ FURNITURE_CONSTRAINTS: dict[str, FurnitureConstraint] = {
     "tv_cabinet": FurnitureConstraint("tv_cabinet", ANY_WALL, 500.0),
     # 玄關/書房/廚房:櫃背靠牆
     "shoe_cabinet": FurnitureConstraint("shoe_cabinet", ANY_WALL, 500.0),
+    "closet_rail": FurnitureConstraint("closet_rail", ANY_WALL, 600.0),  # 取衣
     "desk": FurnitureConstraint("desk", ANY_WALL, 750.0),           # 椅子拉開
+    # 靠牆餐桌(窄餐廳用;椅子在兩端,拉開的方向沿著牆,不必留 750)
+    "table2": FurnitureConstraint("table2", ANY_WALL, 600.0),
     "bookshelf": FurnitureConstraint("bookshelf", ANY_WALL, 750.0),  # 取書/走道
     "fridge": FurnitureConstraint("fridge", ANY_WALL, 750.0),        # 開門+站立
     # 自由站立(不靠牆):餐桌四面拉椅、茶几/吧檯椅、汽車進出

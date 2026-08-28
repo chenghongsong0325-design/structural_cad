@@ -245,6 +245,12 @@ class HouseBrief:
     patio: bool = False                   # 中段開天井(連棟街屋常見)。⚠️ 它**不會**
                                           # 讓你蓋更深(實測 0.0m,見 narrow_house),
                                           # 是拿每層約 3㎡ 換浴廁/樓梯間有自然採光
+    # 中段核的排法(只有窄透天骨架看它):
+    #   "default" = 浴廁|樓梯|走道(走道貼界牆)
+    #   "ref"     = 使用者 2026-08-28 給的參考平面「方案 B」:樓梯**橫置**在核的
+    #               南半、天井與廁所並排在北半、廁所的門直接開在走道上
+    # 排不下時自動退回 default —— 加一個排法不該讓原本生得出來的案子生不出來。
+    core_style: str = "default"
 
 
 @dataclass
@@ -954,6 +960,8 @@ def _generate_house_at(brief: HouseBrief, margin: float) -> FloorPlanSpec:
     _ensure_room_windows(spec, ex0, ey0, ex1, ey1, party_walls=False)
     repair_doors(spec, ex0, ey0, ex1, 1)
     _declutter_for_circulation(spec)    # 擋死動線的家具移掉(與其他三條產線同一套)
+    from src.design.layout.auto_furnish import settle_after_declutter
+    settle_after_declutter(spec)        # 補回被移掉的床/洗澡設備
     return spec
 
 
@@ -1248,6 +1256,8 @@ def _house_finishing_pass(spec: FloorPlanSpec) -> None:
     # ⚠️ 之前為了保住餐桌把移除關掉,結果集合住宅有 4 間房動線卡死 —— 真正的
     #    元凶是「推出牆」那一步太早放棄(已改成多方向嘗試),不是這裡。
     _declutter_for_circulation(spec)
+    from src.design.layout.auto_furnish import settle_after_declutter
+    settle_after_declutter(spec)        # 補回被移掉的床/洗澡設備
 
 
 def _slot(desired: float, widths: list[float], lo: float, hi: float,

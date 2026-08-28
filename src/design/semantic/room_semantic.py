@@ -39,10 +39,13 @@ SEM_TYPE = {
     "coffee_table": "coffee_table", "bar_stool": "bar_stool",
     "bed_single": "bed", "bed_double": "bed", "nightstand": "nightstand",
     "table4": "dining_table",
+    "table2": "dining_table",      # 靠牆二人餐桌:語意上同樣是餐桌
     "desk": "desk", "bookshelf": "bookshelf", "wardrobe": "wardrobe",
     "fridge": "fridge",
     "toilet": "toilet", "basin": "basin", "bathtub": "bathtub",
+    "shower": "shower",
     "shoe_cabinet": "shoe_cabinet", "car": "car",
+    "closet_rail": "wardrobe",
 }
 
 # 房間 kind → canonical 房間類別(別名歸一)。
@@ -50,6 +53,9 @@ ROOM_ALIAS = {
     "living": "living", "family": "living", "hall": "living",
     "dining": "dining",
     "bedroom": "bedroom", "single": "bedroom", "master": "bedroom",
+    # ⚠️ 少了這一條,`canonical_room("master_bedroom")` 會原樣回傳 →
+    #    `FURNITURE_PROGRAM` 查不到 → **主臥一件家具都擺不出來**(空房)。
+    "master_bedroom": "bedroom",
     "kitchen": "kitchen",
     "bathroom": "bathroom",
     "laundry": "laundry", "utility": "laundry",
@@ -124,7 +130,7 @@ ROOM_SEMANTIC_RULES: dict[str, RoomSemanticRule] = {
         min_count=1, max_count=12),
     "bathroom": RoomSemanticRule(
         "bathroom", required=frozenset({"toilet"}),
-        preferred=frozenset({"basin", "bathtub"}),
+        preferred=frozenset({"basin", "bathtub", "shower"}),
         forbidden=frozenset({"bed", "sofa", "fridge", "counter", "desk"}),
         min_count=1, max_count=6),
     "laundry": RoomSemanticRule(

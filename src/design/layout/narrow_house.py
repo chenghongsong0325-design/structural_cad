@@ -42,7 +42,7 @@ from shapely.geometry import Point, Polygon
 
 from src.drafting.apartment_plan import DoorPlacement
 from src.drafting.door_window import Door
-from src.drafting.stair import UStair
+from src.drafting.stair import Stair, UStair
 from src.drafting.wall import Opening
 
 from src.design.layout.bsp_layout import rooms_to_spec
@@ -142,9 +142,30 @@ STAIRWELL_W = 2075.0                                # 梯段本身佔的面寬(�
 GUARD_WALL_T = 150.0                                # 梯段側邊「導牆」厚(見下)
 PASSAGE_W = 1350.0 + GUARD_WALL_T                   # 通道淨寬 1350 + 導牆
 STAIRWELL_TOTAL = STAIRWELL_W + PASSAGE_W           # 樓梯間總面寬(梯段 + 通道)
-# 梯段旁邊剩不到這麼寬就不留通道,改讓**梯段填滿整間**(兩側直接靠牆)——留一條
-# 走不了人的窄縫,只會讓梯段有一側懸空。
 PASSAGE_MIN = 1000.0
+# 建築技術規則施工編 §33:**住宅樓梯寬度 ≥75cm**。這是梯段可以窄到的下限。
+# ⚠️ 舊做法是二選一:留得下 1000mm 通道就用舒適寬,否則**梯段填滿整間**。
+#    後者等於「這層沒有走道」,而折返梯中間那塊平台在**半層高** —— 前段到
+#    後段實際上根本走不過去(使用者 2026-08-27 指著 4.5m 的圖說「沒有路可以
+#    到廚房」;60 案掃描 16 案走不通,全部落在 3.6~5.2m 面寬)。
+#    實務做法是**把折返梯做窄一點**,先保住走道 —— 那才是真實街屋的樣子。
+FLIGHT_MIN_W = 750.0                                # 單一梯段淨寬的法定下限
+STAIR_MIN_TOTAL = 2 * FLIGHT_MIN_W + STAIR_WELL_GAP  # 折返梯總寬的下限 1600
+STAIR_W_STEP = 25.0                                 # 梯段退讓級距
+# 走道淨寬的物理下限:一扇門的寬度。比這更窄就真的走不過去,那時才填滿整間。
+PASSAGE_HARD_MIN = 750.0
+# 單跑直梯的梯段寬:折返梯連法定下限都擠不出走道時的備案(使用者的參考平面圖
+# 畫的就是這種)。一個梯段就好,寬度立刻省下 0.9m —— 走道才生得出來。
+STRAIGHT_FLIGHT_W = 1100.0                          # 舒適寬(退讓到 FLIGHT_MIN_W)
+STRAIGHT_ENTRY_LANDING = 600.0                      # 直梯的起步平台(對齊兩帶式)
+# 樓梯間要有這麼寬,才擠得出「法定下限的折返梯 + 走得過去的走道」。
+STAIRWELL_HARD_MIN = (2 * WALL_GAP + STAIR_MIN_TOTAL
+                      + GUARD_WALL_T + PASSAGE_HARD_MIN)      # 2650
+# 走道還要**開得出一扇門**:門寬 + 兩側牆角淨距 + 一點餘裕。走道只求「走得過去」
+# 的話,後段那扇門的合法窗口會只剩幾十 mm,補門機制只好改走浴廁。
+# (PASSAGE_DOOR_NEED = 門寬 850 + 2×90 牆角淨距 = 1030,定義在下面,這裡寫值)
+STAIRWELL_DOOR_MIN = (2 * WALL_GAP + STAIR_MIN_TOTAL
+                      + GUARD_WALL_T + 1030.0 + 200.0)        # 3130
 FLOOR_HEIGHT = 3200.0                               # 層高(算級數/每階升高用)
 MAX_RISER = 190.0                                   # 每階升高上限(住宅舒適下限步距)
 MIN_TREAD = 210.0                                   # 踏面下限(建築技術規則:住宅 ≥21cm)
@@ -161,6 +182,10 @@ SHAFT_W, SHAFT_D = 800.0, 600.0
 
 # 中段核服務格(浴廁):面寬吃剩的都給它,但太寬就往淺切(免得變一間大空房)。
 BATH_MIN_W, BATH_MAX_W = 1500.0, 2400.0
+# 浴廁還擠得下的**極限**寬:淨寬 1050,放得下 900 的淋浴間與馬桶洗手台。
+# ⚠️ 只在「不讓寬就沒有走道」時才退到這裡 —— 4~4.5m 面寬的街屋,浴廁窄 20cm
+#    換一條走得通的走道,划得來;走不通的樓層是廢圖,窄一點的浴廁只是難用。
+BATH_TIGHT_W = 1200.0
 BATH_AREA_MAX = 6.0e6           # 浴廁面積上限(mm²)
 BATH_MIN_D, BATH_MAX_D = 1800.0, 2600.0
 STORE_MIN_D = 1200.0            # 服務格上段(儲藏)最小進深
@@ -267,7 +292,8 @@ def _rect(x0, y0, x1, y1):
     return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
 
 
-def _core_widths(W: float, min_service: bool = False):
+def _core_widths(W: float, min_service: bool = False,
+                 patio: bool = False):
     """中段核面寬分配 → (服務格, 樓梯間)。天井取消後,核只剩這兩格。
 
     樓梯間要 STAIRWELL_TOTAL(梯段+側邊通道)才走得通,但不能把服務格擠到放不下
@@ -279,11 +305,24 @@ def _core_widths(W: float, min_service: bool = False):
     樓梯間(=樓梯旁通道變寬),前後段才有位置從中間切成兩間(見 `_band_split_x`:
     西半間的門只能往北開進樓梯間,樓梯間西牆越往西,切點才能越靠中間)。
 
+    ⚠️ 還有一段**比 BATH_MIN_W 更狠的退讓**:樓梯間窄到擠不出走道時,浴廁退到
+    `BATH_TIGHT_W`(1200)。前後段走不通的樓層是廢圖,浴廁窄 20cm 只是難用一點 ——
+    4~4.5m 面寬的真實街屋就是這個尺寸。
+
     min_service:把服務格再壓到浴廁的**最小**寬。6m 級的面寬服務格只有 1.875m
     (還沒碰到 BATH_MAX_W,上面那段夾不到它),但樓梯間也因此不夠往西,前段切不
     成兩間 → 生出 28㎡ 的臥室。浴廁窄 37cm 換一間大小正常的房間,划得來 ——
     由呼叫端在「真的切不動、而且房間會過大」時才開。"""
     sw = min(STAIRWELL_TOTAL, W - BATH_MIN_W)
+    # 走道貼側牆(見 _core)之後,後段那扇門的合法窗口是「走道寬 − 門寬 − 牆角
+    # 淨距」;走道剛好 975 時窗口只剩 35mm,實測 5/40 案開不成 → 只好穿過浴廁
+    # 才到得了餐廚。所以門檻從「擠得出 750 走道」放寬成「走道要夠開一扇門」。
+    if sw < STAIRWELL_DOOR_MIN and not patio:
+        # 走道擠不出來 → 浴廁讓寬(退到 BATH_TIGHT_W)。
+        # ⚠️ 開天井時不讓:天井就切在服務格裡浴廁沒用完的那一塊,服務格一窄
+        #    天井就小到 code_check 不認(§41 採光不算),等於天井白開。
+        #    天井預設是關的,要開的人是拿「走道」換「浴廁樓梯有自然光」。
+        sw = max(sw, min(STAIRWELL_HARD_MIN, W - BATH_TIGHT_W))
     svc = W - sw
     if svc > BATH_MAX_W:                # 面寬寬 → 服務格只留浴廁該有的寬
         svc, sw = BATH_MAX_W, W - BATH_MAX_W
@@ -292,7 +331,146 @@ def _core_widths(W: float, min_service: bool = False):
     return svc, sw
 
 
-def _stair(x_west, x_east, y1, y2, label):
+def _passage_span(bx0: float, bx1: float, min_service: bool = False,
+                  patio: bool = False, depth: float = 0.0,
+                  core_style: str = "default", y1: float = 0.0,
+                  y2: float = 0.0) -> tuple | None:
+    """樓梯旁那條走道在 x 上的範圍(未鏡射座標);梯段填滿樓梯間時回 None。
+
+    梯段貼**西**牆(緊鄰服務格,見 `_stair(hug="west")`),所以走道在梯段東側:
+    從梯段東面(含導牆)到建築東界牆 bx1 —— 走道貼著界牆,不夾在樓梯與浴廁中間。
+    ⚠️ 只用面寬推,不必等 `_core` 把樓梯造出來 —— 切點(`_splits`)是在那之前
+    決定的,而切點正是需要閃開這條走道的人。"""
+    if core_style == "mid":
+        plan = _mid_core_plan(bx0, bx1, y1, y2)
+        return None if plan is None else (plan[0], bx1)
+    if core_style == "ref":
+        # 參考圖版:走道是核裡固定的一條(貼界牆、跑滿核的進深),寬度與樓梯
+        # 是同一個決定 —— 一律問 `_ref_core_plan`,不要在這裡另外算一次。
+        plan = _ref_core_plan(bx0, bx1, y1, y2)
+        return None if plan is None else (plan[0], bx1)
+    svc, _sw = _core_widths(bx1 - bx0, min_service, patio)
+    xs = bx0 + svc
+    span = (bx1 - xs) - 2 * WALL_GAP
+    _straight, fw = _flight_plan(span, depth, True)   # 與 _stair 同一個決定
+    # 梯段貼**西**牆(緊鄰服務格),走道因此落在東側 —— 貼著建築的東界牆。
+    # ⚠️ 走道要貼牆,不能夾在樓梯與浴廁中間(使用者 2026-08-27:「正常的走道
+    #    應該靠在旁邊的牆上」;參考平面圖畫的就是 廁所|樓梯|走道 貼牆那條)。
+    east = xs + WALL_GAP + fw + GUARD_WALL_T
+    return (east, bx1) if bx1 - east >= PASSAGE_HARD_MIN else None
+
+
+#: 一扇門在走道上要佔多少牆:門寬 + 兩側最起碼的牆角淨距
+#: (DOOR_CORNER_MIN=90 定義在下面,這裡直接寫值避免前向參照)。
+PASSAGE_DOOR_NEED = INTERIOR_DOOR_WIDTH + 2 * 90.0
+#: 再加這麼多餘裕,門才有真的挑得動的位置(剛好 1030 的話合法窗口是 0)。
+PASSAGE_DOOR_MARGIN = 250.0
+
+
+def _passage_split_ok(xm: float, span) -> bool:
+    """這個切點對走道口可不可以?
+
+    後段那兩間房的門**都只能開在走道那一段牆上**(牆的其餘部分不是浴廁就是
+    折返平台 —— 半層高、開不了門)。所以切點只有兩種是好的:
+
+      ① 落在走道**外面** → 走道整條給其中一間(另一間走姊妹房的內門,
+         例如 1F 的餐廳|廚房);
+      ② 落在走道**裡面,但兩側各留得下一扇門** → 兩間各開各的。
+
+    卡在中間(走道被切成兩段、哪一段都塞不下一扇帶牆角淨距的門)才是壞的 ——
+    那時補門機制只好改走浴廁或隔壁臥室,動線變成「穿過廁所才到得了餐廳」。"""
+    if span is None:
+        return True                       # 沒有走道 → 這條限制不適用
+    lo, hi = span
+    if xm <= lo + 1e-6 or xm >= hi - 1e-6:
+        return True
+    return (xm - lo >= PASSAGE_DOOR_NEED) and (hi - xm >= PASSAGE_DOOR_NEED)
+
+
+def _split_clears_passage(xm: float, span) -> bool:
+    return _passage_split_ok(xm, span)
+
+
+def _fit_flight_width(span: float, targets=None) -> float:
+    """梯段總寬的**退讓階梯**:從舒適寬一路縮到法定下限,取還留得下走道的最寬那級。
+
+    ⚠️ 這條路徑的舊寫法是二選一 ——「留得下 1000mm 通道就用舒適寬,否則梯段填滿
+    整間」。填滿整間的意思是**這層沒有走道**:前段到後段只能踩過樓梯,而折返梯
+    中間那塊平台在**半層高**(9 階 × 188 ≈ 1.69m),門開在那一段等於開進一個
+    1.1m 深、頭頂 1.69m 的凹洞,人根本走不過去。實務上遇到這種面寬是**把折返梯
+    做窄一點**(住宅法定下限 75cm/段),先保住走道。
+
+    ⚠️ 判準用「淨走道」= span − 梯段 − 導牆:導牆(`_add_stair_guard_walls`)佔的
+    150mm 不是人走得到的地方,算進去會高估一個門的一半寬。
+    """
+    comfy = STAIRWELL_W - 2 * WALL_GAP
+    for target in (targets or (PASSAGE_MIN, PASSAGE_HARD_MIN)):
+        w = comfy
+        while w >= STAIR_MIN_TOTAL - 1e-6:
+            if span - w - GUARD_WALL_T >= target:
+                return w
+            w -= STAIR_W_STEP
+    return span                     # 連 750 的縫都擠不出來 → 梯段填滿整間(舊行為)
+
+
+def _straight_flight_w(span: float, depth: float,
+                       need: float = PASSAGE_HARD_MIN) -> float | None:
+    """這個樓梯間放不放得下「單跑直梯 + 走道」?放得下回梯段寬,否則 None。
+
+    折返梯要兩個梯段並排,3.6~4.3m 面寬連法定下限(2×750+100=1600)配上最窄的
+    浴廁(1200)都擠不出 750mm 的走道 —— 幾何上兜不攏,不是擺法的問題。
+    單跑直梯只有一個梯段,省下的 0.9m 正好是那條走道(使用者的參考平面圖畫的
+    就是這種:樓梯|天井+廁所|走道 三條並排)。
+
+    ⚠️ 代價在**進深**:折返梯的梯跑只要一半,直梯要一整段。核心帶 4400 深
+    (可用 4250)配 17 級 × 法定下限 210 = 3570,再加起步平台 600 —— 剛好放得下,
+    所以踏面會落在 21~22cm(比折返梯的 25cm 陡,但仍合法)。放不下就回 None,
+    維持原本的折返梯(寧可沒有走道,也不要生不出來)。"""
+    steps = max(4, -(-int(FLOOR_HEIGHT) // int(MAX_RISER)))
+    if depth - STRAIGHT_ENTRY_LANDING < steps * MIN_TREAD:
+        return None                                   # 進深不夠跑一整段
+    w = STRAIGHT_FLIGHT_W
+    while w >= FLIGHT_MIN_W - 1e-6:
+        if span - w - GUARD_WALL_T >= need:
+            return w
+        w -= STAIR_W_STEP
+    return None
+
+
+def _flight_plan(span: float, depth: float,
+                 allow_straight: bool = False) -> tuple:
+    """(要不要用單跑直梯, 梯段寬)。走道優先:折返梯擠不出走道才換直梯。
+
+    ⚠️ `allow_straight` **預設關**:`_stair` 不是只有窄透天在用,AI 產線
+    (`graph_layout`)也直接呼叫它,而那條產線的核是另一種幾何(中央核 +
+    管道間),換梯型會讓它的門對不上、整層斷成兩塊(實測 test_plan_check
+    的 `floor_split`)。窄透天自己傳 True。
+    """
+    need = PASSAGE_DOOR_NEED + PASSAGE_DOOR_MARGIN
+    # ① 折返梯**再窄一點**就給得出「開得了門」的走道 → 用折返梯(比較好走)
+    w = _fit_flight_width(span, (need,))
+    if w < span - 1e-6:
+        return False, w
+    if not allow_straight:
+        return False, _fit_flight_width(span)
+    # ⚠️ 判準是「走道**開得出一扇門**」,不是「走得過去」。走道剛好夠走(750~1000)
+    #    時,後段那扇門的合法窗口只剩幾十 mm —— 補門機制開不成,只好改走浴廁,
+    #    動線變成「穿過廁所才到得了餐廚」(實測 40 案有 5 案,全在 4.4~4.9m)。
+    #    折返梯撐不到那個寬度就換單跑直梯,它省下的 0.9m 剛好補上。
+    # ② 折返梯給不出來 → 換單跑直梯(省下 0.9m,代價是踏面 25→21~22cm)
+    sw = _straight_flight_w(span, depth, need)
+    if sw is not None:
+        return True, sw
+    # ③ 都給不出「開得了門」的走道 → 退到「至少走得過去」
+    w = _fit_flight_width(span)
+    if w < span - 1e-6:
+        return False, w
+    sw = _straight_flight_w(span, depth)
+    return (True, sw) if sw is not None else (False, w)
+
+
+def _stair(x_west, x_east, y1, y2, label, allow_straight: bool = False,
+           hug: str = "east"):
     """樓梯間內 U 形折返梯(往北上),**南側(門側)留起步平台**。
 
     級數由層高回推、每階升高 ≤MAX_RISER(住宅舒適);分兩段折返,故梯跑只需一半深度。
@@ -305,8 +483,19 @@ def _stair(x_west, x_east, y1, y2, label):
     # (_add_stair_guard_walls),梯段兩側才都靠著牆。剩下的寬度不夠當通道時,梯段
     # 直接填滿整間 —— 寧可梯段寬一點,也不要有一側是空的。
     span = (x_east - x_west) - 2 * WALL_GAP
-    flight_w = (STAIRWELL_W - 2 * WALL_GAP
-                if span - STAIRWELL_W >= PASSAGE_MIN else span)
+    usable_d = (y2 - y1) - 2 * WALL_GAP
+    straight, flight_w = _flight_plan(span, usable_d, allow_straight)
+    if straight:
+        # 單跑直梯:梯段一樣貼東牆,西側留走道(與折返梯同一套幾何)。
+        steps = max(4, -(-int(FLOOR_HEIGHT) // int(MAX_RISER)))
+        tread = max(MIN_TREAD,
+                    min(STAIR_TREAD,
+                        (usable_d - STRAIGHT_ENTRY_LANDING) / steps))
+        fx = (x_west + WALL_GAP if hug == "west"
+              else x_east - WALL_GAP - flight_w)
+        return Stair(origin=(fx, y1 + WALL_GAP + STRAIGHT_ENTRY_LANDING),
+                     width=flight_w, length=steps * tread, direction="north",
+                     steps=steps, tread=tread, label=label)
     # 建築技術規則施工編 §33:**平臺深度不得小於樓梯(梯段)寬度**。梯段越寬,
     # 折返端的平台就要越深;不夠時先縮踏面(仍 ≥法定 210),再不夠就是樓梯間太淺。
     one_flight = (flight_w - STAIR_WELL_GAP) / 2.0
@@ -317,7 +506,13 @@ def _stair(x_west, x_east, y1, y2, label):
     tread = STAIR_TREAD
     if spf * tread + need_turn > run_len:                        # 太擠 → 縮踏面(≥法定)
         tread = max(MIN_TREAD, (run_len - need_turn) / spf)
-    return UStair(origin=(x_east - WALL_GAP - flight_w, y1 + WALL_GAP + landing),
+    # ⚠️ 折返平台**該多深就多深**,不要把剩下的長度全吃掉。多吃的那一截是
+    #    畫在圖上的**半層高**平台(不是地板),樓梯間就白白少了那麼多可走的
+    #    地。實測淺透天有一案平台被拉到 3.3m 深(真正需要 0.75m)。
+    run_len = min(run_len, spf * tread + need_turn)
+    fx = (x_west + WALL_GAP if hug == "west"
+          else x_east - WALL_GAP - flight_w)
+    return UStair(origin=(fx, y1 + WALL_GAP + landing),
                   width=flight_w,
                   length=run_len, direction="north",
                   steps_per_flight=spf, tread=tread,
@@ -333,19 +528,227 @@ def _patio_ok(rect) -> bool:
             and (x1 - x0) * (y1 - y0) / 1.0e6 >= PATIO_MIN_AREA_M2)
 
 
+# ── 參考平面圖版的中段核(使用者 2026-08-28 給的「方案 B」)──────────────────
+#: 走道的候選寬度:由舒適往下退,取「樓梯還排得下」的最寬那一級。
+REF_PASSAGE_WIDTHS = tuple(float(v) for v in range(1300, 1105, -25))
+
+
+def _ref_stair(x_west, x_east, y1, max_d, label):
+    """**橫置**樓梯:梯跑沿著面寬跑,只吃掉核的一小段進深。
+
+    回 (樓梯, 佔掉的進深);排不下回 (None, 0.0)。
+
+    ⚠️ 起步端在**東**(貼著走道那一側),所以 `direction="west"` —— 人沿著走道
+    走到樓梯前,轉身往內上樓。走道本身就是起步平台,不必另外留。
+
+    先試單跑直梯(參考圖畫的就是這種:一道橫過面寬的梯);面寬不夠長就把折返梯
+    **轉 90 度**(淺基地產線用的同一招),梯跑只要一半。兩種都排不下才回 None。
+    """
+    run = (x_east - x_west) - 2 * WALL_GAP
+    steps = max(4, -(-int(FLOOR_HEIGHT) // int(MAX_RISER)))
+    fw = min(STRAIGHT_FLIGHT_W, max_d - 2 * WALL_GAP)
+    if fw >= FLIGHT_MIN_W and run >= steps * MIN_TREAD + STRAIGHT_ENTRY_LANDING:
+        tread = min(STAIR_TREAD, (run - STRAIGHT_ENTRY_LANDING) / steps)
+        return (Stair(origin=(x_west + WALL_GAP, y1 + WALL_GAP),
+                      width=fw, length=steps * tread, direction="west",
+                      steps=steps, tread=tread, label=label),
+                fw + 2 * WALL_GAP)
+    spf = max(2, -(-steps // 2))
+    top = min(STAIRWELL_W, max_d - 2 * WALL_GAP)
+    w = top - (top % STAIR_W_STEP)
+    while w >= STAIR_MIN_TOTAL:
+        # §33:折返端平台深度不得小於梯段寬 —— 梯段越寬,平台吃掉的梯跑越多。
+        turn = max(TURN_LANDING_MIN, (w - STAIR_WELL_GAP) / 2.0)
+        tread = min(STAIR_TREAD, (run - turn) / spf)
+        if tread >= MIN_TREAD:
+            return (UStair(origin=(x_west + WALL_GAP, y1 + WALL_GAP),
+                           width=w, length=spf * tread + turn,
+                           direction="west", steps_per_flight=spf, tread=tread,
+                           well_gap=STAIR_WELL_GAP, label=label),
+                    w + 2 * WALL_GAP)
+        w -= STAIR_W_STEP
+    return None, 0.0
+
+
+def _ref_core_plan(bx0, bx1, y1, y2, label="上"):
+    """參考圖版核的幾何決定 → (走道西緣 xp, 樓梯, 樓梯佔的進深);排不下回 None。
+
+    ⚠️ 走道寬與樓梯是**同一個決定**:走道越寬,橫置梯跑得到的長度就越短。所以
+    兩件事一起試,取「樓梯排得下」的最寬走道 —— 切點(`_splits`)也要問同一支,
+    才不會兩邊各算一次而算出不同的答案(本檔「同一件事兩把尺」已經踩過五次)。
+    """
+    for pw in REF_PASSAGE_WIDTHS:
+        xp = bx1 - pw
+        st, ds = _ref_stair(bx0, xp, y1, (y2 - y1) - BATH_MIN_D, label)
+        if st is not None:
+            return xp, st, ds
+    return None
+
+
+# ── 服務格在中間的核(使用者 2026-08-28:「還想做一款廁所門是開向走道的」)────
+#: 樓梯間的候選寬度(梯段本身,旁邊不留走道):折返梯由舒適往下退到法定下限,
+#: 再不行才換單跑直梯。
+MID_FLIGHT_WIDTHS = (tuple(float(v) for v in
+                           range(int(STAIRWELL_W), int(STAIR_MIN_TOTAL) - 1,
+                                 -int(STAIR_W_STEP)))
+                     + tuple(float(v) for v in
+                             range(int(STRAIGHT_FLIGHT_W),
+                                   int(FLIGHT_MIN_W) - 1, -int(STAIR_W_STEP))))
+#: 走道至少要開得出一扇門(與預設核同一把尺)。
+MID_PASSAGE_MIN = PASSAGE_DOOR_NEED + PASSAGE_DOOR_MARGIN
+
+
+def _mid_stair(x_west, x_east, y1, y2, label):
+    """服務格在中間版的樓梯:梯段**填滿**樓梯間,旁邊不留走道。
+
+    走道在浴廁的另一邊,所以這座樓梯不必自己讓出通道 —— 這正是「廁所夾在樓梯與
+    走道之間」買到的東西:同樣的面寬,梯段可以用得比較寬。
+
+    折返梯放得下就用折返梯(踏面 25cm,好走);梯段窄到擺不下兩段才換單跑直梯。
+    兩種都放不下回 None(由呼叫端退回預設核)。"""
+    span = (x_east - x_west) - 2 * WALL_GAP
+    usable = (y2 - y1) - 2 * WALL_GAP
+    steps = max(4, -(-int(FLOOR_HEIGHT) // int(MAX_RISER)))
+    if span >= STAIR_MIN_TOTAL:
+        spf = max(2, -(-steps // 2))
+        # §33:折返端平台深度不得小於梯段寬。
+        need_turn = max(TURN_LANDING_MIN, (span - STAIR_WELL_GAP) / 2.0)
+        landing = min(ENTRY_LANDING,
+                      max(0.0, usable - spf * MIN_TREAD - need_turn))
+        run_len = usable - landing
+        tread = STAIR_TREAD
+        if spf * tread + need_turn > run_len:
+            tread = max(MIN_TREAD, (run_len - need_turn) / spf)
+        if spf * tread + need_turn <= run_len + 1e-6:
+            return UStair(origin=(x_west + WALL_GAP, y1 + WALL_GAP + landing),
+                          width=span, length=spf * tread + need_turn,
+                          direction="north", steps_per_flight=spf, tread=tread,
+                          well_gap=STAIR_WELL_GAP, label=label)
+    if (span >= FLIGHT_MIN_W
+            and usable - STRAIGHT_ENTRY_LANDING >= steps * MIN_TREAD):
+        tread = min(STAIR_TREAD, (usable - STRAIGHT_ENTRY_LANDING) / steps)
+        return Stair(origin=(x_west + WALL_GAP,
+                             y1 + WALL_GAP + STRAIGHT_ENTRY_LANDING),
+                     width=span, length=steps * tread, direction="north",
+                     steps=steps, tread=tread, label=label)
+    return None
+
+
+def _mid_core_plan(bx0, bx1, y1, y2, label="上"):
+    """服務格在中間的核 → (走道西緣 xp, 服務格西緣 xs, 樓梯);排不下回 None。
+
+    面寬由西往東分成三段:樓梯間 | 浴廁 | 走道。樓梯先拿(由寬往窄退),走道拿
+    「開得出一扇門」的下限,剩下的給浴廁(封頂 `BATH_MAX_W`,再多的還給走道 ——
+    寬面寬的案子走道會變成一小塊梯廳,前後段因此還切得成兩間)。"""
+    W = bx1 - bx0
+    for fw in MID_FLIGHT_WIDTHS:
+        stair_w = fw + 2 * WALL_GAP
+        rest = W - stair_w
+        if rest < MID_PASSAGE_MIN + BATH_TIGHT_W:
+            continue
+        bath_w = min(BATH_MAX_W, rest - MID_PASSAGE_MIN)
+        xs = bx0 + stair_w
+        st = _mid_stair(bx0, xs, y1, y2, label)
+        if st is not None:
+            return xs + bath_w, xs, st
+    return None
+
+
+def _core_mid(bx0, bx1, y1, y2, label, bath_name):
+    """服務格在中間的中段核 → (房間清單, 樓梯, 空格);排不下回 None。
+
+        ┌──────────────┬────────┬──────┐  ← 北(接後段)
+        │              │  浴廁  │  走  │
+        │    樓梯       ├────────┤  道  │
+        │  (順著進深)   │        │      │
+        └──────────────┴────────┴──────┘  ← 南(接前段)
+
+    使用者 2026-08-28:「還想做一款廁所門是開向走道的」—— 指的是**預設核**那一版
+    (樓梯順著進深跑)。預設核是「浴廁|樓梯|走道」,廁所被樓梯隔開,門只開得了
+    南北兩面(1F 開向餐廚、車庫版開向車庫);把服務格搬到樓梯與走道**中間**,
+    廁所的東牆就直接貼著走道。
+
+    ⚠️ **浴廁放北邊**是必要的,不是選擇:南邊那一段要留給樓梯的**起步平台** ——
+       人從前段進來要先站得到平地才上得了樓,而起步端在南。浴廁放南邊的話,
+       前段就只剩走道那 1.3m 進得來,樓梯反而接不上。
+    ⚠️ 這個核**不放天井**:三段已經把面寬用完,再切一塊就沒有一段夠寬。要天井
+       請用 `core_style="ref"`(那一版把樓梯橫置,面寬才騰得出第四段)。
+    """
+    plan = _mid_core_plan(bx0, bx1, y1, y2, label)
+    if plan is None:
+        return None
+    xp, xs, stair = plan
+    d = y2 - y1
+    bath_w = xp - xs
+    bath_d = min(max(BATH_AREA_MAX / bath_w, BATH_MIN_D), BATH_MAX_D, d)
+    rooms = [("bathroom", bath_name, _rect(xs, y2 - bath_d, xp, y2)),
+             ("stair_hall", "樓梯間",
+              [(bx0, y1), (bx1, y1), (bx1, y2), (xp, y2),
+               (xp, y2 - bath_d), (xs, y2 - bath_d), (xs, y2), (bx0, y2)])]
+    return rooms, stair, None
+
+
+def _core_ref(bx0, bx1, y1, y2, label, bath_name, patio=True):
+    """參考平面圖版的中段核 → (房間清單, 樓梯, 空格);排不下回 None。
+
+        ┌──────────────┬────────┬──────┐  ← 北(接後段)
+        │     天井      │  廁所  │  走  │
+        ├──────────────┴────────┤  道  │
+        │      樓梯(橫置)        │      │
+        └───────────────────────┴──────┘  ← 南(接前段)
+
+    跟預設核的三個差別(都是使用者 2026-08-28 指著方案 B 要的):
+
+      ① **廁所貼著走道** —— 預設核是「浴廁|樓梯|走道」,廁所被樓梯隔開,門只好
+         開向餐廚(車庫版是開向車庫);這裡廁所的門直接開在走道上。
+      ② **天井**回來,貼著另一側界牆、與廁所並排(街屋中段唯一的採光來源)。
+      ③ **樓梯橫置**,只吃掉核的一小段進深,不是整條。
+
+    ⚠️ 走道是這個核**唯一**的動線:前後段的門都只能開在走道那一段牆上(其餘不是
+       樓梯就是廁所/天井)。所以走道寬的判準跟預設核一樣是「開得出一扇門」。
+    ⚠️ 天井放不下時**不硬塞**:剩下那塊當空格併給後段(與預設核的 spare 同一套)。
+    """
+    from src.design.layout.code_check import PATIO_MIN_SIDE
+
+    plan = _ref_core_plan(bx0, bx1, y1, y2, label)
+    if plan is None:
+        return None
+    xp, stair, ds = plan
+    ys = y1 + ds
+    row_d = y2 - ys
+    avail = xp - bx0
+    rooms, spare = [], None
+    bath_w = min(BATH_MAX_W, BATH_AREA_MAX / row_d, avail - PATIO_MIN_SIDE)
+    # ⚠️ 廁所的下限用 `BATH_TIGHT_W`(1200)不是 BATH_MIN_W:4~4.5m 面寬的真實
+    #    街屋廁所就是這個尺寸,而天井是這個核的重點,不該為了寬 30cm 的廁所犧牲。
+    if patio and bath_w >= BATH_TIGHT_W and _patio_ok((bx0, ys, xp - bath_w, y2)):
+        rooms.append(("patio", "天井", _rect(bx0, ys, xp - bath_w, y2)))
+    else:
+        bath_w = min(avail, BATH_MAX_W, BATH_AREA_MAX / row_d)
+        if avail - bath_w > 1.0:                # 天井放不下 → 剩下的當空格
+            spare = (bx0, ys, xp - bath_w, y2)
+    rooms.append(("bathroom", bath_name, _rect(xp - bath_w, ys, xp, y2)))
+    rooms.append(("stair_hall", "樓梯間",
+                  [(bx0, y1), (bx1, y1), (bx1, y2), (xp, y2), (xp, ys),
+                   (bx0, ys)]))
+    return rooms, stair, spare
+
+
 def _core(bx0, bx1, y1, y2, label, bath_name, bath_north=False,
           absorb_spare=False, min_service=False, patio=False):
     """中段核 → (房間清單, 樓梯, 讓出來的空格);服務格(西:浴廁)| 樓梯間(東)。
 
-    樓梯間貼**東界牆**:梯段靠東牆、西側留通道,通道正對後段餐廳/後臥。核每層
-    同寬同位 → 樓梯 origin 固定 → 上下對齊。
+    樓梯間貼**東界牆**,裡面的排法是 **浴廁 | 梯段 | 走道**:梯段緊貼服務格那一
+    側,走道因此落在**東界牆**邊(使用者 2026-08-27:「正常的走道應該靠在旁邊的
+    牆上,不會在樓梯跟廁所的中間」;參考平面圖畫的就是這三條並排)。核每層同寬
+    同位 → 樓梯 origin 固定 → 上下對齊。
 
     ⚠️ **不設儲藏室**(使用者 2026-07-30 定調):服務格只放浴廁,浴廁吃不完的那
     一小塊(1.5~2.4m 寬 × 約 1.8m)不另外隔成房間,而是回傳給呼叫端**併進隔壁
     居室**(客廳/餐廳/臥室變成 L 形)——隔成儲藏室只會多一扇門、多一間沒人用的
     小房;併進去則是實際可用的坪數。"""
     W, d = bx1 - bx0, y2 - y1
-    svc, _sw = _core_widths(W, min_service)
+    svc, _sw = _core_widths(W, min_service, patio)
     xs = bx0 + svc                      # 服務格東緣 = 樓梯間西牆
     # 衛浴太寬就往淺切(面積封頂),免得核裡出現一間大空房;剩下的併給隔壁居室。
     bath_d = min(max(BATH_AREA_MAX / svc, BATH_MIN_D), BATH_MAX_D, d)
@@ -384,7 +787,8 @@ def _core(bx0, bx1, y1, y2, label, bath_name, bath_north=False,
     else:
         hall = _rect(xs, y1, bx1, y2)
     rooms.append(("stair_hall", "樓梯間", hall))
-    return rooms, _stair(xs, bx1, y1, y2, label), spare
+    return rooms, _stair(xs, bx1, y1, y2, label, allow_straight=True,
+                         hug="west"), spare
 
 
 # 併了空格之後,接收的那間房長寬比不得超過這個(對齊 plan_check 的 room_skinny
@@ -393,6 +797,24 @@ SPARE_ASPECT_LIMIT = 2.5
 # 會被查長寬比的房間(對齊 plan_check:走道/豎井/陽台/儲藏本來就細長,不查)。
 SKINNY_CHECK_KINDS = {"living", "dining", "kitchen", "bedroom",
                       "master_bedroom", "study", "elder_room", "bathroom"}
+
+
+def _beds_ok(spec) -> bool:
+    """這層每間臥室都擺得出床嗎?(**實際量過才算數**,不用公式猜)
+
+    ⚠️ 為什麼需要:主臥切出更衣室之後,主臥就多了一個要走得到的目的地,
+    `_declutter_for_circulation` 為了保住那條通道會**把床搬走** —— 一間沒有床的
+    主臥比沒有更衣室糟得多。呼叫端量到就退掉更衣室重生一次(同 `_fit_service` /
+    `_fit_margin` 的鐵則:加分項不得讓本來好好的東西壞掉)。
+    """
+    for room in spec.rooms:
+        if room.kind not in ("bedroom", "master_bedroom"):
+            continue
+        poly = Polygon(room.points)
+        if not any(getattr(f, "name", "").startswith("bed")
+                   and poly.contains(Point(*f.insert)) for f in spec.fixtures):
+            return False
+    return True
 
 
 def _spare_hosts_ok(spec) -> bool:
@@ -432,6 +854,21 @@ def _with_spare(x0, y0, x1, y1, spare):
     return _rect(x0, y0, x1, y1)
 
 
+# ── 主臥 + 更衣室(使用者 2026-08-27 給的 2F 參考平面)────────────────────────
+# 參考圖的 2F 是「前陽台|主臥室(含更衣)|樓梯+天井+衛浴|次臥|後陽台」。骨架本來
+# 就長這樣,差的是**主次之分**與**更衣室**。
+CLOSET_MIN_W = 1200.0           # 更衣室最小寬(一排吊衣桿 + 人轉身)
+CLOSET_MIN_D, CLOSET_MAX_D = 1500.0, 2200.0   # 進深:太淺放不下、太深浪費主臥
+# 切掉更衣室之後,主臥的北牆至少要留這麼長,門才開得出去
+# (= 門寬 850 + 兩側舒適牆角淨距 350×2,與 BAND_DOOR_ADJ 同一個算法;那個常數
+#  定義在本檔更下面,模組載入時還讀不到,故寫成數值並在此註明)。
+CLOSET_DOOR_KEEP = 1550.0
+# 主臥「要不要切成兩間」的門檻,比 plan_check 判違規的 1.5 倍**嚴**。
+# ⚠️ 1.5 倍是「不會被判違規」的底線,不是設計目標:8m 面寬的前段 32㎡ 過得了
+#    關卡,但那是一間 10 坪的臥室,而參考平面的主臥是 24㎡。超過理想上限 25%
+#    就切成「主臥 + 小孩房」,兩間都還有正常大小。
+MASTER_SPLIT_RATIO = 1.25
+
 # 前/後段左右切一刀時,每半間至少要這麼寬(擺得下床 + 北牆開得出門)。
 BAND_SPLIT_MIN_W = 2400.0
 # 半間房要跟樓梯間貼這麼長的牆,門才塞得下:門寬 + 兩側**舒適**牆角淨距。
@@ -465,7 +902,14 @@ def _room_area_cap(kind: str) -> float:
     return band[1] * BAND_OVERSIZE_RATIO * 1.0e6 if band else float("inf")
 
 
-def _band_split_x(bx0, bx1, hall_x0, west_kind="bedroom", east_kind="bedroom"):
+def _master_split_cap() -> float:
+    """主臥大到這個面積(mm²)就切成兩間 —— 見 `MASTER_SPLIT_RATIO`。"""
+    from src.design.layout.graph_layout import AREA_BAND
+    return AREA_BAND["master_bedroom"][1] * MASTER_SPLIT_RATIO * 1.0e6
+
+
+def _band_split_x(bx0, bx1, hall_x0, west_kind="bedroom", east_kind="bedroom",
+                  avoid=None):
     """前/後段左右切一刀要切在哪?切不動(面寬不夠)回 None。
 
     ⚠️ 切點**不能自由選**。這一段只有一面朝向中段核,兩間房的門都得開在那面
@@ -482,6 +926,11 @@ def _band_split_x(bx0, bx1, hall_x0, west_kind="bedroom", east_kind="bedroom"):
     切點**照兩間房各自該有的大小按比例分**,不是一律切中間:1F 後段是廚房|餐廳,
     廚房的合理上限(11㎡)比餐廳(14㎡)小,對半切會讓廚房超標。兩邊同 kind
     (樓上前段兩間臥室)時比例是 1:1,退化成切中間。
+
+    ⚠️ `avoid`=(lo, hi) 是**樓梯旁走道**在這條牆上的範圍,切點不得落在裡面。
+    走道口被切成兩半的話,兩間房各只分到走道的一部分,誰都塞不下一扇帶牆角淨距
+    的門 → 補門機制改走浴廁或隔壁臥室,動線變成「穿過廁所/穿過別人的房間」。
+    切點推到走道邊緣;推出去會讓某一間太窄就**不切**(併成一間比走不通好)。
     """
     lo = max(bx0 + BAND_SPLIT_MIN_W, hall_x0 + BAND_DOOR_ADJ)
     hi = min(bx1 - BAND_SPLIT_MIN_W, bx1 - BAND_DOOR_ADJ)
@@ -489,12 +938,65 @@ def _band_split_x(bx0, bx1, hall_x0, west_kind="bedroom", east_kind="bedroom"):
         return None
     cw, ce = _room_area_cap(west_kind), _room_area_cap(east_kind)
     frac = cw / (cw + ce) if cw + ce < float("inf") else 0.5   # 沒訂上限 → 對半
-    return min(max(bx0 + (bx1 - bx0) * frac, lo), hi)
+    x = min(max(bx0 + (bx1 - bx0) * frac, lo), hi)
+    if avoid is None or _passage_split_ok(x, avoid):
+        return x
+    cands = [c for c in (avoid[0], avoid[1]) if lo - 1e-6 <= c <= hi + 1e-6]
+    if not cands:
+        return None                                 # 推不出走道 → 這一段不切
+    return min(cands, key=lambda c: abs(c - x))
+
+
+def _master_level(garage: bool = False) -> int:
+    """主臥在哪一層的前段。1F 讓給車庫時 2F 前段是客廳 → 主臥往上一層。"""
+    return 3 if garage else 2
+
+
+def _master_suite(bx0, by0, bx1, y1, spare, xs, bath_north, level,
+                  closet=True):
+    """主臥層的前段:主臥室(+ 放得下就切一間更衣室)。
+
+    更衣室切在**北緣、貼著浴廁的那一端** —— 那一段北牆本來就開不了主臥的門
+    (門要開向樓梯間),拿來當更衣室剛好;主臥的門仍然開在剩下那段牆上。
+    浴廁在北(bath_north)時前段整條北牆都是樓梯間,更衣室改切在西端。
+
+    ⚠️ 空格(服務格沒吃完的那塊)已經併進前段時**不切** —— 那時前段是 L 形,
+    再切一刀會生出奇形怪狀的房間,而 L 形的凹角本來就是收納的位置。
+    """
+    poly = _with_spare(bx0, by0, bx1, y1, spare)
+    room = ("master_bedroom", "主臥室", poly)
+    if not closet:                                  # 量過發現床擺不下 → 不切
+        return [room]
+    if len(poly) != 4:                              # 前段是 L 形(帶空格)→ 不切
+        return [room]
+    depth = min(CLOSET_MAX_D, (y1 - by0) / 3.0)     # 別吃掉主臥超過 1/3 進深
+    if depth < CLOSET_MIN_D:
+        return [room]
+    # 切完之後北牆要留得下主臥自己的門。
+    avail = (bx1 - bx0) - CLOSET_DOOR_KEEP
+    if bath_north:
+        # 前段整條北牆都是樓梯間 → 更衣室切在西端,寬度給到夠用就好。
+        width = min(CLOSET_MIN_W * 1.5, avail)
+    else:
+        # 北牆的 [bx0, xs] 這段貼著浴廁,本來就開不了門 —— 更衣室就切那一段。
+        width = min(xs - bx0, avail)
+    if width < CLOSET_MIN_W:
+        return [room]
+    cx0, cx1 = (bx0, bx0 + width)
+    return [("master_bedroom", "主臥室",
+             _l_minus_corner(bx0, by0, bx1, y1, cx0, cx1, y1 - depth)),
+            ("storage", f"更衣室{level}F", _rect(cx0, y1 - depth, cx1, y1))]
+
+
+def _l_minus_corner(x0, y0, x1, y1, cx0, cx1, cy):
+    """矩形挖掉「北緣、西端」那一塊(cx0~cx1 × cy~y1)後剩下的 L 形。"""
+    return [(x0, y0), (x1, y0), (x1, y1), (cx1, y1), (cx1, cy), (x0, cy)]
 
 
 def _floor_rooms(level, top, bx0, by0, bx1, by1, variant=DEFAULT_VARIANT,
                  force_absorb=False, force_bath_south=False,
-                 allow_min_service=True, patio=False, garage=False):
+                 allow_min_service=True, patio=False, garage=False,
+                 closet=True, core_style="default"):
     """一層的房間矩形 + 樓梯(依設計變體微調服務格與後段配置)。
 
     force_absorb:取消儲藏室後多出來的空格,改併進樓梯間而不是隔壁居室
@@ -506,80 +1008,140 @@ def _floor_rooms(level, top, bx0, by0, bx1, by1, variant=DEFAULT_VARIANT,
     label = "下" if level == top else "上"
     # 前/後段能不能從中間切一刀,取決於樓梯間在那條牆上從哪裡開始(見
     # _band_split_x)。浴廁在哪一側,擋住的就是哪一段。
-    bath_north = variant.bath_north and not force_bath_south
+    # 參考圖版的核沒有「服務格在南還是在北」這回事(廁所固定貼著走道),
+    # 而且走道與切點都只看 xp 一個數字 —— 這個變體對它無效。
+    ref_plan = (_ref_core_plan(bx0, bx1, y1, y2, label)
+                if core_style == "ref" else None)
+    mid_plan = (_mid_core_plan(bx0, bx1, y1, y2, label)
+                if core_style == "mid" else None)
+    bath_north = (variant.bath_north and not force_bath_south
+                  and ref_plan is None and mid_plan is None)
+
+    def _make_core(bath_name):
+        if ref_plan is not None:
+            got = _core_ref(bx0, bx1, y1, y2, label, bath_name, patio=True)
+            if got is not None:
+                return got
+        if mid_plan is not None:
+            got = _core_mid(bx0, bx1, y1, y2, label, bath_name)
+            if got is not None:
+                return got
+        return _core(bx0, bx1, y1, y2, label, bath_name, bath_north,
+                     absorb_spare=force_absorb, min_service=min_service,
+                     patio=patio)
     # 有車庫時 1F 前段是車庫、客廳上 2F(見 _zones 上面那段)。前段該用哪一把
     # 面積尺量,跟著它是哪種房間走 —— 拿臥室的上限去量客廳會把 24㎡ 的客廳切成
     # 兩間小房。
-    front_kind = "living" if (garage and level == 2) else "bedroom"
+    # 主臥放在「最低的那個前段是臥室的樓層」:一般是 2F;1F 讓給車庫時 2F 前段
+    # 是客廳,主臥就上 3F。主臥用自己的面積尺(12~24㎡,比次臥寬)—— 拿次臥的
+    # 上限去量會把一間正常的主臥切成兩間小房。
+    is_master = level == _master_level(garage)
+    front_kind = ("living" if (garage and level == 2)
+                  else "master_bedroom" if is_master else "bedroom")
     front_east = "study" if front_kind == "living" else "bedroom"
-    big_front = (bx1 - bx0) * d_front > _room_area_cap(front_kind)
+    big_front = (bx1 - bx0) * d_front > (_master_split_cap()
+                                         if front_kind == "master_bedroom"
+                                         else _room_area_cap(front_kind))
     big_rear = (bx1 - bx0) * d_rear > _room_area_cap("bedroom")
 
-    def _splits(min_service):
-        xs = bx0 + _core_widths(bx1 - bx0, min_service)[0]   # 服務格東緣=樓梯間西牆
-        hall_front = bx0 if bath_north else xs               # 浴廁擋住的是哪一段
-        hall_rear = xs if bath_north else bx0
+    def _splits(min_service, bf, br):
+        if ref_plan is not None:
+            # 參考圖版:前後段的門都只開得在走道那一段(其餘不是樓梯就是廁所
+            # /天井),所以兩段共用同一個起點 = 走道西緣。
+            xs = ref_plan[0]
+            hall_front = hall_rear = xs
+        elif mid_plan is not None:
+            # 服務格在中間:前段面對的是樓梯的**起步平台**那一側(浴廁在北),
+            # 所以整條 [樓梯東緣, bx1] 都開得了門;後段只剩走道那一段。
+            xs = mid_plan[1]
+            hall_front, hall_rear = xs, mid_plan[0]
+        else:
+            xs = bx0 + _core_widths(bx1 - bx0, min_service, patio)[0]  # 服務格東緣
+            hall_front = bx0 if bath_north else xs           # 浴廁擋住的是哪一段
+            hall_rear = xs if bath_north else bx0
+        # ⚠️ 只有**後段**的切點要讓開走道。前段面對的是樓梯的**起步平台**
+        #    (那一端就是樓層地板高度,整條牆都開得了門);後段面對的是
+        #    **折返平台**那一端,只有旁邊那條走道走得過去。兩段一起套的話,
+        #    7~8m 面寬的前段會切不成兩間 → 8 條測試冒出 35㎡ 的 room_oversize。
+        av = _passage_span(bx0, bx1, min_service, patio,
+                           d_core - 2 * WALL_GAP, core_style, y1, y2)
         return (xs,
                 (_band_split_x(bx0, bx1, hall_front, front_kind, front_east)
-                 if big_front else None),
-                (_band_split_x(bx0, bx1, hall_rear, "bedroom", "study")
-                 if big_rear else None),
+                 if bf else None),
+                (_band_split_x(bx0, bx1, hall_rear, "bedroom", "study",
+                               avoid=av) if br else None),
                 hall_rear)
 
-    xs, xf, xr, hall_rear = _splits(False)
-    # 該切卻切不動(浴廁把那一段的北牆吃掉太多)→ 把服務格壓到浴廁最小寬再試。
-    # 這是拿「浴廁窄 37cm」換「臥室不要 28㎡」;壓了還是切不動就維持原樣。
-    if allow_min_service and ((big_front and xf is None)
-                              or (big_rear and xr is None)):
-        alt = _splits(True)
-        if ((big_front and alt[1] is not None) or (big_rear and alt[2] is not None)):
-            xs, xf, xr, hall_rear = alt
+    # ⚠️ 服務格要不要壓到最窄是**整棟**的決定,不是這一層的 —— 核每層同構,
+    #    樓梯才對得齊,浴廁與樓梯間之間那道牆也才上下對得上。所以用「最需要壓
+    #    的那種樓層」去問:臥室的面積上限最小(27㎡ < 主臥 36 < 客廳 48),拿它
+    #    當探針就等於問「這棟有沒有任何一層需要壓」。
+    #    (踩過:主臥層改用主臥的尺之後不必切了 → 那層就不壓 → 2F 的浴廁比
+    #     1F/3F 寬 1㎡、牆對不上。)
+    probe_front = (bx1 - bx0) * d_front > _room_area_cap("bedroom")
+    _xs, pf, pr, _hr = _splits(False, probe_front, big_rear)
+    min_service = False
+    if allow_min_service and ((probe_front and pf is None)
+                              or (big_rear and pr is None)):
+        # 這是拿「浴廁窄 37cm」換「臥室不要 28㎡」;壓了還是切不動就維持原樣。
+        _xs2, af, ar, _hr2 = _splits(True, probe_front, big_rear)
+        if (probe_front and af is not None) or (big_rear and ar is not None):
             min_service = True
-        else:
-            min_service = False
-    else:
-        min_service = False
+    xs, xf, xr, hall_rear = _splits(min_service, big_front, big_rear)
 
     # 核每層同構(服務格+樓梯間)→ 樓梯上下對齊。
     if level == 1:                                  # 1F:客廳 / 核 / 餐廳|廚房
-        core, stair, spare = _core(bx0, bx1, y1, y2, label, "浴廁", bath_north,
-                                   absorb_spare=force_absorb,
-                                   min_service=min_service, patio=patio)
+        core, stair, spare = _make_core("浴廁")
         # 前段:有車庫就整段停車(捲門由 _add_garage_doors 開在南向臨路牆)。
         fk, fn = ("garage", "車庫") if garage else ("living", "客廳")
         front_1f = (fk, fn, _with_spare(bx0, by0, bx1, y1, spare))
-        # 後段左右分:切在**樓梯旁通道**的東緣(=梯段導牆中心線),讓通道正對餐廳 →
-        # 前後段那扇門開得成,且門洞離導牆自動有牆角淨距(切在幾何中線時,通道與餐廳
-        # 只重疊一小段,門塞不下,整層就會被判走不通)。
-        xm = min(max(stair.origin[0] - GUARD_WALL_T / 2.0, bx0 + 2000.0),
-                 bx1 - 2000.0)
+        # 後段左右分:切點照**兩間房各自的合理面積**按比例分(`_band_split_x`),
+        # 而且不得切爛走道口(`avoid`)。
+        # ⚠️ 舊寫法是「切在梯段導牆中心線」—— 那是梯段貼**東**牆時代的幾何:
+        #    導牆中心線恰好就在走道旁邊,切在那裡等於把走道整條讓給一間房。
+        #    走道改貼東界牆、梯段改貼西之後(使用者 2026-08-27),同一條式子算出
+        #    來的切點跑到服務格東緣 → 整個樓梯間的寬度全歸東室,7m 面寬的廚房
+        #    17㎡、8m 21㎡(上限 11)。切點的依據要回到「兩間房該多大」,
+        #    走道那件事交給 `avoid` 管就好。
+        av = _passage_span(bx0, bx1, min_service, patio,
+                           d_core - 2 * WALL_GAP, core_style, y1, y2)
         west, east = (("dining", "餐廳"), ("kitchen", "廚房"))
+        # ⚠️ 切點**不得落在走道口上**。4.5m 面寬那兩個下限(每間後室 ≥2.4m)會把
+        #    切點拉回走道正中 → 走道north端一半對廚房、一半對餐廳,兩邊都塞不下
+        #    一扇帶牆角淨距的門 → 補門機制只好改走浴廁,動線變成「穿過廁所才
+        #    到得了餐廳」(而 plan_check 沒有這條規則,靜悄悄地過)。
+        #    切不到走道外面就**乾脆不切**(後段併成一間開放餐廚)—— 併房是本來
+        #    就有的選項,而走不通的動線是廢圖。
+        xm = _band_split_x(bx0, bx1, hall_rear, west[0], east[0], avoid=av)
+        if xm is None or not _split_clears_passage(xm, av):
+            big_rear = False                    # → 走下面的開放餐廚那條路
         # ── 開放式餐廚(使用者 2026-08-26 指著參考平面圖:「餐廳/廚房」是一間)──
         # 真實透天的 1F 後段就是一間開放餐廚,不是隔成兩間 —— 4.5m 面寬硬切,
         # 廚房只剩 2m 寬(走廊狀),而且中間那道牆在生活上沒有意義。
         # 併起來的上限是**兩間相加**(plan_check.MERGED_ROOM_PARTS 已經這樣算),
         # 所以只有大到連併合上限都撐不住的後段(8×18m 那種 44㎡)才切成兩間。
-        if variant.open_kitchen and (bx1 - bx0) * d_rear <= _room_area_cap("餐廚"):
+        if ((variant.open_kitchen or not big_rear)
+                and (bx1 - bx0) * d_rear <= _room_area_cap("餐廚")):
             rooms = [front_1f, *core,
                      ("dining", "餐廚",
                       _with_spare(bx0, y2, bx1, by1, spare))]
             return rooms, stair
-        # 1F 後段本來就是兩間,但舊切法貼著通道東緣 → 面寬一寬,西室(廚房或
-        # 餐廳)就大得離譜(8m 面寬的廚房 19㎡,上限 11㎡)。西室真的超標時才
-        # 改用對中的切點,而且**只往西縮不往東放**,窄面寬的既有格局不受影響。
-        if (xm - bx0) * d_rear > _room_area_cap(west[0]):
-            xm_mid = _band_split_x(bx0, bx1, hall_rear, west[0], east[0])
-            if xm_mid is not None:
-                xm = min(xm, xm_mid)
+        # ⚠️ 走到這裡代表「併成一間會超過**餐廚**的上限」(8×18m 那種 44㎡)——
+        #    非切不可。切點閃不開走道口(xm is None)時也得切:兩間房裡有一間的
+        #    門會不好開,但那是 plan_check 擋得住、換個切法就能解的問題;帶著
+        #    None 走下去則是直接 crash(參考圖版的走道只有一個門的寬度,實測
+        #    7.8×15.9m 就會踩到)。
+        if xm is None:
+            xm = _band_split_x(bx0, bx1, hall_rear, west[0], east[0])
+        if xm is None:
+            xm = (bx0 + bx1) / 2.0
         # 儲藏室取消後多出來的空格 → 併進緊鄰的那間居室(南=客廳、北=後段西室)
         rooms = [front_1f, *core,
                  (west[0], west[1], _with_spare(bx0, y2, xm, by1, spare)),
                  (east[0], east[1], _rect(xm, y2, bx1, by1))]
         return rooms, stair
 
-    core, stair, spare = _core(bx0, bx1, y1, y2, label, f"浴室{level}F",
-                               bath_north, absorb_spare=force_absorb,
-                               min_service=min_service, patio=patio)
+    core, stair, spare = _make_core(f"浴室{level}F")
     # 前/後段:面寬寬的時候各切成兩間(整段當一間房會大到不合理 —— 8m 面寬
     # 的前段是 8×5.4m ≈ 43㎡)。空格(浴廁沒吃完的西半塊)一定落在西半間。
     if front_kind == "living":                      # 1F 讓給車庫 → 客廳在這裡
@@ -592,6 +1154,14 @@ def _floor_rooms(level, top, bx0, by0, bx1, by1, variant=DEFAULT_VARIANT,
                  if xf is not None else
                  [("living", "客廳",
                    _with_spare(bx0, by0, bx1, y1, spare))])
+    elif is_master:                                 # 主臥層
+        # 前段大到要切兩間時(寬面寬),西半間仍然是主臥 —— 不能整層都沒有主臥。
+        front = ([("master_bedroom", "主臥室",
+                   _with_spare(bx0, by0, xf, y1, spare)),
+                  ("bedroom", f"小孩房{level}F", _rect(xf, by0, bx1, y1))]
+                 if xf is not None else
+                 _master_suite(bx0, by0, bx1, y1, spare, xs, bath_north, level,
+                               closet))
     else:
         front = ([("bedroom", f"前臥室{level}F",
                    _with_spare(bx0, by0, xf, y1, spare)),
@@ -599,11 +1169,12 @@ def _floor_rooms(level, top, bx0, by0, bx1, by1, variant=DEFAULT_VARIANT,
                  if xf is not None else
                  [("bedroom", f"前臥室{level}F",
                    _with_spare(bx0, by0, bx1, y1, spare))])
-    rear = ([("bedroom", f"後臥室{level}F",
+    rear_name = f"次臥{level}F" if is_master else f"後臥室{level}F"
+    rear = ([("bedroom", rear_name,
               _with_spare(bx0, y2, xr, by1, spare)),
              ("study", f"書房{level}F", _rect(xr, y2, bx1, by1))]
             if xr is not None else
-            [("bedroom", f"後臥室{level}F",
+            [("bedroom", rear_name,
               _with_spare(bx0, y2, bx1, by1, spare))])
     return [*front, *core, *rear], stair
 
@@ -891,11 +1462,23 @@ def _room_edge_span(room_poly, wall, along_start):
 
 
 def _stair_boxes(spec) -> list:
-    """各座樓梯「**踏step**」佔的矩形——兩端平台都不算。
+    """各座樓梯**不能當地板走**的矩形。
 
-    起步平台在 origin 之前(見 _stair);折返端平台在梯段跑完之後(s ≥ flight_run),
-    那是一塊站得住人的平地,門開在正對平台的牆上是合理的(真實透天的梯廳門就是這樣
-    開的)。只有正對踏step 的位置才算「門一開就踩階梯」。"""
+    起步平台在 origin 之前(見 _stair),那是這一層的地板高度,門開在正對它的牆上
+    是合理的(真實透天的梯廳門就是這樣開的),所以不算。
+
+    ⚠️ **折返平台要算**(2026-08-27,使用者指著 4.5m 的圖說「沒有路可以到廚房」)。
+    這裡原本寫「折返端平台是一塊站得住人的平地」—— 那是把**起步**平台的道理套到
+    **折返**平台上。折返梯是「爬上去、轉個彎、再爬上去」,中間那塊平台在
+    **半層高**(9 階 × 188 ≈ 1.69m):
+
+        踏step  y 8050~10390   從 0 爬到 +1.69m
+        折返平台 y 10390~11400  ← 整塊在 +1.69m
+
+    門開在那一段,後面是一個 1.1m 深、頭頂 1.69m 的凹洞,人走不出去。實測 60 案
+    有 45 案的門這樣開,16 案因此前後段完全走不通。**單跑直梯沒有這個問題**
+    (它只有兩端,兩端都是樓層地板),所以只有 UStair 要把平台一起算進來。
+    """
     from shapely.geometry import box
     out = []
     for st in getattr(spec, "stairs", []) or []:
@@ -909,11 +1492,13 @@ def _stair_boxes(spec) -> list:
             #    對那兩條產線**從來沒有生效過**(實測每一層的樓梯間門都只離第一階
             #    150mm,一開門就踩上踏step)。直梯的踏step 長度 = flight_length。
             run = getattr(st, "flight_run", None)
-            if run is None:
+            if run is not None:
+                run = st.length              # 折返梯:平台在半層高,一起算
+            else:
                 run = getattr(st, "flight_length", None)
             if run is None:
                 continue
-            run = min(float(run), st.length)         # 踏step 的長度(不含折返平台)
+            run = min(float(run), st.length)
         except Exception:
             continue
         d = getattr(st, "direction", "north")
@@ -1364,7 +1949,14 @@ def shift_openings_off_columns(spec) -> int:
                 blk = _column_blocks(spec, w, along, clear)
                 keep = list(w.openings)
                 w.openings = others               # 算空間時要先把自己拿掉
-                free = _free_intervals(w, lo, hi, along, blk)
+                # ⚠️ **門不吃窗的邊界淨距**(`WINDOW_EDGE_CLEAR` 300)。門離牆兩端
+                #    多遠是 `_door_pos_ok` 在管(門角淨距,分級退讓到 90),拿窗的
+                #    300 去夾會讓短牆算出來的可用區間憑空少 600mm ——實測 1.3m 的
+                #    牆只剩 700mm,850 的門怎麼算都塞不下,於是整支靜靜地不動,
+                #    柱就繼續插在門框裡(4.5m 面寬 2F 固定吃 25mm)。
+                free = _free_intervals(w, lo, hi, along, blk,
+                                       edge_clear=0.0 if op.kind == "door"
+                                       else None)
                 w.openings = keep
                 spans = [(a, b) for a, b in free if b - a >= op.width]
                 if not spans:
@@ -1373,10 +1965,102 @@ def shift_openings_off_columns(spec) -> int:
                 if new_pos is not None:
                     break
             if new_pos is None:
+                # ⚠️ 擋住它的常常**不是柱,是旁邊那扇門** —— 一扇一扇挪永遠挪不
+                #    出來,整排一起往旁邊推就排得下(見 `_repack_doors_on_wall`)。
+                if _repack_openings_on_wall(spec, w, lo, hi, along):
+                    moved += 1
+                    break       # 整道牆重排過了,這道牆不必再逐扇試
                 continue        # 真的挪不開 → 原地不動,交給關卡回報,不偷偷縮小
             op.position = new_pos
             moved += 1
     return moved
+
+
+def _rooms_across(spec, wall, pos: float) -> tuple:
+    """洞口開在這個位置時,牆**兩側**各是哪一間房(用 id;取不到給 None)。
+
+    重排門的時候拿來確認「門的另一邊還是原來那一間」—— 一道牆常常同時貼著兩間
+    鄰室(車庫北牆:西半浴廁、東半樓梯間),門一挪過界,那間房就換成從別人家進去。
+    """
+    px, py = wall.point_at(pos)
+    (sx, _sy), (ex, _ey) = wall.start, wall.end
+    vertical = abs(sx - ex) < 1.0
+    dx, dy = (300.0, 0.0) if vertical else (0.0, 300.0)
+    out = []
+    for sgn in (1.0, -1.0):
+        pt = Point(px + sgn * dx, py + sgn * dy)
+        r = next((r for r in spec.rooms if Polygon(r.points).contains(pt)), None)
+        out.append(id(r) if r is not None else None)
+    return tuple(sorted(out, key=lambda v: (v is None, v)))
+
+
+def _opening_pier(a, b) -> float:
+    """兩個相鄰洞口之間的牆垛至少多寬。
+
+    兩扇**窗**之間要 600(細長牆垛結構上會裂);牽涉到門的用一般淨距就好 ——
+    3.5m 面寬的南牆上已經有一扇 1m 大門,兩邊都要求 600 的話再也開不出窗
+    (`_free_intervals` 那段註解講的是同一件事)。"""
+    return (WINDOW_PIER_MIN if a.kind == "window" and b.kind == "window"
+            else WINDOW_GAP)
+
+
+def _repack_openings_on_wall(spec, wall, lo, hi, along) -> bool:
+    """整道牆的洞口**一起**往旁邊推,騰出位置給壓在柱上的那一個。回有沒有成功。
+
+    ⚠️ 單獨挪一扇挪不動時,擋住它的常常不是柱,是**旁邊那個洞口**:車庫北牆一次
+    排了三扇 850 的門(浴廁一扇、樓梯間兩扇),最西那扇被角柱吃掉 112mm,而它東
+    邊只有 220mm 就是下一扇 —— 逐扇試永遠找不到位置,整排往東推就排得下
+    (4000mm 的牆扣掉兩端柱還有 3480,三扇門連牆垛只要 2950)。臨路的南牆是
+    「窗 + 大門」的組合,同一件事(實測 4.1×11.5m 的大門被角柱吃掉 10mm)。
+
+    **只挪不縮、只在同一道牆上挪**,所以窗的寬度與所屬房間都不變 —— §40 採光
+    算的是「那間房的開口總寬」,沿著同一道牆平移不影響它。重排後逐項驗:左右
+    順序不變、每個洞口的**鄰室不變**、門仍離牆角夠遠、窗仍離牆兩端夠遠、而且
+    真的沒有柱再壓著;有一項不合就整批還原(加分項不得讓原本好好的東西壞掉)。
+    """
+    ops = sorted(wall.openings, key=lambda o: o.position)
+    if len(ops) < 2:
+        return False
+    before = [o.position for o in ops]
+    was = [_rooms_across(spec, wall, p) for p in before]
+    blocks = _column_blocks(spec, wall, along, 0.0)
+    keep = list(wall.openings)
+    wall.openings = []                      # 只扣柱,不扣洞口(洞口正要重排)
+    free = sorted(_free_intervals(wall, lo, hi, along, blocks, edge_clear=0.0))
+    wall.openings = keep
+    span = abs(hi - lo)
+    cursor, prev = None, None
+    for op in ops:                          # 由西往東依序塞,順序自然不變
+        # 窗要離牆的兩端 WINDOW_EDGE_CLEAR(門不吃這條 —— 見 `_door_pos_ok`)。
+        edge = WINDOW_EDGE_CLEAR if op.kind == "window" else 0.0
+        need = op.width if prev is None else op.width + _opening_pier(prev, op)
+        for a, b in free:
+            base = a if cursor is None else max(a, cursor)
+            start = max(base + (need - op.width), edge)
+            if start + op.width <= min(b, span - edge):
+                op.position = start + op.width / 2.0
+                cursor, prev = start + op.width, op
+                break
+        else:
+            for o, p0 in zip(ops, before):
+                o.position = p0
+            return False
+    ok = True
+    for op, room_pair in zip(ops, was):
+        if _rooms_across(spec, wall, op.position) != room_pair:
+            ok = False                      # 洞口跑到別間去了
+        elif op.kind == "door" and not any(
+                _door_pos_ok(spec, wall, op.position, op.width, c)
+                for c in (*DOOR_CLEAR_STEPS, DOOR_CORNER_MIN)):
+            ok = False                      # 換成卡在牆角
+        else:
+            a0, b0 = op.position - op.width / 2.0, op.position + op.width / 2.0
+            if any(t0 < b0 and a0 < t1 for t0, t1 in blocks):
+                ok = False                  # 還是壓在柱上
+    if not ok:
+        for o, p0 in zip(ops, before):
+            o.position = p0
+    return ok
 
 
 #: 洞口躲柱的淨距退讓階梯:先求舒適的 300,排不下就一級一級降到 0(只求不重疊)。
@@ -1709,6 +2393,42 @@ def _ensure_room_doors(spec, bx0, by0, bx1, level):
         _add_interior_door(spec, room, bx0, by0, bx1, level)
 
 
+def _bath_door_to_hall(spec, bx0, by0, bx1, level) -> int:
+    """參考圖版:浴廁的門一定要開在**走道**上,不能開向餐廚/車庫。回改了幾間。
+
+    這正是使用者 2026-08-28 指著方案 B 要的那一點。預設核做不到(廁所被樓梯隔開,
+    只剩南北兩面能開門);參考圖版的廁所就貼著走道 —— 但**「貼著」不等於「門開在
+    那裡」**:1F 的廁所北邊是餐廚,補門機制先挑到哪一面就開哪一面,實測 40 案
+    有 38 個樓層的廁所門開向餐廚,跟改之前一模一樣。所以這裡明講。
+
+    ⚠️ 開不成走道門就**維持原樣** —— 一間沒有門的廁所比一扇開錯邊的門糟得多
+    (本檔那條鐵則:加分項不得讓原本好好的東西壞掉)。
+    """
+    changed = 0
+    for room in [r for r in spec.rooms if r.kind == "bathroom"]:
+        bp = Polygon(room.points)
+
+        def _adj():
+            out = []
+            for dp in spec.doors:
+                w = spec.walls[dp.wall_index]
+                op = w.openings[dp.opening_index]
+                if bp.exterior.distance(Point(*w.point_at(op.position))) < 50.0:
+                    out.append(dp)
+            return out
+
+        if any("stair_hall" in _door_kinds(spec, dp) for dp in _adj()):
+            continue                                # 本來就開在走道上
+        if not _add_interior_door(spec, room, bx0, by0, bx1, level,
+                                  only_kinds={"stair_hall"}):
+            continue                                # 開不成 → 別把原本那扇拆了
+        _remove_openings(spec, {(dp.wall_index, dp.opening_index)
+                                for dp in _adj()
+                                if "stair_hall" not in _door_kinds(spec, dp)})
+        changed += 1
+    return changed
+
+
 def _add_interior_door(spec, room, bx0, by0, bx1, level, only_kinds=None):
     """給一間沒門的房間補一扇門:挑一道邊界內牆(接最公共/動線的鄰室)開洞。
 
@@ -1813,7 +2533,8 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
                  variant=DEFAULT_VARIANT, force_absorb=False,
                  force_bath_south=False, margin=0.0, depth_cap=None,
                  allow_min_service=True, lot=None, depth_limit=None,
-                 want_patio=False, garage=False):
+                 want_patio=False, garage=False, closet=True,
+                 core_style="default"):
     """組一層 spec(房間 → 牆/門/窗 + 樓梯 + 開口收尾 + 家具)。
 
     D 超過該面寬的上限時,**建築封頂**、多出來的地留成前後院(置中)——與兩帶式
@@ -1861,7 +2582,8 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
     rooms, stair = _floor_rooms(level, top, bx0, by0, bx1, by1, variant,
                                 force_absorb, force_bath_south,
                                 allow_min_service, patio=use_patio,
-                                garage=garage)
+                                garage=garage, closet=closet,
+                                core_style=core_style)
     spec = rooms_to_spec(rooms, (bx0, by0, bx1, by1), site_w, site_d,
                          setback=edge)
     if lot is not None:
@@ -1900,7 +2622,11 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
                             depth_cap=depth_cap,
                             allow_min_service=allow_min_service,
                             lot=lot, depth_limit=depth_limit,
-                            want_patio=want_patio, garage=garage)
+                            want_patio=want_patio, garage=garage,
+                            closet=closet, core_style=core_style)
+    if core_style in ("ref", "mid"):
+        # 這兩版的重點就是「廁所的門開在走道上」,這裡明講(見該函式)。
+        _bath_door_to_hall(spec, bx0, by0, bx1, level)
     from src.design.layout.door_rules import repair_doors
     repair_doors(spec, bx0, by0, bx1, level)         # 門與動線規範:改門(不改切法)
     if force_absorb and not force_bath_south and not _floor_connected(spec):
@@ -1910,15 +2636,22 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
                             margin=margin, depth_cap=depth_cap,
                             allow_min_service=allow_min_service,
                             lot=lot, depth_limit=depth_limit,
-                            want_patio=want_patio, garage=garage)
+                            want_patio=want_patio, garage=garage,
+                            closet=closet, core_style=core_style)
     spec.floor_label = floor_label
     _set_structural_grid(spec, bx0, by0, Wb, build_d)
+    # ⚠️ 洞口躲柱:排洞口時柱還不存在(`_column_blocks` 那時看到的是空的),
+    #    後來補的門(浴廁門、接通用門)因此可能落在柱上。這支本來只有 AI 產線
+    #    在接 —— 本檔「規則存在,但關卡沒接」的第六次。實測窄面寬配車庫有 3 案
+    #    的門被柱吃掉 25~75mm。
+    shift_openings_off_columns(spec)
     # ⚠️ 柱到這一步才存在,而**柱是實心的**:門扇掃到柱就打不開。上面第 1340 行
     #    那次修門看到的是「還沒有柱」的世界,所以這裡一定要再修一次
     #    (不furnish 的樓層沒有下面那段,不補這一行就完全沒人管)。
     repair_doors(spec, bx0, by0, bx1, level)
     if furnish:                                     # 家具:沿用 Phase 6 擺位(必合法)
-        from src.design.layout.auto_furnish import furnish_spec
+        from src.design.layout.auto_furnish import (
+            furnish_spec, settle_after_declutter)
         from src.design.layout.fixture_fix import (
             clear_fixtures_off_columns, trim_counters_at_columns)
         from src.design.layout.graph_layout import _declutter_for_circulation
@@ -1929,7 +2662,26 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
         trim_counters_at_columns(spec)
         clear_fixtures_off_columns(spec)
         _declutter_for_circulation(spec)            # 擋動線的家具移掉(與 AI 產線同一套)
+        # ⚠️ 動線修復器只看動線:它會拿掉浴室**唯一**的浴缸、臥室的床。換小一號
+        #    的補回來(浴缸→淋浴間、雙人床→單人床),沒有床就別留床頭櫃。
+        settle_after_declutter(spec)
+        # ⚠️ **躲柱要再收一次**:上面那次 `shift_openings_off_columns` 跑在
+        #    第一次修門之前,而修門會**補新的門**(接通用門、浴廁門)——
+        #    新補的門沒有人問過它壓不壓柱。實測車庫版 30 案有 2 案的門被
+        #    角柱吃掉 45~112mm。本檔「規則存在,但關卡沒接」的第七次。
+        #    ⚠️ 放在最後一次修門**之前**,順序才對:躲柱可能把門推到門扇
+        #    會撞到東西的位置,要留一次修門在後面收。
+        shift_openings_off_columns(spec)
         repair_doors(spec, bx0, by0, bx1, level)    # 家具擺完再修一次門(弧線會不會撞家具)
+        if closet and not _beds_ok(spec):           # 更衣室害得床擺不下 → 退掉它
+            return _build_floor(level, top, W, D, floor_label, furnish, variant,
+                                force_absorb=force_absorb,
+                                force_bath_south=force_bath_south,
+                                margin=margin, depth_cap=depth_cap,
+                                allow_min_service=allow_min_service,
+                                lot=lot, depth_limit=depth_limit,
+                                want_patio=want_patio, garage=garage,
+                                closet=False, core_style=core_style)
     if variant.mirror:                              # 整層東西鏡射(樓梯核換邊)
         from src.design.layout_generator import _mirror_spec
         spec = _mirror_spec(spec, True, False)
@@ -1959,11 +2711,17 @@ def generate_narrow_building(building_w_mm: float, building_d_mm: float, *,
                              floors: int = 3, bedrooms: int = 3,
                              furnish: bool = True, variant=None,
                              seed=None, lot=None, patio: bool = False,
-                             garage: bool = False):
+                             garage: bool = False,
+                             core_style: str = "default"):
     """窄面寬透天多層 → [(樓層標示, FloorPlanSpec)]。
 
     每層共用同一垂直核(樓梯間+浴廁),樓梯上下對齊,並配家具(Phase 6 擺位)。
     building_w/d 是**建築物**尺寸;頂層樓梯標「下」,其餘標「上」。
+
+    core_style:中段核的排法。`"default"` = 浴廁|樓梯|走道(走道貼界牆);
+    `"ref"` = 使用者 2026-08-28 給的參考平面「方案 B」:樓梯**橫置**在核的南半、
+    天井與廁所並排在北半、廁所的門直接開在走道上(見 `_core_ref`)。排不下時
+    自動退回 default —— 加一個排法不該讓原本生得出來的案子生不出來。
 
     lot:連棟街屋的基地(`design/zoning.TownhouseLot`)。給了就照它畫地界線 ——
     **左右與鄰戶共壁、側邊不退縮**,前後留建蔽率吃剩的法定空地,建築進深另外
@@ -1986,7 +2744,7 @@ def generate_narrow_building(building_w_mm: float, building_d_mm: float, *,
          _build_floor(lv, floors, W, D, f"{lv}F", furnish, variant,
                       margin=m, depth_cap=cap, allow_min_service=ams,
                       lot=lot, depth_limit=limit, want_patio=patio,
-                      garage=garage))
+                      garage=garage, core_style=core_style))
         for lv in range(1, floors + 1)])))
 
 

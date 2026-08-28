@@ -62,6 +62,13 @@ def main() -> int:
     ap.add_argument("--garage", action="store_true",
                     help="1F 做車庫(前段整段停車 + 臨路捲門;客廳往上挪到 2F)。"
                          "⚠️ 需要建築進深 ≥13.1m,面寬也要夠(3.5m 放不下)")
+    ap.add_argument("--mid-core", action="store_true",
+                    help="中段核改成**樓梯|廁所|走道**:服務格搬到樓梯與走道中間,"
+                         "廁所的門直接開在走道上(樓梯仍順著進深跑)")
+    ap.add_argument("--ref-core", action="store_true",
+                    help="中段核改用**參考平面「方案 B」**的排法:樓梯橫置在核的"
+                         "南半、天井與廁所並排在北半、廁所的門開在走道上"
+                         "(⚠️ 只有窄透天骨架吃這個開關)")
     ap.add_argument("--patio", action="store_true",
                     help="中段開天井(每層約 -3㎡,換浴廁/樓梯間有自然採光;"
                          "⚠️ 不會讓建築蓋得更深,實測 0.0m)")
@@ -77,6 +84,9 @@ def main() -> int:
                            dimension_basis="site" if args.site else "building",
                            zone=args.zone, coverage=args.coverage,
                            patio=args.patio,
+                           core_style=("ref" if args.ref_core
+                                       else "mid" if args.mid_core
+                                       else "default"),
                            car_spaces=1 if args.garage else 0),
         floors=args.floors,
         # 跟 nl_parser / scan_plans 一致:透天只要多層就走層別分化

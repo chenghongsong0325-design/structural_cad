@@ -68,6 +68,20 @@ def _build_bathtub(blk) -> None:
     blk.add_circle((-600, 375), radius=50, dxfattribs={"layer": "0"})
 
 
+def _build_shower(blk) -> None:
+    """淋浴間 900×900(背貼牆):外框 + 玻璃內緣 + 地排 + 蓮蓬頭。
+
+    ⚠️ 為什麼需要:浴缸 1600×750 放不下 2~4㎡ 的小衛浴,而程式只會「試了放不下
+    就略過」—— 結果 18 間浴室裡有 14 間**一件洗澡設備都沒有**。台灣這種尺寸的
+    衛浴幾乎都是淋浴間,畫成只有馬桶洗手台才是不對的。"""
+    blk.add_lwpolyline([(-450, 0), (450, 0), (450, 900), (-450, 900)],
+                       close=True, dxfattribs={"layer": "0"})
+    blk.add_lwpolyline([(-400, 50), (400, 50), (400, 850), (-400, 850)],
+                       close=True, dxfattribs={"layer": "0"})    # 玻璃內緣
+    blk.add_circle((0, 480), radius=60, dxfattribs={"layer": "0"})   # 地板排水
+    blk.add_circle((0, 170), radius=90, dxfattribs={"layer": "0"})   # 蓮蓬頭(貼牆側)
+
+
 def _build_bed(blk, width: float, pillows: int) -> None:
     """床(床頭貼牆):外框 + 枕頭 + 被摺線。"""
     hw = width / 2
@@ -96,6 +110,24 @@ def _build_table4(blk) -> None:
             close=True, dxfattribs={"layer": "0"})
 
 
+def _build_table2(blk) -> None:
+    """二人餐桌 1200×750(桌邊貼牆)+ 兩端各一張椅子 450×450。
+
+    ⚠️ **不是縮小版的 table4**:差別在原點。table4 的原點是桌心(_CENTER_ORIGIN),
+    而擺位器對那種家具只在房間**正中央**試 9 個點 —— 走道型餐廳(1.8m 寬 × 4.3m
+    長,4.5m 面寬街屋的標配)的正中央就是通道,9 個點全被打回,結果是一間空房。
+    這張桌子**貼牆**(原點=貼牆邊中點),走的是「沿四面牆找位置」那條路;而真實
+    1.8m 寬的餐廳本來擺的也就是靠牆餐桌、兩端各坐一人。
+    """
+    blk.add_lwpolyline([(-600, 0), (600, 0), (600, 750), (-600, 750)],
+                       close=True, dxfattribs={"layer": "0"})            # 桌面
+    for sx in (-1, 1):                                                   # 兩端椅子
+        cx = sx * 825
+        blk.add_lwpolyline(
+            [(cx - 225, 150), (cx + 225, 150), (cx + 225, 600), (cx - 225, 600)],
+            close=True, dxfattribs={"layer": "0"})
+
+
 def _build_sofa3(blk) -> None:
     """三人沙發 2000×850(背貼牆):背 + 坐墊 + 兩扶手。"""
     blk.add_lwpolyline([(-1000, 0), (1000, 0), (1000, 200), (-1000, 200)],
@@ -114,6 +146,17 @@ def _build_wardrobe(blk) -> None:
                        close=True, dxfattribs={"layer": "0"})
     blk.add_line((-750, 300), (750, 300), dxfattribs={"layer": "0"})   # 吊桿
     blk.add_line((-750, 0), (750, 600), dxfattribs={"layer": "0"})     # 斜線記號
+
+
+def _build_closet_rail(blk) -> None:
+    """吊衣桿 1000×600(背貼牆):更衣室用的窄版衣櫃 —— 一根吊桿 + 上層板。
+
+    ⚠️ 為什麼不直接用 `wardrobe`:衣櫃 1500 寬,而 4.5~6m 面寬切出來的更衣室
+    淨寬只有 1350mm —— 衣櫃永遠放不下,更衣室就會是一間**空房**。"""
+    blk.add_lwpolyline([(-500, 0), (500, 0), (500, 600), (-500, 600)],
+                       close=True, dxfattribs={"layer": "0"})
+    blk.add_line((-500, 300), (500, 300), dxfattribs={"layer": "0"})    # 吊桿
+    blk.add_line((-500, 120), (500, 120), dxfattribs={"layer": "0"})    # 上層板
 
 
 def _build_shoe_cabinet(blk) -> None:
@@ -209,12 +252,15 @@ FIXTURE_BUILDERS = {
     "toilet": _build_toilet,
     "basin": _build_basin,
     "bathtub": _build_bathtub,
+    "shower": _build_shower,
     "bed_single": lambda blk: _build_bed(blk, 1000, pillows=1),
     "bed_double": lambda blk: _build_bed(blk, 1600, pillows=2),
     "table4": _build_table4,
+    "table2": _build_table2,
     "sofa3": _build_sofa3,
     "wardrobe": _build_wardrobe,
     "shoe_cabinet": _build_shoe_cabinet,
+    "closet_rail": _build_closet_rail,
     "desk": _build_desk,
     "car": _build_car,
     "coffee_table": _build_coffee_table,
@@ -236,12 +282,15 @@ FIXTURE_SIZES = {
     "toilet": (380, 700),
     "basin": (500, 450),
     "bathtub": (1600, 750),
+    "shower": (900, 900),        # 淋浴間(浴缸放不下的小衛浴用)
     "bed_single": (1000, 2000),
     "bed_double": (1600, 2000),
     "table4": (1560, 1560),      # 桌 800 + 兩側椅子(590+190)×2
+    "table2": (2100, 750),       # 二人靠牆餐桌:桌 1200 + 兩端椅子;窄餐廳用
     "sofa3": (2000, 850),
     "wardrobe": (1500, 600),
     "shoe_cabinet": (1200, 350),
+    "closet_rail": (1000, 600),  # 更衣室的吊衣桿(衣櫃 1500 放不下時用)
     "desk": (1200, 700),         # 桌 550 + 椅子外緣(部分塞桌下)
     "car": (1800, 4600),         # 小客車;原點=車心(_CENTER_ORIGIN)
     "coffee_table": (1200, 600),  # 茶几;原點=中心(_CENTER_ORIGIN)

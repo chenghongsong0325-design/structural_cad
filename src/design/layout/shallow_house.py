@@ -92,7 +92,9 @@ def _stair(bx0, bx1, y0, y1, label):
     """梯帶內的東西向折返梯(往東上),**西端留起步平台**。
 
     與 narrow_house 的樓梯同一組規則(級高 ≤190、踏面 ≥210、平臺深 ≥梯段寬、
-    門進來先站平地再上階),只是行進方向轉了 90 度:梯跑沿面寬跑。"""
+    門進來先站平地再上階),只是行進方向轉了 90 度:梯跑沿面寬跑。
+
+    """
     span = (y1 - y0) - 2 * WALL_GAP                 # 兩梯段並排的總寬
     flight_w = span
     spf = _steps_per_flight()
@@ -104,6 +106,10 @@ def _stair(bx0, bx1, y0, y1, label):
     tread = STAIR_TREAD
     if spf * tread + need_turn > run_len:           # 太擠 → 縮踏面(仍 ≥法定 210)
         tread = max(MIN_TREAD, (run_len - need_turn) / spf)
+    # ⚠️ 折返平台該多深就多深(同 narrow_house._stair):多吃的那一截會被畫成
+    #    **半層高**的平台,而不是地板 —— 實測 6.7m 面寬有一案平台被拉到 3.3m,
+    #    浴廁貼著它就再也開不出一扇開在地板高度的門。
+    run_len = min(run_len, spf * tread + need_turn)
     return UStair(origin=(bx0 + WALL_GAP + landing, y0 + WALL_GAP),
                   width=flight_w, length=run_len, direction="east",
                   steps_per_flight=spf, tread=tread,
@@ -124,7 +130,13 @@ def _floor_rooms(level, top, bx0, by0, bx1, by1, no_split=False):
     # 前段整片留給居室;不夠就整條都是樓梯間,浴廁改放前段東側。
     run_w = _stair_run_needed(band_d)
     spare_w = W - run_w
-    bath_in_band = spare_w >= BATH_MIN_W and band_d >= BATH_MIN_D
+    # ⚠️ **浴廁不放梯帶**(2026-08-27)。梯帶的東端是折返梯的**折返平台**,而
+    #    折返平台在**半層高**、不是樓層地板 —— 浴廁擺那裡,唯一能開門的鄰居
+    #    就只剩南邊的廚房(掃描 `bath_door_to_kitchen`)。梯帶只有 1.9m 深、
+    #    擠不出旁邊的通道,所以浴廁一律改放**前段東側** —— 那個分支本來就在,
+    #    窄面寬一直走的就是它。(平台深度改成「該多深就多深」之後仍有 2 案
+    #    出事,所以這條要留著。)
+    bath_in_band = False
     xs = bx1 - min(max(spare_w, BATH_MIN_W), BATH_MAX_W) if bath_in_band else bx1
 
     bath_name = "浴廁" if level == 1 else f"浴室{level}F"
@@ -234,6 +246,8 @@ def _build_floor(level, top, W, D, floor_label, furnish=True, cap=None,
         trim_counters_at_columns(spec)              # 有柱之後才需要,見窄透天同段說明
         clear_fixtures_off_columns(spec)
         _declutter_for_circulation(spec)            # 擋動線的家具移掉(四條產線同一套)
+        from src.design.layout.auto_furnish import settle_after_declutter
+        settle_after_declutter(spec)                # 補回被移掉的床/洗澡設備
         repair_doors(spec, bx0, by0, bx1, level)    # 家具擺完再修一次門(弧線會不會撞家具)
     return spec
 

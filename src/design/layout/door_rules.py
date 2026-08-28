@@ -50,6 +50,11 @@ BATH_DOOR_FORBIDDEN = {"kitchen", "shrine"}
 BATH_KINDS = {"bathroom", "toilet"}
 # 這些不是居室(不住人),門與衛浴同級 75cm 即可。
 SERVICE_KINDS = {"storage", "utility", "pipe_shaft"}
+# **套內附屬空間**:只跟一間臥室相連時,它就是那間房的一部分(主臥的更衣室、
+# 套房的衛浴),不算「要穿越別人的臥室才進得去」。
+# ⚠️ 「只有一個鄰室」是關鍵條件 —— 有兩個以上鄰室的儲藏是公共儲藏,
+#    那種藏在臥室後面才真的是動線缺陷。
+ENSUITE_KINDS = BATH_KINDS | {"storage", "utility"}
 
 
 # ── 門連通表 ────────────────────────────────────────────────────────────────
@@ -542,7 +547,8 @@ def _door_neighbors(spec, polys, env, room):
 def _through_bedroom_issues(spec, polys, env, level, lb) -> list:
     """從大門(樓上:從樓梯間)出發,不進臥室走得到的空間;走不到的就是要穿臥室。
 
-    例外:套內衛浴——只跟一間臥室相連的衛浴,本來就是那間房的附屬空間。"""
+    例外:套內附屬空間(`ENSUITE_KINDS`)——只跟一間臥室相連的衛浴/更衣室,
+    本來就是那間房的一部分。"""
     from src.design.layout.plan_check import _room_graph_components  # noqa: F401
     rooms = [r for r, _p in polys if r.kind not in VOID_KINDS]
     if not rooms:
@@ -577,10 +583,10 @@ def _through_bedroom_issues(spec, polys, env, level, lb) -> list:
         if id(r) in seen:
             continue
         nbrs = [n for n in _door_neighbors(spec, polys, env, r) if n]
-        ensuite = (r.kind in BATH_KINDS and len(nbrs) == 1
+        ensuite = (r.kind in ENSUITE_KINDS and len(nbrs) == 1
                    and nbrs[0].kind in PRIVATE_KINDS)
         if ensuite:
-            continue                        # 套內衛浴:合理,不是動線缺陷
+            continue                        # 套內衛浴/更衣室:合理,不是缺陷
         issues.append(PlanIssue(
             "error", "through_bedroom", lb, r.name,
             f"只能穿越 {[n.name for n in nbrs]} 才進得去(臥室不可當通道)"))

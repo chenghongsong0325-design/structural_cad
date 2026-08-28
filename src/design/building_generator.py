@@ -252,7 +252,8 @@ def generate_building_auto(brief: BuildingBrief) -> BuildingSpec:
                 lot.building_w, brief.typical.site_depth,
                 floors=max(1, brief.floors),
                 bedrooms=brief.typical.bedrooms, seed=brief.typical.seed,
-                lot=lot, patio=brief.typical.patio, garage=want_garage)
+                lot=lot, patio=brief.typical.patio, garage=want_garage,
+                core_style=brief.typical.core_style)
             return _narrow_to_building(floors, brief.floor_height)
         from src.design.layout.narrow_house import min_depth_for
         from src.design.layout.shallow_house import (
@@ -273,7 +274,8 @@ def generate_building_auto(brief: BuildingBrief) -> BuildingSpec:
             floors = generate_narrow_building(
                 bw, bd, floors=max(1, brief.floors),
                 bedrooms=brief.typical.bedrooms, seed=brief.typical.seed,
-                patio=brief.typical.patio, garage=want_garage)
+                patio=brief.typical.patio, garage=want_garage,
+                core_style=brief.typical.core_style)
             return _narrow_to_building(floors, brief.floor_height)
     return generate_building(brief)
 

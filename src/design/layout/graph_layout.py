@@ -1120,6 +1120,8 @@ def _realize_floor_core(rooms, edges, entry_id, env, core, rng, tries,
         furnish_spec(spec)
         push_fixtures_out_of_walls(spec)          # 貼牆家具嵌進牆面 → 推回室內
         _declutter_for_circulation(spec)          # 移掉擋動線的家具 → 每房走得通
+        from src.design.layout.auto_furnish import settle_after_declutter
+        settle_after_declutter(spec)              # 補回被移掉的床/洗澡設備
     # 門與動線規範:轉門/改橫拉門、衛浴門不朝廚房、補一扇門直通公共動線。
     # 要在家具擺完之後——開啟弧線會不會撞到家具,擺完才知道。
     from src.design.layout.door_rules import repair_doors
