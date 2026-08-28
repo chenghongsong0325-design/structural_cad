@@ -1725,6 +1725,32 @@ def _fit_margin(build):
     raise last
 
 
+def _fit_patio(build):
+    """開天井是**加分項**:開了如果出硬錯誤就不開(與 `_fit_service` 同一條鐵則)。
+
+    ⚠️ 天井會讓 `_core_widths` **跳過浴廁退讓**(服務格一窄,天井就小到 code_check
+    不認,等於白開)—— 但那個退讓正是窄面寬唯一擠得出走道的手段。3.6m 面寬開天井
+    因此讓 1F **斷成兩塊**(客廳|浴廁|樓梯間 / 餐廚,餐廚進不去)。
+
+    ⚠️ 本檔原本把這件事寫成「拿走道換採光」的設計取捨 —— 那句話對 4.5m 以上成立,
+       對 3.6m 不成立:沒了走道那一層根本走不通,那是廢圖,不是取捨。
+       **加分項不得讓原本好好的東西壞掉**(這條在本檔已經第八次登場)。
+
+    ⚠️ 判準是 `plan_check` 有沒有**硬錯誤**,不是有沒有 raise —— 這個案子蓋得出來,
+       只是圖不合格;只看例外的話這道退讓完全不會啟動(選配版踩過同一個坑)。
+    ⚠️ 天井貫穿到屋頂,開不開是**整棟**的決定,不是各層各自決定,所以包在最外層。
+    """
+    from src.design.layout.plan_check import check_building
+
+    floors = build(True)
+    if not check_building(floors).errors:
+        return floors
+    try:
+        return build(False)                         # 不開天井再蓋一次
+    except ValueError:                              # 不開反而排不下 → 維持原樣
+        return floors
+
+
 def _fit_service(build):
     """壓窄服務格(`min_service`)是**加分項**,壓了反而出硬錯誤就不壓。
 
@@ -2739,13 +2765,19 @@ def generate_narrow_building(building_w_mm: float, building_d_mm: float, *,
     limit = None if lot is None else lot.building_d
     # ⚠️ 各層必須用**同一個** margin 與**同一個**進深,否則軸網對不上、柱不會
     #    上下對齊、外牆也對不齊。
-    return _fit_service(lambda ams: _fit_depth(lambda cap: _fit_margin(lambda m: [
-        (f"{lv}F",
-         _build_floor(lv, floors, W, D, f"{lv}F", furnish, variant,
-                      margin=m, depth_cap=cap, allow_min_service=ams,
-                      lot=lot, depth_limit=limit, want_patio=patio,
-                      garage=garage, core_style=core_style))
-        for lv in range(1, floors + 1)])))
+    def _all(want_patio):
+        return _fit_service(lambda ams: _fit_depth(lambda cap: _fit_margin(
+            lambda m: [
+                (f"{lv}F",
+                 _build_floor(lv, floors, W, D, f"{lv}F", furnish, variant,
+                              margin=m, depth_cap=cap, allow_min_service=ams,
+                              lot=lot, depth_limit=limit,
+                              want_patio=want_patio,
+                              garage=garage, core_style=core_style))
+                for lv in range(1, floors + 1)])))
+
+    # 天井開了出硬錯誤就不開(見 _fit_patio);沒要天井就不必多跑那一輪。
+    return _fit_patio(_all) if patio else _all(False)
 
 
 def generate_narrow_house(building_w_mm: float, building_d_mm: float, *,

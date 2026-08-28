@@ -344,7 +344,13 @@ def test_patio_is_off_by_default():
 
 def test_patio_sits_in_the_core_and_is_big_enough_to_count():
     """★★ 開了天井:位置在中段核、貼著浴廁(參考圖就是這樣畫的),
-    而且要大到 `code_check` 認得(太小的天井採不到光)。"""
+    而且要大到 `code_check` 認得(太小的天井採不到光)。
+
+    ⚠️ 尺寸從 15000/seed0 換成 14450/seed7,不是為了讓測試好過:原本那組**開了
+    天井就是一張壞圖**(2F 的更衣室與浴室只能穿過主臥才進得去),而這條測試只
+    量幾何、從來沒送 plan_check,所以釘了一個壞掉的設定很久都沒人發現。
+    `_fit_patio` 上線之後那組會自動退掉天井 —— 退得對。下面補上 plan_check,
+    這條測試就不可能再釘到壞圖(本檔「報表會說謊」那一族)。"""
     from shapely.geometry import Polygon as _P
 
     from src.design.layout.code_check import (
@@ -352,8 +358,11 @@ def test_patio_sits_in_the_core_and_is_big_enough_to_count():
         PATIO_MIN_SIDE,
         daylight_patios,
     )
-    floors = generate_narrow_building(4500.0, 15000.0, floors=3, seed=0,
+    from src.design.layout.plan_check import check_building
+    floors = generate_narrow_building(4500.0, 14450.0, floors=3, seed=7,
                                       patio=True)
+    assert check_building(floors).ok, [str(i)
+                                       for i in check_building(floors).errors]
     for _label, spec in floors:
         pats = [r for r in spec.rooms if r.kind == "patio"]
         assert len(pats) == 1
@@ -406,10 +415,12 @@ def test_patio_does_not_buy_extra_depth(bw):
 
 
 def test_patio_costs_floor_area_every_level():
-    """★ 天井是貫穿到屋頂的洞:**每一層**都少掉那塊樓地板,不是只有一層。"""
+    """★ 天井是貫穿到屋頂的洞:**每一層**都少掉那塊樓地板,不是只有一層。
+
+    ⚠️ 尺寸換成天井真的留得住的那一組(理由同上一條測試)。"""
     from shapely.geometry import Polygon as _P
     def area(patio):
-        floors = generate_narrow_building(4500.0, 15000.0, floors=3, seed=0,
+        floors = generate_narrow_building(4500.0, 14450.0, floors=3, seed=7,
                                           patio=patio)
         return [sum(_P(r.points).area for r in sp.rooms if r.kind != "patio")
                 for _l, sp in floors]
@@ -1583,3 +1594,39 @@ def test_mid_core_falls_back_when_it_does_not_fit():
     floors = generate_narrow_building(3600.0, 12500.0, floors=3, seed=7,
                                       core_style="mid")
     assert check_building(floors).ok
+
+
+def test_opening_a_patio_never_breaks_the_floor_apart():
+    """★★ 開天井是**加分項**:開了出硬錯誤就不開(本檔鐵則,第八次登場)。
+
+    天井會讓 `_core_widths` **跳過浴廁退讓**(服務格一窄,天井就小到 code_check
+    不認)—— 但那個退讓正是窄面寬唯一擠得出走道的手段。3.6m 面寬開天井因此讓
+    1F 斷成兩塊(客廳|浴廁|樓梯間 / 餐廚,餐廚進不去)。
+
+    ⚠️ 本檔原本把這件事寫成「拿走道換採光」的設計取捨 —— 那對 4.5m 以上成立,
+       對 3.6m 不成立:沒了走道那一層根本走不通,是廢圖不是取捨。
+    ⚠️ 這個案子**蓋得出來**、只是圖不合格,所以退讓的判準是 plan_check 有沒有
+       硬錯誤,不是有沒有 raise(只看例外的話這道退讓永遠不會啟動)。
+    """
+    from src.design.layout.plan_check import check_building
+    from src.design.layout.narrow_house import NarrowVariant
+    v = NarrowVariant(mirror=False, bath_north=False, open_kitchen=True,
+                      entry_frac=0.22)
+    floors = generate_narrow_building(3600.0, 12500.0, floors=3, bedrooms=3,
+                                      variant=v, patio=True)
+    plan = check_building(floors)
+    assert plan.ok, [str(i) for i in plan.errors]
+    # 退掉的是天井本身,不是整張圖
+    assert not any(r.kind == "patio" for _lb, sp in floors for r in sp.rooms)
+
+
+@pytest.mark.parametrize("bw,bd", [(4500.0, 14450.0), (5450.0, 15450.0)])
+def test_a_patio_that_fits_is_kept(bw, bd):
+    """★★ 退讓只在「真的壞掉」時啟動 —— 放得下的天井不准被順手退掉。
+
+    (少了這條,`_fit_patio` 可以靠「一律不開天井」通過上面那條測試。)"""
+    from src.design.layout.plan_check import check_building
+    floors = generate_narrow_building(bw, bd, floors=3, seed=7, patio=True,
+                                      core_style="ref")
+    assert check_building(floors).ok
+    assert any(r.kind == "patio" for _lb, sp in floors for r in sp.rooms)
