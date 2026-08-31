@@ -93,9 +93,10 @@ DESIGNER_PROMPT = """\
       代價:走道只有一扇門的寬度,前後段**不能**再左右切成兩間。
 
 選擇的原則:
+- **方案 B 是使用者自己畫的參考平面** —— 沒有明確理由選別款就選它。
 - 房間數少、要中段有採光 → 方案 B(有天井)。
 - 一般情形、想要廁所好用又不想樓梯太陡 → 方案 A'。
-- 面寬寬(7~8m)、需要前後段各切成兩間房 → 方案 A。
+- 面寬寬(7~8m)**而且**使用者明講要多一間房 → 方案 A(只有它切得成兩間)。
 - 使用者明講要車庫才給 garage;車庫會讓 1F 沒有客廳(客廳上 2F),而且需要
   建築進深夠深、面寬 4m 以上。
 - 天井只有方案 B 放得下,其他兩款給 false。
@@ -193,8 +194,11 @@ def normalize_options(opts: dict, *, width: float, depth: float) -> dict:
     `narrow_house` 檔頭,不要在這裡另抄數字)。
     """
     out = dict(opts or {})
-    style = str(out.get("core_style") or "mid")
-    out["core_style"] = style if style in CORE_STYLES else "mid"
+    # ⚠️ 預設是**方案 B**:那是使用者 2026-08-28 給的參考平面
+    #    (前院|客廳|樓梯橫置+天井/廁所+走道|餐廚|後院),他兩次指著它說
+    #    「照我圖這樣排」。排不下時 `build_from_options` 會自己退回別款。
+    style = str(out.get("core_style") or "ref")
+    out["core_style"] = style if style in CORE_STYLES else "ref"
     out["floors"] = max(1, min(4, int(out.get("floors") or 3)))
     out["bedrooms"] = max(1, min(4, int(out.get("bedrooms") or 3)))
     out["mirror"] = bool(out.get("mirror"))

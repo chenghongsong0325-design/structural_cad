@@ -995,6 +995,7 @@ def _l_minus_corner(x0, y0, x1, y1, cx0, cx1, cy):
 
 def _floor_rooms(level, top, bx0, by0, bx1, by1, variant=DEFAULT_VARIANT,
                  force_absorb=False, force_bath_south=False,
+                 force_bath_north=False,
                  allow_min_service=True, patio=False, garage=False,
                  closet=True, core_style="default"):
     """一層的房間矩形 + 樓梯(依設計變體微調服務格與後段配置)。
@@ -1014,7 +1015,8 @@ def _floor_rooms(level, top, bx0, by0, bx1, by1, variant=DEFAULT_VARIANT,
                 if core_style == "ref" else None)
     mid_plan = (_mid_core_plan(bx0, bx1, y1, y2, label)
                 if core_style == "mid" else None)
-    bath_north = (variant.bath_north and not force_bath_south
+    bath_north = ((variant.bath_north or force_bath_north)
+                  and not force_bath_south
                   and ref_plan is None and mid_plan is None)
 
     def _make_core(bath_name):
@@ -1285,11 +1287,23 @@ def _fix_openings(spec, bx0, by0, bx1, level, party_walls: bool = True,
                        spec.walls[dp.wall_index]
                        .openings[dp.opening_index].position))) < 50.0]
         if len(adj) > 1:
+            # ⚠️ **先問「門前面走得到嗎」,再問開向哪一種房間**(2026-08-28)。
+            #    偏好表把樓梯間排在最前面,但梯段盡頭那塊地繞不過去 —— 留下一扇
+            #    走不到的門、刪掉一扇走得到的,浴室就此進不去。
+            areas = _stair_room_areas(spec)
+
+            def _walk(dp):
+                w = spec.walls[dp.wall_index]
+                op = w.openings[dp.opening_index]
+                px, py = w.point_at(op.position)
+                along = py if abs(w.start[0] - w.end[0]) < 1.0 else px
+                return _door_front_walkable(spec, w, along, areas)
+
             def _pref(dp):
                 ks = set(_door_kinds(spec, dp)) - {"bathroom"}
                 return next((i for i, k in enumerate(_BATH_DOOR_PREF)
                              if k in ks), len(_BATH_DOOR_PREF))
-            adj.sort(key=_pref)
+            adj.sort(key=lambda dp: (not _walk(dp), _pref(dp)))
             for dp in adj[1:]:
                 remove.add((dp.wall_index, dp.opening_index))
 
@@ -1427,19 +1441,97 @@ def _stair_free_spans(spec, wall, lo, hi):
     return sorted(spans, key=lambda t: -(t[1] - t[0]))
 
 
+# 門前探測:從牆中心線往房內量這麼遠,問「那個位置的門前面站得住人嗎」。
+DOOR_FRONT_PROBE = 400.0
+
+
+def _stair_room_areas(spec):
+    """裝了梯段的房間 → [(房間多邊形, 主可走區)]。沒有樓梯就回空。
+
+    主可走區 = 房間扣掉梯段、再侵蝕半個通行寬之後**最大**的那一塊 —— 判準與
+    `room_circulation` 的「主動線空間」是同一條(同一件事不要兩把尺)。"""
+    from shapely.ops import unary_union
+
+    from src.design.layout.room_circulation import PASSAGE_WIDTH, _components_of
+
+    boxes = _stair_boxes(spec)
+    if not boxes:
+        return []
+    key = (len(getattr(spec, "rooms", []) or []), len(boxes))
+    cached = getattr(spec, "_nh_stair_areas", None)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    out = []
+    for r in getattr(spec, "rooms", []) or []:
+        try:
+            poly = Polygon(r.points)
+        except Exception:
+            continue
+        obs = [b for b in boxes if b.intersection(poly).area > 1.0]
+        if not obs:
+            continue
+        free = poly.difference(unary_union(obs))
+        comps = _components_of(free.buffer(-PASSAGE_WIDTH / 2))
+        out.append((poly, comps[0] if comps else None))
+    try:
+        spec._nh_stair_areas = (key, out)
+    except Exception:
+        pass
+    return out
+
+
+def _door_front_walkable(spec, wall, m, areas) -> bool:
+    """牆上位置 m 的門,**兩邊**的地都走得到嗎?
+
+    ⚠️ 這是「樓梯把樓梯間切成兩半」那個坑的解(2026-08-28,使用者指著 7×12 的圖
+    說「一定要走過廁所才能到廚房」)。`_stair_free_spans` 只扣掉**正對梯段**的那
+    幾段,剩下的一律當成可用 —— 但梯段把樓梯間切開之後,牆的其他段面對的是
+    **繞不過去的死角**:預設核的浴廁北邊那塊,三面是浴廁/梯段/外牆,只有從後段
+    開門進得去。門開在那裡,前段與後段就此走不通。
+
+    實測 96 個樓層有 **41 個**這樣(使用者那張 7×12 正是其中之一),而兩道關卡
+    都看不見:`floor_split` 一間房算**一個**節點(被自己的樓梯切兩半仍算「同一
+    塊」),`room_circulation` 的障礙**只有家具**(看不見樓梯)。規則在,但都問
+    錯了問題 —— 本檔這個坑的第 N 則。
+
+    判準只認「有樓梯的房間」:其餘的牆前面沒有梯段,本來就不受這條限制。"""
+    if not areas:
+        return True
+    (sx, sy), (ex, ey) = wall.start, wall.end
+    vertical = abs(sx - ex) < 1.0
+    mx, my = (sx, m) if vertical else (m, sy)
+    from src.design.layout.room_circulation import PASSAGE_WIDTH
+    reach = PASSAGE_WIDTH / 2 + 80.0
+    for poly, main in areas:
+        for s in (1.0, -1.0):
+            p = Point(mx + (DOOR_FRONT_PROBE * s if vertical else 0.0),
+                      my + (0.0 if vertical else DOOR_FRONT_PROBE * s))
+            if not poly.contains(p):
+                continue
+            if main is None or main.distance(p) > reach:
+                return False
+    return True
+
+
 def _door_candidates(spec, wall, lo, hi):
     """開門位置候選(世界座標,沿牆方向):先梯段沒擋住那幾段,再等距掃描。
 
     每段給三個點:中點 + **緊貼兩端**。貼端點很重要——樓梯間的合法窗口常常只有
     幾十 mm(門要同時「北端不碰到第一階」且「南端離牆角夠遠」),那個位置一定
-    在可用段的端點上,中點會差幾十 mm 就開不成。"""
+    在可用段的端點上,中點會差幾十 mm 就開不成。
+
+    ⚠️ 最後再把「門前面走不到的位置」排到隊尾(`_door_front_walkable`)——
+    **排序不是過濾**:真的只剩死角可開時,一扇開在死角的門仍然勝過沒有門
+    (加分項不得讓原本生得出來的案子生不出來)。"""
     half = INTERIOR_DOOR_WIDTH / 2.0
     pts = []
     for a, c in _stair_free_spans(spec, wall, lo, hi):
         if c - a < INTERIOR_DOOR_WIDTH:
             continue
         pts += [(a + c) / 2, c - half, a + half]
-    return pts + [min(lo, hi) + abs(hi - lo) * f for f in _DOOR_FRACS]
+    pts += [min(lo, hi) + abs(hi - lo) * f for f in _DOOR_FRACS]
+    areas = _stair_room_areas(spec)
+    return sorted(pts, key=lambda m: not _door_front_walkable(spec, wall, m, areas))
 
 
 def _room_edge_span(room_poly, wall, along_start):
@@ -1723,6 +1815,44 @@ def _fit_margin(build):
         except ValueError as exc:
             last = exc
     raise last
+
+
+def _fit_core_reach(build):
+    """**整棟**層級的退讓:量到「有門走不到」就換一種核的排法,重蓋整棟。
+
+    死角來自「浴廁在南、服務格北端的空格併進樓梯間(`absorb_spare`)」——北端是
+    梯段的盡頭(折返平台在半層高、直梯也只剩一道 75mm 的牆縫),繞不過去。
+    兩級退讓:
+
+      ① `force_bath_north` 把浴廁翻到北邊 → 空格跟著落到南端,而南端是樓梯的
+         **起步平台**(這一層的地板高度),走得到 → 樓梯間照樣吃得下,沒有任何
+         一間房要因此變大。
+      ② 翻不動才 `allow_skinny_spare`,把空格併進居室(那間房細長一點是
+         warning,一間走得到的浴室是 error)。
+
+    ⚠️ **這是整棟的決定,不是各層各自決定**(與 `_fit_service` / `_fit_margin` /
+    `_fit_patio` 同一個道理):核每層同構、樓梯才對得齊。第一版寫在 `_build_floor`
+    裡,結果 4.5×14.4m 的 2F 翻了、1F 沒翻,**核就不同構了**
+    (`test_core_is_identical_on_every_floor` 抓到的就是這個)。
+
+    ⚠️ 判準是 `plan_check` 量出來的**硬錯誤**,而且要等到最後一次修門之後 ——
+    修門之前問症狀太早(門還開在別處,看起來一切正常),問幾何又太早退
+    (沒事的案子也退,連帶弄丟流理台/淋浴間/床頭櫃)。見 AGENTS.md。
+    """
+    from src.design.layout.plan_check import check_building
+
+    first = None
+    for bath_north, skinny in ((False, False), (True, False), (False, True)):
+        try:
+            floors = build(bath_north, skinny)
+        except ValueError:
+            continue
+        if not check_building(floors).errors:
+            return floors
+        first = floors if first is None else first
+    if first is None:
+        raise ValueError("窄透天骨架:核的三種排法都蓋不出來")
+    return first
 
 
 def _fit_patio(build):
@@ -2121,10 +2251,30 @@ def _nearest_ok_position(spec, wall, op, spans) -> float | None:
     positions.sort(key=lambda t: abs(t - op.position))   # 離原位最近的先試
     if op.kind != "door":
         return positions[0]
-    for clear in (*DOOR_CLEAR_STEPS, DOOR_CORNER_MIN):
-        for pos in positions:
-            if _door_pos_ok(spec, wall, pos, op.width, clear):
-                return pos
+    # ⚠️ 躲柱**不得把門挪到走不到的地方**(2026-08-28)。這支只問「離原位近不近、
+    #    卡不卡牆角」,不問「挪過去之後那扇門前面站不站得住人」—— 實測 4.0m 面寬:
+    #    門本來好端端開在走道上(離角柱只差 38mm),躲柱時被挪到 2.3m 外、樓梯另
+    #    一側那個繞不過去的死角,整層前後從此走不通。與「一扇門的位置由誰決定」
+    #    同一族的坑:每個修復器都只知道自己那條規則。
+    areas = _stair_room_areas(spec)
+    vertical = abs(wall.start[0] - wall.end[0]) < 1.0
+
+    def _along(pos):
+        """牆上位置 → 世界座標的沿牆值。⚠️ 牆可能是反向的(start 在座標大的那端),
+        所以要走 `point_at`,不能寫 start + pos。"""
+        px, py = wall.point_at(pos)
+        return py if vertical else px
+
+    for walkable_only in (True, False):
+        if walkable_only and not areas:
+            continue
+        for clear in (*DOOR_CLEAR_STEPS, DOOR_CORNER_MIN):
+            for pos in positions:
+                if walkable_only and not _door_front_walkable(
+                        spec, wall, _along(pos), areas):
+                    continue
+                if _door_pos_ok(spec, wall, pos, op.width, clear):
+                    return pos
     return None
 
 
@@ -2328,24 +2478,38 @@ def _wall_covering(spec, kind, line, a, b):
 SNAP_TOL = 1.0
 
 
-def _open_door_on_wall(spec, wi, start_along, a, b) -> bool:
-    """在牆 wi 的 [a,b] 段開一扇內門(避開既有洞口)。成功回 True。"""
+def _open_door_on_wall(spec, wi, start_along, a, b,
+                       walkable_only: bool | None = None) -> bool:
+    """在牆 wi 的 [a,b] 段開一扇內門(避開既有洞口)。成功回 True。
+
+    ⚠️ **「門前面走得到」排在牆角淨距前面**(2026-08-28)。淨距的退讓階梯原本在
+    最外層,於是「位置錯但淨距好一級」的門會贏過「位置對但要退一級」的門 ——
+    實測 4.0m 面寬:東側走道那個位置只差 12.5mm 就滿足 150 這一級,結果門被開到
+    西側那個繞不過去的死角(門前面是階梯,人到不了),後段從此走不通。
+    淨距差一級只是「有點擠」,門開在走不到的地方是**廢圖**,兩者不同量級。"""
     w = spec.walls[wi]
     taken = [(op.position - op.width / 2, op.position + op.width / 2)
              for op in w.openings]
-    for clear in DOOR_CLEAR_STEPS:                  # 連通是硬需求,淨距可分級退讓
-        for m in _door_candidates(spec, w, a, b):
-            pos = abs(m - start_along)
-            lo, hi = pos - INTERIOR_DOOR_WIDTH / 2, pos + INTERIOR_DOOR_WIDTH / 2
-            if lo < 0 or hi > w.length:
-                continue
-            if not all(hi < t0 or lo > t1 for t0, t1 in taken):
-                continue
-            if not _door_pos_ok(spec, w, pos, INTERIOR_DOOR_WIDTH, clear):
-                continue                            # 不卡牆角
-            w.openings.append(Opening(pos, INTERIOR_DOOR_WIDTH, "door"))
-            spec.doors.append(DoorPlacement(wi, len(w.openings) - 1, Door()))
-            return True
+    areas = _stair_room_areas(spec)
+    modes = (True, False) if walkable_only is None else (walkable_only,)
+    for walkable_only in modes:                     # 先只挑走得到的位置
+        if walkable_only and not areas:
+            continue                                # 沒樓梯 → 這一輪沒有意義
+        for clear in DOOR_CLEAR_STEPS:              # 連通是硬需求,淨距可分級退讓
+            for m in _door_candidates(spec, w, a, b):
+                if walkable_only and not _door_front_walkable(spec, w, m, areas):
+                    continue
+                pos = abs(m - start_along)
+                lo, hi = pos - INTERIOR_DOOR_WIDTH / 2, pos + INTERIOR_DOOR_WIDTH / 2
+                if lo < 0 or hi > w.length:
+                    continue
+                if not all(hi < t0 or lo > t1 for t0, t1 in taken):
+                    continue
+                if not _door_pos_ok(spec, w, pos, INTERIOR_DOOR_WIDTH, clear):
+                    continue                        # 不卡牆角
+                w.openings.append(Opening(pos, INTERIOR_DOOR_WIDTH, "door"))
+                spec.doors.append(DoorPlacement(wi, len(w.openings) - 1, Door()))
+                return True
     return False
 
 
@@ -2391,9 +2555,18 @@ def _ensure_floor_connected(spec, max_new_doors: int = 8) -> int:
         #    此時得換次佳的牆,不能直接放棄——否則整層就被判成走不通。
         cands.sort(key=lambda c: c[:2])
         opened = False
-        for _rank, _len, se, wi, start_along in cands:
-            if _open_door_on_wall(spec, wi, start_along, se[2], se[3]):
-                opened = True
+        # ⚠️ **先掃一輪「開得出走得到的門」的牆**(2026-08-28)。這裡原本一找到能
+        #    開門的牆就收工,而「能開門」不問門前面走不走得到 —— 7.5m 面寬的後段
+        #    切成 廚房|餐廳,餐廳那一邊的牆整段不是梯段就是梯段旁的死角,門照樣
+        #    開得出來,結果後段兩間一起被關在門外。換一面牆(接廚房那面,正對著
+        #    走道)就好,所以要先把整份候選掃過一輪再退讓。
+        for wo in (True, False):
+            for _rank, _len, se, wi, start_along in cands:
+                if _open_door_on_wall(spec, wi, start_along, se[2], se[3],
+                                      walkable_only=wo):
+                    opened = True
+                    break
+            if opened:
                 break
         if not opened:                    # 真的沒有可開門的牆(極罕見)
             break
@@ -2445,8 +2618,14 @@ def _bath_door_to_hall(spec, bx0, by0, bx1, level) -> int:
 
         if any("stair_hall" in _door_kinds(spec, dp) for dp in _adj()):
             continue                                # 本來就開在走道上
+        # ⚠️ `require_walkable`:走道上那扇門**人要走得到**才算數。窄面寬時
+        #    參考圖版/中間版的核排不下、會退回預設核 —— 那時浴廁唯一面對樓梯間
+        #    的是**北**牆,而北牆外面正是梯段旁邊那塊繞不過去的死角。照樣把門
+        #    搬過去,等於把一間本來進得去的廁所變成進不去(實測 96 個樓層 12 個
+        #    這樣)。加分項不得讓原本好好的東西壞掉。
         if not _add_interior_door(spec, room, bx0, by0, bx1, level,
-                                  only_kinds={"stair_hall"}):
+                                  only_kinds={"stair_hall"},
+                                  require_walkable=True):
             continue                                # 開不成 → 別把原本那扇拆了
         _remove_openings(spec, {(dp.wall_index, dp.opening_index)
                                 for dp in _adj()
@@ -2455,7 +2634,8 @@ def _bath_door_to_hall(spec, bx0, by0, bx1, level) -> int:
     return changed
 
 
-def _add_interior_door(spec, room, bx0, by0, bx1, level, only_kinds=None):
+def _add_interior_door(spec, room, bx0, by0, bx1, level, only_kinds=None,
+                       require_walkable: bool = False):
     """給一間沒門的房間補一扇門:挑一道邊界內牆(接最公共/動線的鄰室)開洞。
 
     only_kinds:限定鄰室的 kind(門與動線規範的修復用——例如「這間一定要有一扇門
@@ -2498,30 +2678,42 @@ def _add_interior_door(spec, room, bx0, by0, bx1, level, only_kinds=None):
             return next((r for r in spec.rooms if r is not room
                          and Polygon(r.points).contains(nb)), None)
 
-        pos = None
-        for clear in DOOR_CLEAR_STEPS:
-            for m in _door_candidates(spec, w, lo, hi):
-                p = abs(m - start_along)
-                a, b = p - INTERIOR_DOOR_WIDTH / 2, p + INTERIOR_DOOR_WIDTH / 2
-                if not all(b < t0 or a > t1 for t0, t1 in taken):
-                    continue
-                if not _door_pos_ok(spec, w, p, INTERIOR_DOOR_WIDTH, clear):
-                    continue                        # 不卡牆角
-                # ⚠️ 一道牆可能同時貼著**兩間**鄰室(前段北牆:西半是浴廁、東半
-                #    才是樓梯間)。指定鄰室時,位置合法還不夠 —— 得問這個位置的
-                #    另一邊是不是要接的那一間,不是就**換位置再試**。原本只試第
-                #    一個合法位置就定案:中點正好落在浴廁那半 → 整道牆被判出局,
-                #    「一定要有門直通公共動線」的修復等於沒生效。
-                if only_kinds is not None:
-                    nb_room = _neighbor_at(m)
-                    if nb_room is None or nb_room.kind not in only_kinds:
+        # ⚠️ 「門前面走得到」排在牆角淨距前面(理由見 `_open_door_on_wall`):
+        #    先只挑走得到的位置跑完整條退讓階梯,真的都不行才准開在死角。
+        areas = _stair_room_areas(spec)
+
+        def _pick(walkable_only, w=w, lo=lo, hi=hi, start_along=start_along,
+                  taken=taken, areas=areas):
+            for clear in DOOR_CLEAR_STEPS:
+                for m in _door_candidates(spec, w, lo, hi):
+                    if walkable_only and not _door_front_walkable(spec, w, m,
+                                                                  areas):
                         continue
-                pos, mid = p, m
-                break
-            if pos is not None:
-                break
-        if pos is None:
+                    q = abs(m - start_along)
+                    a0 = q - INTERIOR_DOOR_WIDTH / 2
+                    b0 = q + INTERIOR_DOOR_WIDTH / 2
+                    if not all(b0 < t0 or a0 > t1 for t0, t1 in taken):
+                        continue
+                    if not _door_pos_ok(spec, w, q, INTERIOR_DOOR_WIDTH, clear):
+                        continue                    # 不卡牆角
+                    # ⚠️ 一道牆可能同時貼著**兩間**鄰室(前段北牆:西半是浴廁、
+                    #    東半才是樓梯間)。指定鄰室時,位置合法還不夠 —— 得問這
+                    #    個位置的另一邊是不是要接的那一間,不是就**換位置再試**。
+                    #    原本只試第一個合法位置就定案:中點正好落在浴廁那半 →
+                    #    整道牆被判出局,「一定要有門直通公共動線」等於沒生效。
+                    if only_kinds is not None:
+                        nb_room = _neighbor_at(m)
+                        if nb_room is None or nb_room.kind not in only_kinds:
+                            continue
+                    return q, m
+            return None
+
+        got = _pick(True) if areas else None
+        if got is None and not (require_walkable and areas):
+            got = _pick(False)          # 走得到的位置一個都沒有 → 至少要有門
+        if got is None:
             continue
+        pos, mid = got
 
         neighbor = _neighbor_at(mid)
         mx, my = midpt_at(mid)
@@ -2555,12 +2747,47 @@ def _floor_connected(spec) -> bool:
     return len(_room_graph_components(spec)) <= 1
 
 
+def _closet_blocks_bath(spec, level) -> bool:
+    """更衣室害得浴室只能穿過它才進得去嗎?
+
+    ⚠️ 更衣室切在「主臥貼著浴廁那一段北牆」(那段本來就開不了主臥的門),於是它
+    **正好卡在主臥與浴室中間**。浴廁在南時,浴室北邊是梯段盡頭那塊走不到的死角
+    → 門只剩南邊可開 → 開向更衣室 → 動線變成 主臥 → 更衣室 → 浴室。
+    `through_bedroom` 的套內豁免要求「只有一個鄰室」,更衣室這時有兩個(主臥 +
+    浴室)→ 兩間一起被判缺陷。
+
+    退掉更衣室就好(與 `_beds_ok` 同一條:加分項不得讓原本好好的東西壞掉)。"""
+    from shapely.geometry import Polygon as _P
+
+    from src.design.layout.door_rules import _through_bedroom_issues
+    names = {r.name for r in spec.rooms if r.kind == "storage"}
+    if not names:
+        return False
+    from src.design.layout.plan_check import building_env
+    polys = [(r, _P(r.points)) for r in spec.rooms]
+    env = building_env(spec)
+    return any(iss.room in names
+               for iss in _through_bedroom_issues(spec, polys, env, level, ""))
+
+
+def _stair_circulation_ok(spec) -> bool:
+    """每間房的門都走得到嗎(**梯段算障礙**)—— 與 plan_check 的
+    `circulation_blocked` 同一套判準(同一件事不要兩把尺)。
+
+    ⚠️ 這條與 `_floor_connected` 不一樣,兩條都要:後者一間房算**一個節點**,
+    一間房被自己的樓梯切成兩半它照樣說「連通」。空格併進樓梯間之後,浴廁唯一開得了
+    門的方向正好是梯段盡頭那塊繞不過去的死角 —— 只有這條問得出來。"""
+    from src.design.layout.room_circulation import analyze_room_circulation
+    return analyze_room_circulation(spec).ok
+
+
 def _build_floor(level, top, W, D, floor_label, furnish=True,
                  variant=DEFAULT_VARIANT, force_absorb=False,
-                 force_bath_south=False, margin=0.0, depth_cap=None,
+                 force_bath_south=False, force_bath_north=False,
+                 margin=0.0, depth_cap=None,
                  allow_min_service=True, lot=None, depth_limit=None,
                  want_patio=False, garage=False, closet=True,
-                 core_style="default"):
+                 core_style="default", allow_skinny_spare=False):
     """組一層 spec(房間 → 牆/門/窗 + 樓梯 + 開口收尾 + 家具)。
 
     D 超過該面寬的上限時,**建築封頂**、多出來的地留成前後院(置中)——與兩帶式
@@ -2607,6 +2834,7 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
     site_w, site_d = W + 2 * edge, D + 2 * edge     # ⚠️ 基地用原始 D,不是封頂後的
     rooms, stair = _floor_rooms(level, top, bx0, by0, bx1, by1, variant,
                                 force_absorb, force_bath_south,
+                                force_bath_north,
                                 allow_min_service, patio=use_patio,
                                 garage=garage, closet=closet,
                                 core_style=core_style)
@@ -2642,7 +2870,8 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
     #    都白修一次門。判斷看的是房間形狀與窗寬,修門只改門 —— 實測 12 個尺寸
     #    ×5 變體、620 次比對,修門前後的答案一次都沒有不同
     #    (`test_spare_hosts_verdict_survives_door_repair` 釘住這個前提)。
-    if not force_absorb and not _spare_hosts_ok(spec):   # 居室吃不下空格 → 給樓梯間
+    if (not force_absorb and not allow_skinny_spare
+            and not _spare_hosts_ok(spec)):             # 居室吃不下空格 → 給樓梯間
         return _build_floor(level, top, W, D, floor_label, furnish, variant,
                             force_absorb=True, margin=margin,
                             depth_cap=depth_cap,
@@ -2663,7 +2892,8 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
                             allow_min_service=allow_min_service,
                             lot=lot, depth_limit=depth_limit,
                             want_patio=want_patio, garage=garage,
-                            closet=closet, core_style=core_style)
+                            closet=closet, core_style=core_style,
+                            allow_skinny_spare=allow_skinny_spare)
     spec.floor_label = floor_label
     _set_structural_grid(spec, bx0, by0, Wb, build_d)
     # ⚠️ 洞口躲柱:排洞口時柱還不存在(`_column_blocks` 那時看到的是空的),
@@ -2699,15 +2929,19 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
         #    會撞到東西的位置,要留一次修門在後面收。
         shift_openings_off_columns(spec)
         repair_doors(spec, bx0, by0, bx1, level)    # 家具擺完再修一次門(弧線會不會撞家具)
-        if closet and not _beds_ok(spec):           # 更衣室害得床擺不下 → 退掉它
+        # 更衣室害得床擺不下、或害得浴室要穿過它才進得去 → 退掉它。
+        if closet and (not _beds_ok(spec)
+                       or _closet_blocks_bath(spec, level)):
             return _build_floor(level, top, W, D, floor_label, furnish, variant,
                                 force_absorb=force_absorb,
                                 force_bath_south=force_bath_south,
+                                force_bath_north=force_bath_north,
                                 margin=margin, depth_cap=depth_cap,
                                 allow_min_service=allow_min_service,
                                 lot=lot, depth_limit=depth_limit,
                                 want_patio=want_patio, garage=garage,
-                                closet=False, core_style=core_style)
+                                closet=False, core_style=core_style,
+                                allow_skinny_spare=allow_skinny_spare)
     if variant.mirror:                              # 整層東西鏡射(樓梯核換邊)
         from src.design.layout_generator import _mirror_spec
         spec = _mirror_spec(spec, True, False)
@@ -2766,15 +3000,21 @@ def generate_narrow_building(building_w_mm: float, building_d_mm: float, *,
     # ⚠️ 各層必須用**同一個** margin 與**同一個**進深,否則軸網對不上、柱不會
     #    上下對齊、外牆也對不齊。
     def _all(want_patio):
-        return _fit_service(lambda ams: _fit_depth(lambda cap: _fit_margin(
-            lambda m: [
-                (f"{lv}F",
-                 _build_floor(lv, floors, W, D, f"{lv}F", furnish, variant,
-                              margin=m, depth_cap=cap, allow_min_service=ams,
-                              lot=lot, depth_limit=limit,
-                              want_patio=want_patio,
-                              garage=garage, core_style=core_style))
-                for lv in range(1, floors + 1)])))
+        def _one(bath_north, skinny):
+            return _fit_service(lambda ams: _fit_depth(lambda cap: _fit_margin(
+                lambda m: [
+                    (f"{lv}F",
+                     _build_floor(lv, floors, W, D, f"{lv}F", furnish, variant,
+                                  margin=m, depth_cap=cap,
+                                  allow_min_service=ams,
+                                  lot=lot, depth_limit=limit,
+                                  want_patio=want_patio,
+                                  garage=garage, core_style=core_style,
+                                  force_bath_north=bath_north,
+                                  allow_skinny_spare=skinny))
+                    for lv in range(1, floors + 1)])))
+
+        return _fit_core_reach(_one)
 
     # 天井開了出硬錯誤就不開(見 _fit_patio);沒要天井就不必多跑那一輪。
     return _fit_patio(_all) if patio else _all(False)

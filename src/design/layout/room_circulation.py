@@ -170,6 +170,25 @@ def _room_furniture(spec, room_poly: Polygon) -> list:
     return out
 
 
+def _room_stairs(spec, room_poly: Polygon) -> list:
+    """房內**梯段**(含折返平台)的 footprint —— 那不是地板,人走不過去。
+
+    ⚠️ 這條是 2026-08-28 補的,補的是一個很大的洞:本模組原本的障礙**只有家具**,
+    於是「樓梯把樓梯間切成兩半、門開在走不到的那一半」完全看不見。而另一道關卡
+    `plan_check.floor_split` 是拿**一間房當一個節點**去連通 —— 一間房被自己的樓梯
+    切成兩半,它照樣算「同一塊」。兩道規則各自都在,樓梯剛好從中間漏掉。
+
+    實測(使用者 2026-08-28 指著 7×12 的圖說「一定要走過廁所才能到廚房」):
+    窄透天預設核 96 個樓層有 **38 個**、淺基地 70 個有 **26 個**,前後段之間
+    根本走不通,而 plan_check 全部給過。
+
+    `_stair_boxes` 是「梯段不能當地板走」的單一出處(它知道折返平台在半層高、
+    起步平台在樓層高),所以直接借它,不要在這裡另外算一份。"""
+    from src.design.layout.narrow_house import _stair_boxes
+    return [b for b in _stair_boxes(spec)
+            if b.intersection(room_poly).area > INTRUDE_TOL]
+
+
 # 導航塊面積下限(mm²):小於此的視為侵蝕殘渣,不算真正可站的導航區。
 COMP_MIN_AREA = 50_000.0
 
@@ -202,9 +221,10 @@ def analyze_room(spec, room, width: float = PASSAGE_WIDTH) -> RoomCirculation:
     furn = _room_furniture(spec, room_poly)
     openings = _room_openings(spec, room_poly)
 
+    blocks = [p for _, p in furn] + _room_stairs(spec, room_poly)
     free = room_poly
-    if furn:
-        free = room_poly.difference(unary_union([p for _, p in furn]))
+    if blocks:
+        free = room_poly.difference(unary_union(blocks))
     comps = _components_of(free.buffer(-width / 2))
 
     reach = width / 2 + 80.0

@@ -138,3 +138,27 @@ def test_auto_router_picks_shallow_then_narrow():
 
     assert _dir(5000, 5000) == "east"
     assert _dir(5000, 12000) == "north"
+
+
+# ── 樓梯把梯帶切開:剩料要留在起步端 ────────────────────────────────────────
+@pytest.mark.parametrize("bw,bd", [(5100.0, 6900.0), (5800.0, 9300.0),
+                                   (6800.0, 7900.0), (7200.0, 9000.0),
+                                   (8600.0, 8600.0)])
+def test_no_room_is_stranded_behind_the_stairs(bw, bd):
+    """★★★ 每一間房都走得到,而且**不准踩過樓梯**(使用者 2026-08-28)。
+
+    梯帶只有 1.9m 深,梯段兩側各只剩 75mm —— 人繞不過去。梯跑吃不完整條梯帶,
+    剩下那一截落在哪一端,就決定那一端是「樓層地板」還是「死角」:
+
+      舊做法:起步平台只留 900,多的全堆在**折返端**(半層高,不是地板)
+              → 而浴廁正好在前段東側,唯一開得了門的鄰居就是那塊死角
+              → **上廁所要踩過樓梯**(實測 70 個樓層中 26 個)。
+      現在:  梯段貼東牆、剩料全歸西端的起步平台,浴廁跟著搬到前段西側。
+
+    ⚠️ 兩道關卡原本都問錯問題:`floor_split` 一間房算一個節點、
+       `room_circulation` 的障礙只有家具(看不見樓梯)。
+    """
+    from tests.test_narrow_house import _walk_islands
+    for _lb, spec in generate_shallow_building(bw, bd, floors=3):
+        _home, lost = _walk_islands(spec)
+        assert lost == [], (bw, bd, _lb, lost)

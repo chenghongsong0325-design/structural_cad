@@ -94,6 +94,10 @@ def _stair(bx0, bx1, y0, y1, label):
     與 narrow_house 的樓梯同一組規則(級高 ≤190、踏面 ≥210、平臺深 ≥梯段寬、
     門進來先站平地再上階),只是行進方向轉了 90 度:梯跑沿面寬跑。
 
+    ⚠️ 梯段兩側各只剩 75mm(梯帶 1.9m 深),人**繞不過梯段** —— 所以梯帶裡的
+    樓層地板只有兩塊:西端的起步平台、以及東端梯跑吃不完的那一截。前段每一間房
+    都必須貼到其中一塊,否則它的門就開在走不到的地方(見 `_floor_rooms` 為什麼
+    浴廁要放**西**側)。
     """
     span = (y1 - y0) - 2 * WALL_GAP                 # 兩梯段並排的總寬
     flight_w = span
@@ -116,7 +120,8 @@ def _stair(bx0, bx1, y0, y1, label):
                   well_gap=STAIR_WELL_GAP, label=label)
 
 
-def _floor_rooms(level, top, bx0, by0, bx1, by1, no_split=False):
+def _floor_rooms(level, top, bx0, by0, bx1, by1, no_split=False,
+                 bath_west=None):
     """一層的房間矩形 + 樓梯。北=梯帶(樓梯[+浴廁]),南=居室帶。
 
     no_split:樓上不分兩間臥室(由 _build_floor 量過發現第二間的門開不到動線上時
@@ -146,9 +151,27 @@ def _floor_rooms(level, top, bx0, by0, bx1, by1, no_split=False):
         rooms.append(("bathroom", bath_name, _rect(xs, yb, bx1, by1)))
         xf = bx1                                    # 前段整片給居室
     else:
-        # 浴廁放前段東側(面寬窄時的做法):兩間都貼南外牆,採光才夠。
+        # ⚠️ 浴廁放哪一側,由「前段切不切得出廚房」決定(2026-08-28)。
+        #    梯帶裡的樓層地板只有兩塊:西端的起步平台、東端梯跑吃不完的那一截
+        #    (中間整段是梯段,兩側各只剩 75mm,繞不過去)。
+        #
+        #      **寬**(前段切得出 客廳+廚房)→ 浴廁 | 客廳 | 廚房:
+        #        浴廁貼西端平台、廚房貼東端那截,客廳夾在中間走內門。
+        #        浴廁放東側的話它的鄰居只剩廚房,`bath_door_to_kitchen` 不准開門
+        #        → 上廁所要踩過樓梯(實測 70 個樓層有 26 個這樣)。
+        #      **窄**(整個前段就一間客廳)→ 客廳 | 浴廁:
+        #        客廳吃下西端平台(它比較需要直接接動線),浴廁的門開向客廳 ——
+        #        那是合法的,擋的是廚房不是客廳。反過來擺的話 5m 面寬的客廳
+        #        兩塊地板都貼不到,樓梯間只接得到浴廁(`stair_wrapped`)。
         bath_w = min(max(BATH_MIN_W, (W - MIN_LIVING_W) / 2.0), BATH_MAX_W)
-        xf = bx1 - bath_w
+        west = (W - bath_w >= MIN_LIVING_W + MIN_KITCHEN_W
+                if bath_west is None else bool(bath_west))
+        if west:                                            # 浴廁在西
+            xf = bx0 + bath_w
+            rooms.append(("bathroom", bath_name, _rect(bx0, by0, xf, by1 - band_d)))
+            rooms += _front_rooms(level, xf, by0, bx1, yb, xs, no_split)
+            return rooms, stair
+        xf = bx1 - bath_w                                   # 窄 → 浴廁在東
         rooms.append(("bathroom", bath_name, _rect(xf, by0, bx1, by1 - band_d)))
     rooms += _front_rooms(level, bx0, by0, xf, yb, xs, no_split)
     return rooms, stair
@@ -200,7 +223,7 @@ def _daylight_ok(spec) -> bool:
 
 
 def _build_floor(level, top, W, D, floor_label, furnish=True, cap=None,
-                 no_split=False):
+                 no_split=False, bath_west=None):
     """組一層 spec(房間 → 牆/門/窗 + 樓梯 + 開口收尾 + 家具)。
 
     進深超過上限時**建築封頂、多的留成後院**(前緣貼建築線、院子在後)——淺骨架
@@ -211,7 +234,8 @@ def _build_floor(level, top, W, D, floor_label, furnish=True, cap=None,
     bx1, by1 = SETBACK + W, by0 + build_d
     site_w, site_d = W + 2 * SETBACK, D + 2 * SETBACK
 
-    rooms, stair = _floor_rooms(level, top, bx0, by0, bx1, by1, no_split)
+    rooms, stair = _floor_rooms(level, top, bx0, by0, bx1, by1, no_split,
+                                bath_west=bath_west)
     spec = rooms_to_spec(rooms, (bx0, by0, bx1, by1), site_w, site_d,
                          setback=SETBACK)
     spec.stairs = [stair]                           # 先掛樓梯:開口收尾才避得開梯段
@@ -229,11 +253,11 @@ def _build_floor(level, top, W, D, floor_label, furnish=True, cap=None,
                             for i in check_door_rules(spec, None, level, floor_label)):
         # 第二間臥室的門開不到樓梯間(門前那段牆被梯段佔住)→ 退回一大間。
         return _build_floor(level, top, W, D, floor_label, furnish, cap,
-                            no_split=True)
+                            no_split=True, bath_west=bath_west)
     if not _daylight_ok(spec) and build_d - 250.0 >= _band_depth(W) + 2500.0:
         return _build_floor(level, top, W, D, floor_label, furnish,
                             cap=build_d - 250.0,     # 收一點進深、多留後院
-                            no_split=no_split)
+                            no_split=no_split, bath_west=bath_west)
     spec.floor_label = floor_label
     _set_structural_grid(spec, bx0, by0, W, build_d)   # 柱放軸網交點,與窄透天同一套
     repair_doors(spec, bx0, by0, bx1, level)     # 柱是實心的,門扇掃到柱就打不開(見窄透天同段)
@@ -278,5 +302,39 @@ def generate_shallow_building(building_w_mm: float, building_d_mm: float, *,
     W, D = float(building_w_mm), float(building_d_mm)
     _check_dims(W, D)
     floors = max(1, int(floors))
-    return [(f"{lv}F", _build_floor(lv, floors, W, D, f"{lv}F", furnish))
-            for lv in range(1, floors + 1)]
+
+    def _all(bath_west):
+        return [(f"{lv}F", _build_floor(lv, floors, W, D, f"{lv}F", furnish,
+                                        bath_west=bath_west))
+                for lv in range(1, floors + 1)]
+
+    return _fit_bath_side(_all)
+
+
+def _fit_bath_side(build):
+    """浴廁擺哪一側 —— **兩邊都蓋一次,挑圖過得了關卡的那一邊**。
+
+    ⚠️ 公式猜不準(2026-08-28)。梯帶裡人走得到的樓層地板只有兩塊(西端起步平台、
+    東端梯跑吃不完的那一截),中間整段是梯段、兩側各剩 75mm 繞不過去。哪一塊夠寬
+    到開得出一扇門,同時受**梯跑長度**(踏面/級數/折返平台)與面寬牽動,而且門還
+    要閃 `STAIR_DOOR_CLEAR`(600)—— 實測 5m 能用東邊、6m 只剩東邊、7m 以上兩邊
+    都行。第一版用「切不切得出廚房」當判準,6m 面寬就漏掉了(浴廁佔走唯一那塊
+    地板,客廳連樓梯都到不了 → `stair_wrapped`)。
+
+    判準因此改成**實際送 plan_check**(與 `_fit_service` / `_fit_patio` 同一條:
+    實際量過才算數)。⚠️ 這是**整棟**的決定,不是各層各自決定 —— 核每層同構,
+    浴廁換邊會讓上下樓的牆對不齊。"""
+    from src.design.layout.plan_check import check_building
+
+    first = None
+    for side in (None, True, False):                 # None = 依面寬的預設猜測
+        try:
+            floors = build(side)
+        except ValueError:
+            continue
+        if not check_building(floors).errors:
+            return floors
+        first = first if first is not None else floors
+    if first is None:
+        raise ValueError("淺基地骨架:浴廁兩側都排不下")
+    return first

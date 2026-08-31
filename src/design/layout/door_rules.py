@@ -384,7 +384,8 @@ def repair_doors(spec, bx0, by0, bx1, level) -> bool:
     #     ⚠️ 兩個底線:①挪完還要連通**同樣的兩間房**(不然臥室的門會挪到通廚房);
     #     ②不能壓柱(兩帶式/集合住宅有柱)。做不到就別挪,留給關卡擋。
     from src.design.layout.narrow_house import (
-        DOOR_CLEAR_STEPS, _column_blocks, _door_candidates, _door_pos_ok,
+        DOOR_CLEAR_STEPS, _column_blocks, _door_candidates, _door_front_walkable,
+        _door_pos_ok, _stair_room_areas,
     )
     def dp_of(target_op):
         """這個洞口掛的門扇;**開放通道(沒掛門扇)回 None**。
@@ -440,45 +441,57 @@ def repair_doors(spec, bx0, by0, bx1, level) -> bool:
                 widths.append(fit)
             if op.width > floor_w + 1:
                 widths.append(floor_w)
-            found = None
-            for width in widths:
-                for clear in DOOR_CLEAR_STEPS:
-                    # 候選位置:①既有的候選(中點/貼齊/三七分)②**各段空牆的中點**
-                    #   —— 牆被柱切成好幾段時,只有第②種才找得到位置。
-                    from src.design.layout.narrow_house import _free_intervals
-                    others = [o for o in w.openings if o is not op]
-                    keep_all = list(w.openings)
-                    w.openings = others
-                    free = _free_intervals(w, seg_lo, seg_hi, along,
-                                           _column_blocks(spec, w, along), clear)
-                    w.openings = keep_all
-                    extra = [along + (a + b) / 2.0 for a, b in free
-                             if b - a >= width]
-                    cands = sorted(_door_candidates(spec, w, seg_lo, seg_hi) + extra,
-                                   key=lambda m: abs(abs(m - along) - keep))
-                    for m in cands:              # 離原位最近的先試(別把門搬到對面)
-                        pos = abs(m - along)
-                        a, b = pos - width / 2, pos + width / 2
-                        if a < 0 or b > w.length:
-                            continue
-                        if not all(b < t0 or a > t1 for t0, t1 in taken):
-                            continue
-                        if not _door_pos_ok(spec, w, pos, width, clear):
-                            continue
-                        leaf = dp_of(op)
-                        if leaf is not None and _swing_hits_furniture(
-                                spec, w, pos, width, leaf):
-                            continue            # 挪過去門就打到家具,等於沒解決
-                        op.position, op.width = pos, width   # 試放,確認還是同兩間
-                        same = {id(r) for r in _door_sides(spec, w, op, polys, env)[0] if r}
-                        op.position, op.width = keep, keep_w
-                        if same == want:
-                            found = (pos, width)
-                            break
-                    if found is not None:
-                        break
-                if found is not None:
-                    break
+            # ⚠️ **「門前面走得到」排在門寬/牆角淨距前面**(2026-08-28)。
+            #    這支挪門時只問「離原位近不近、卡不卡牆角、會不會打到家具」——
+            #    不問「挪過去之後人到不到得了那扇門」。實測 4.0m 面寬:
+            #    `_ensure_floor_connected` 已經把餐廚的門好好開在走道上,這支為了
+            #    閃柱把它搬到樓梯另一側那個繞不過去的死角,整層前後就此走不通。
+            #    (門寬讓一級只是「窄一點」,門開在走不到的地方是廢圖。)
+            areas = _stair_room_areas(spec)
+
+            def _search(walkable_only):
+                for width in widths:
+                    for clear in DOOR_CLEAR_STEPS:
+                        # 候選位置:①既有的候選(中點/貼齊/三七分)②**各段空牆的
+                        #   中點** —— 牆被柱切成好幾段時,只有第②種才找得到位置。
+                        from src.design.layout.narrow_house import _free_intervals
+                        others = [o for o in w.openings if o is not op]
+                        keep_all = list(w.openings)
+                        w.openings = others
+                        free = _free_intervals(w, seg_lo, seg_hi, along,
+                                               _column_blocks(spec, w, along),
+                                               clear)
+                        w.openings = keep_all
+                        extra = [along + (a + b) / 2.0 for a, b in free
+                                 if b - a >= width]
+                        cands = sorted(
+                            _door_candidates(spec, w, seg_lo, seg_hi) + extra,
+                            key=lambda m: abs(abs(m - along) - keep))
+                        for m in cands:      # 離原位最近的先試(別把門搬到對面)
+                            if walkable_only and not _door_front_walkable(
+                                    spec, w, m, areas):
+                                continue
+                            pos = abs(m - along)
+                            a, b = pos - width / 2, pos + width / 2
+                            if a < 0 or b > w.length:
+                                continue
+                            if not all(b < t0 or a > t1 for t0, t1 in taken):
+                                continue
+                            if not _door_pos_ok(spec, w, pos, width, clear):
+                                continue
+                            leaf = dp_of(op)
+                            if leaf is not None and _swing_hits_furniture(
+                                    spec, w, pos, width, leaf):
+                                continue     # 挪過去門就打到家具,等於沒解決
+                            op.position, op.width = pos, width   # 試放
+                            same = {id(r) for r
+                                    in _door_sides(spec, w, op, polys, env)[0] if r}
+                            op.position, op.width = keep, keep_w
+                            if same == want:                     # 還是同兩間
+                                return pos, width
+                return None
+
+            found = (_search(True) if areas else None) or _search(False)
             if found is not None:
                 op.position, op.width = found
                 changed = True
@@ -489,8 +502,14 @@ def repair_doors(spec, bx0, by0, bx1, level) -> bool:
         room = next((r for r, _p in polys if r.name == iss.room), None)
         if room is None:
             continue
-        if _add_interior_door(spec, room, bx0, by0, bx1, level,
-                              only_kinds=PUBLIC_KINDS):
+        # ⚠️ `require_walkable`:補一扇**走不到的**門不叫修好(2026-08-28)。
+        #    車庫版 1F 的浴廁北邊正好是梯段盡頭那塊死角,這裡照補的話
+        #    `through_bedroom` 是消掉了,換來的是 `circulation_blocked` ——
+        #    問題只是從左手換到右手(本檔那條老毛病)。
+        if (_add_interior_door(spec, room, bx0, by0, bx1, level,
+                               only_kinds=PUBLIC_KINDS, require_walkable=True)
+                or _add_interior_door(spec, room, bx0, by0, bx1, level,
+                                      only_kinds=PUBLIC_KINDS)):
             changed = True
     return changed
 

@@ -217,9 +217,14 @@ def _counter_candidates(room):
     `trim_counters_at_columns` 遇到柱早就是這樣處理了,這裡只是把同一件事
     提前到「排候選」這一步。
 
-    候選 = 四面牆 × 兩個錨定端(靠這頭 / 靠那頭)× 由長到短每級 300mm。
+    候選 = 四面牆 × 由長到短每級 300mm × **沿著牆滑過去**的每個位置。
     最後**依長度排序**,所以 `_add_counter` 取到的一定是「放得下的最長那條」——
-    不會為了湊一面長牆而擺出一條 1.5m 的短檯面。"""
+    不會為了湊一面長牆而擺出一條 1.5m 的短檯面。
+
+    ⚠️ 只錨兩端不夠(2026-08-28):門在這一頭、冰箱在那一頭時,單邊縮永遠生不出
+    **中間那一段**。實測 6m 面寬的 1F 廚房,東牆 5m 長卻一條檯面都擺不出來 ——
+    南端是門的迴轉、北端是冰箱,中間 3m 空著沒人去試。同長度時仍**優先貼端點**
+    (靠牆角的檯面比較好用),滑到中間是退而求其次。"""
     x0, y0, x1, y1 = Polygon(room.points).bounds
     w, d = x1 - x0, y1 - y0
     ins = COUNTER_INSET
@@ -240,26 +245,36 @@ def _counter_candidates(room):
         ux, uy = (ex - sx) / full, (ey - sy) / full          # 單位向量
         length = full
         while length >= COUNTER_MIN_LEN:
-            ends = [(start, (sx + ux * length, sy + uy * length))]   # 錨在起點
-            if length < full:                                        # 錨在終點
-                ends.append(((ex - ux * length, ey - uy * length), end))
-            for s, e in ends:
-                out.append((length, order, Counter(
-                    start=s, end=e, depth=COUNTER_DEPTH,
-                    sink=True, stove=True)))
+            slack = full - length
+            offs = {0.0, slack}                                  # 先貼兩端
+            offs.update(i * COUNTER_TRIM_STEP for i in
+                        range(1, int(slack // COUNTER_TRIM_STEP) + 1))
+            for off in sorted(offs):
+                if off > slack:
+                    continue
+                out.append((length, order, min(off, slack - off), Counter(
+                    start=(sx + ux * off, sy + uy * off),
+                    end=(sx + ux * (off + length), sy + uy * (off + length)),
+                    depth=COUNTER_DEPTH, sink=True, stove=True)))
             length -= COUNTER_TRIM_STEP
-    out.sort(key=lambda t: (-t[0], t[1]))        # 長的優先,同長度時長牆優先
-    return [c for _len, _o, c in out]
+    # 長的優先;同長度時長牆優先;再同就優先貼牆角(離端點越近越前面)。
+    out.sort(key=lambda t: (-t[0], t[1], t[2]))
+    return [c for _len, _o, _t, c in out]
 
 
-def _add_counter(spec, room) -> bool:
+def _add_counter(spec, room, max_len: float | None = None) -> bool:
     """沿牆擺一段流理台;由 Phase 6 碰撞引擎把關(不撞牆/門迴轉/既有家具)。
 
-    逐面牆試,取第一個「檯面落在房內 + 通過碰撞查詢」的候選。都不行就不擺。"""
+    逐面牆試,取第一個「檯面落在房內 + 通過碰撞查詢」的候選。都不行就不擺。
+
+    max_len:只考慮不超過這麼長的檯面 —— 給 `restore_essentials` 用的「小一號」
+    (原尺寸再放一次只會再被動線修復器移掉一次,本檔那條老規矩)。"""
     inner = _inner_room(spec, room)                  # 貼牆內面,不嵌進牆體
     poly = Polygon(inner.points)
     engine = FurnitureCollisionEngine(spec)
     for counter in _counter_candidates(inner):
+        if max_len is not None and counter.length > max_len:
+            continue
         if not poly.buffer(1.0).contains(Polygon(counter_footprint(counter))):
             continue
         if engine.check(counter).valid:          # 不撞門迴轉/牆/既有家具
@@ -385,6 +400,12 @@ def restore_essentials(spec, weights=None) -> int:
         elif kind == "bedroom" and not _has_any(spec, room, BEDS):
             added += bool(_restore_one(spec, room, ("bed_single", "bed_double"),
                                        weights))
+        elif "kitchen" in _merged_kinds(room, kind) and not _has_counter(spec, room):
+            # ⚠️ 沒有流理台的廚房不是廚房(`test_every_kitchen_has_a_counter`)。
+            #    動線修復器不知道這件事:6m 面寬的 1F 廚房後來多了一扇對走道的門
+            #    (那是對的 —— 原本那扇開在梯段盡頭的死角裡),兩扇門一夾,整條
+            #    檯面就被當成擋路的東西移掉了。照本檔的老規矩補**小一號**的回來。
+            added += bool(_add_counter(spec, room, max_len=RESTORE_COUNTER_MAX))
         elif kind == "storage" and not _has_any(spec, room, CLOSET_FIXTURES):
             # 更衣室被清空的話,一樣要補 —— 一間空的更衣室在圖上就是漏畫。
             # ⚠️ 這間房**讓門去閃設備**(見 DOOR_DODGES_KINDS),補的時候
@@ -392,6 +413,18 @@ def restore_essentials(spec, weights=None) -> int:
             added += bool(_restore_one(spec, room, ("closet_rail",), weights,
                                        dodge_doors=True))
     return added
+
+
+#: 補回來的流理台最長多少(mm)。原尺寸再放一次只會再被動線修復器移掉一次。
+RESTORE_COUNTER_MAX = 1800.0
+
+
+def _has_counter(spec, room) -> bool:
+    """這間房裡有沒有流理台(判準與 plan_check/測試同一把尺:形心落在房內)。"""
+    poly = Polygon(room.points).buffer(1.0)
+    return any(isinstance(c, Counter)
+               and poly.contains(Polygon(counter_footprint(c)).centroid)
+               for c in spec.fixtures)
 
 
 def _rooms_with_beds(spec) -> set:

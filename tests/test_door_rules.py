@@ -126,16 +126,27 @@ def test_repair_turns_door_into_sliding_when_no_room():
 
 
 def test_detects_bath_door_to_kitchen():
-    """★ 衛浴門直接開向廚房 → 抓得到(規範第 5 條)。"""
+    """★ 衛浴門直接開向廚房 → 抓得到(規範第 5 條)。
+
+    ⚠️ 2026-08-28 改寫。淺骨架把浴廁從前段**東**側搬到西側(它得貼著樓梯的起步
+    平台才進得去,見 shallow_house._fit_bath_side),浴廁與廚房因此**結構上不再
+    相鄰** —— 拿產線的圖當「違規樣本」已經測不到東西了。改成兩段:
+      ① 產線的圖本來就不該違規;
+      ② 把浴廁隔壁那間的**用途**改成廚房,規則要叫得出來(否則這條測試只是在
+         測「產線剛好沒犯錯」,規則本身壞掉也照樣綠)。"""
     from shapely.geometry import Polygon
     _lb, spec = generate_shallow_building(7000.0, 6000.0, floors=2)[0]
     bath = next(r for r in spec.rooms if r.kind == "bathroom")
-    kitchen = next((r for r in spec.rooms if r.kind == "kitchen"), None)
-    assert kitchen is not None
-    shared = Polygon(bath.points).intersection(Polygon(kitchen.points).buffer(80))
-    assert not shared.is_empty                      # 這兩間確實相鄰(才測得到)
     codes = {i.code for i in check_door_rules(spec, None, 1, "1F")}
-    assert "bath_door_to_kitchen" not in codes      # 產線已經避開了
+    assert "bath_door_to_kitchen" not in codes      # ① 產線已經避開了
+
+    bp = Polygon(bath.points)
+    nb = next(r for r in spec.rooms                 # 浴廁的門通到的那一間
+              if r is not bath and r.kind not in ("stair_hall",)
+              and not bp.intersection(Polygon(r.points).buffer(80)).is_empty)
+    nb.kind = "kitchen"                             # ② 同一張圖,只改用途
+    codes = {i.code for i in check_door_rules(spec, None, 1, "1F")}
+    assert "bath_door_to_kitchen" in codes
 
 
 # ── 門連通表 ────────────────────────────────────────────────────────────────

@@ -795,21 +795,39 @@ def test_no_two_rooms_on_a_floor_share_a_name(bw, bd, seed):
 
 
 # ── 白做的工:重生前那一趟不要跑到最後 ──────────────────────────────────────
-def _repair_calls(bw, bd, floors):
-    """蓋這棟樓時 `repair_doors` 被呼叫幾次。"""
+def _spare_verdict_vs_door_repair(bw, bd, floors):
+    """回 (問了幾次 `_spare_hosts_ok`, 其中幾次是**修過門之後**才問的)。
+
+    ⚠️ 2026-08-28 從「數修門總次數」改成這樣。原本釘的是「整棟正好 3×層數 次」,
+    但 `_fit_core_reach` 量到「有門走不到」時會換一種核的排法**重蓋整棟**,
+    次數自然會變 —— 那是合理的重蓋,不是白修門。真正要釘的是**順序**:
+    `_spare_hosts_ok` 這個判斷必須在這一層修門**之前**問完,
+    數字怎麼變都不影響這件事。"""
     from src.design.layout import door_rules as dr
-    real, n = dr.repair_doors, {"n": 0}
+    st = {"since": 0, "asked": 0, "late": 0}
+    real_spec, real_rep, real_ok = (nh.rooms_to_spec, dr.repair_doors,
+                                    nh._spare_hosts_ok)
 
-    def counted(*a, **k):
-        n["n"] += 1
-        return real(*a, **k)
+    def spec_(*a, **k):
+        st["since"] = 0                      # 新的一層,重新計數
+        return real_spec(*a, **k)
 
-    dr.repair_doors = counted
+    def rep_(*a, **k):
+        st["since"] += 1
+        return real_rep(*a, **k)
+
+    def ok_(*a, **k):
+        st["asked"] += 1
+        st["late"] += bool(st["since"])
+        return real_ok(*a, **k)
+
+    nh.rooms_to_spec, dr.repair_doors, nh._spare_hosts_ok = spec_, rep_, ok_
     try:
         nh.generate_narrow_building(bw, bd, floors=floors)
     finally:
-        dr.repair_doors = real
-    return n["n"]
+        nh.rooms_to_spec, dr.repair_doors, nh._spare_hosts_ok = (
+            real_spec, real_rep, real_ok)
+    return st["asked"], st["late"]
 
 
 @pytest.mark.parametrize("bw,bd,floors", [(4500.0, 15000.0, 3),
@@ -826,12 +844,13 @@ def test_door_repair_not_wasted_on_rebuild(bw, bd, floors):
     (見 `test_spare_hosts_verdict_survives_door_repair`),而不是直接調鬆。
     """
     # 一層樓正常會修三次門:①開口收尾後 ②柱定案後 ③擺完家具後(柱是實心的、
-    # 車要停得進去,兩次都得讓門去閃)。重生前那一趟若跑到修門,就會變成四次。
-    # ⚠️ 主臥的更衣室退讓(`_beds_ok`)也會讓那一層重生一次,但那一趟現在跑不
-    #    到了 —— `restore_essentials` 先把床補回來,更衣室就不必退。這條因此
-    #    仍然是**剛好** 3×層數;真的多出來就代表有人又在重生前跑了修門。
-    assert _repair_calls(bw, bd, floors) == 3 * floors, (
-        "修門次數超過「每層 3 次」→ 重生前那一趟又白修了一次門")
+    # 車要停得進去,兩次都得讓門去閃)。這條測的不是「總共幾次」——`_fit_core_reach`
+    # 會為了換一種核的排法重蓋整棟,次數本來就會變 —— 而是**順序**:每一次問
+    # `_spare_hosts_ok` 的時候,那一層都還沒修過門。
+    asked, late = _spare_verdict_vs_door_repair(bw, bd, floors)
+    assert asked, "`_spare_hosts_ok` 根本沒被問到 —— 這條測試沒在測東西"
+    assert late == 0, (
+        f"{late}/{asked} 次是修過門之後才問的 —— 那一趟的門白修了")
 
 
 @pytest.mark.parametrize("bw,bd", [(4500.0, 15000.0), (6000.0, 13000.0),
@@ -1422,34 +1441,65 @@ def test_doors_added_after_the_grid_still_dodge_the_columns(bw, bd, fl, bd_n, se
 def test_a_crowded_wall_repacks_all_its_doors_together():
     """★★ 挪不動一扇門的時候,擋住它的常常**不是柱,是旁邊那扇門**。
 
-    車庫北牆一次排三扇 850 的門,最西那扇被角柱吃掉 112mm,而它東邊只有 220mm
-    就是下一扇 —— 逐扇試永遠找不到位置。整排一起往東推就排得下(4m 的牆扣掉
-    兩端柱還有 3.48m,三扇門連牆垛只要 2.95m)。
+    一道牆上排了三扇 850 的門,最西那扇被角柱吃掉,而它東邊只有 220mm 就是下一扇
+    —— 逐扇試永遠找不到位置。整排一起往東推就排得下(`_repack_openings_on_wall`)。
 
-    ⚠️ 重排要保住三件事,少一件就整批還原:左右順序、每扇門的**鄰室**、離牆角
-    的淨距。門一挪過界,那間房就變成要穿過別人家才進得去。"""
-    from src.design.layout.narrow_house import (_repack_openings_on_wall,
-                                                _rooms_across, _column_blocks)
-    floors = generate_narrow_building(4300.0, 13400.0, floors=2, bedrooms=2,
-                                      seed=9851, garage=True)
-    spec = floors[0][1]
-    wall = next(w for w in spec.walls
-                if len(w.openings) >= 3
-                and all(o.kind == "door" for o in w.openings))
-    was = {id(o): _rooms_across(spec, wall, o.position) for o in wall.openings}
-    order = [id(o) for o in sorted(wall.openings, key=lambda o: o.position)]
-    (sx, sy), (ex, _ey) = wall.start, wall.end
-    vertical = abs(sx - ex) < 1.0
-    along = sy if vertical else sx
-    lo, hi = (wall.start[1], wall.end[1]) if vertical else (sx, ex)
-    assert _repack_openings_on_wall(spec, wall, lo, hi, along)
-    blocks = _column_blocks(spec, wall, along, 0.0)
-    for op in wall.openings:
-        a0, b0 = op.position - op.width / 2.0, op.position + op.width / 2.0
-        assert not any(t0 < b0 and a0 < t1 for t0, t1 in blocks)   # 沒柱壓著了
-        assert _rooms_across(spec, wall, op.position) == was[id(op)]  # 鄰室沒換
-    assert [id(o) for o in sorted(wall.openings,
-                                  key=lambda o: o.position)] == order  # 順序沒亂
+    ⚠️ 重排要保住三件事,少一件就整批還原:左右順序、每扇門的**鄰室**、離牆角的
+    淨距。門一挪過界,那間房就變成要穿過別人家才進得去。
+
+    ⚠️ 2026-08-28 改寫。原本是拿一組寫死的尺寸去撈「牆上剛好有三扇門」當樣本,
+    幾何一動樣本就沒了(120 組隨機尺寸一個都撈不到)—— 那時這條規則等於沒人守。
+    改成**在產線跑的時候攔截**:確認這件事真的還會發生,而且發生的當下每一項
+    不變量都成立。第一個 assert 就是守門的:撈不到樣本要換尺寸,不是刪掉測試。
+    """
+    from src.design.layout import narrow_house as nh
+    seen = []
+    orig = nh._repack_openings_on_wall
+
+    def spy(spec, wall, lo, hi, along):
+        keys = [id(o) for o in sorted(wall.openings, key=lambda o: o.position)]
+        was = [(id(o), nh._rooms_across(spec, wall, o.position), o.position)
+               for o in wall.openings]
+        ok = orig(spec, wall, lo, hi, along)
+        if ok:
+            after = sorted(wall.openings, key=lambda o: o.position)
+            blocks = nh._column_blocks(spec, wall, along, 0.0)
+            seen.append({
+                "n": len(after),
+                "order_kept": [id(o) for o in after] == keys,
+                "rooms_kept": all(
+                    nh._rooms_across(spec, wall, o.position) == pair
+                    for o in wall.openings
+                    for i, pair, _p in was if i == id(o)),
+                "moved": any(o.position != p for o in wall.openings
+                             for i, _pair, p in was if i == id(o)),
+                "on_column": [
+                    any(t0 < o.position + o.width / 2.0
+                        and o.position - o.width / 2.0 < t1 for t0, t1 in blocks)
+                    for o in after],
+                "corner_ok": [
+                    o.kind != "door" or any(
+                        nh._door_pos_ok(spec, wall, o.position, o.width, c)
+                        for c in (*nh.DOOR_CLEAR_STEPS, nh.DOOR_CORNER_MIN))
+                    for o in after],
+            })
+        return ok
+
+    nh._repack_openings_on_wall = spy
+    try:
+        nh.generate_narrow_building(5200.0, 14500.0, floors=3, seed=33,
+                                    garage=True)
+    finally:
+        nh._repack_openings_on_wall = orig
+
+    assert seen, "產線裡撈不到「整排洞口一起推」的樣本了 —— 換一組尺寸,不要刪測試"
+    assert any(r["n"] >= 3 for r in seen), [r["n"] for r in seen]
+    for r in seen:
+        assert r["moved"], r            # 真的推了(不是原地不動也回 True)
+        assert r["order_kept"], r       # 左右順序沒亂
+        assert r["rooms_kept"], r       # 每個洞口的鄰室沒換
+        assert not any(r["on_column"]), r       # 沒有柱再壓著
+        assert all(r["corner_ok"]), r           # 門也沒變成卡在牆角
 
 
 # ── 參考平面「方案 B」的中段核(使用者 2026-08-28)────────────────────────────
@@ -1630,3 +1680,141 @@ def test_a_patio_that_fits_is_kept(bw, bd):
                                       core_style="ref")
     assert check_building(floors).ok
     assert any(r.kind == "patio" for _lb, sp in floors for r in sp.rooms)
+
+
+# ── 樓梯是障礙:走不走得到,要繞過梯段來問 ──────────────────────────────────
+def _walk_islands(spec, width=600.0):
+    """把**梯段**當障礙,回 (從最大那塊地出發走得到的房名, 走不到的房名)。
+
+    ⚠️ 這是使用者 2026-08-28 指著 7×12 的圖問的那件事:「這樣設計一定要走過廁所
+    才能到廚房」。專案原本**沒有任何一支這樣問**:
+
+      * `plan_check.floor_split` 一間房算**一個節點** —— 一間房被自己的樓梯切成
+        兩半,它照樣算「同一塊」;
+      * `room_circulation` 的障礙**只有家具** —— 它看不見樓梯。
+
+    兩條規則都在,樓梯剛好從中間漏掉。實測窄透天預設核 96 個樓層有 38 個、
+    淺基地 70 個有 26 個前後根本走不通,而 plan_check 全部給過。
+    """
+    from shapely.geometry import Point as _Pt
+    from shapely.geometry import Polygon as _Pg
+    from shapely.ops import unary_union
+
+    from src.design.layout import room_circulation as rc
+    from src.design.layout.narrow_house import _stair_boxes
+
+    boxes = _stair_boxes(spec)
+    nodes = []                                  # (房名, 一塊可走區)
+    for room in spec.rooms:
+        if room.kind in ("pipe_shaft", "patio"):
+            continue
+        poly = _Pg(room.points)
+        obs = [b for b in boxes if b.intersection(poly).area > rc.INTRUDE_TOL]
+        free = poly.difference(unary_union(obs)) if obs else poly
+        comps = rc._components_of(free.buffer(-width / 2)) or [poly]
+        nodes += [(room.name, c) for c in comps]
+
+    pts = [_Pt(*w.point_at(op.position)) for w in spec.walls
+           for op in w.openings if op.kind == "door"]
+    for room in spec.rooms:
+        if room.kind not in ("pipe_shaft", "patio"):
+            pts += rc._open_passages(spec, _Pg(room.points))
+
+    reach = width / 2 + 120.0
+    adj = {i: set() for i in range(len(nodes))}
+    for p in pts:
+        touch = [i for i, (_n, c) in enumerate(nodes) if c.distance(p) <= reach]
+        for a in touch:
+            for b in touch:
+                if a != b:
+                    adj[a].add(b)
+                    adj[b].add(a)
+
+    groups, seen = [], set()
+    for i in range(len(nodes)):
+        if i in seen:
+            continue
+        grp, stack = {i}, [i]
+        seen.add(i)
+        while stack:
+            u = stack.pop()
+            for v in adj[u]:
+                if v not in grp:
+                    grp.add(v)
+                    seen.add(v)
+                    stack.append(v)
+        groups.append(grp)
+    groups.sort(key=lambda g: -sum(nodes[i][1].area for i in g))
+    home = {nodes[i][0] for i in groups[0]}
+    lost = sorted({nodes[i][0] for g in groups[1:] for i in g} - home)
+    return sorted(home), lost
+
+
+@pytest.mark.parametrize("bw,bd,style", [
+    (7000.0, 12000.0, "default"),      # ← 使用者指出的那一張(1F 到不了餐廚)
+    (6300.0, 13900.0, "default"),
+    (4000.0, 11400.0, "default"),
+    (7500.0, 13000.0, "default"),
+    (5450.0, 15450.0, "mid"),
+    (5450.0, 15450.0, "ref"),
+])
+def test_every_room_is_reachable_without_walking_over_the_stairs(bw, bd, style):
+    """★★★ 每一間房都走得到 —— 而且**不准踩過樓梯**。
+
+    使用者 2026-08-28:「這樣設計一定要走過廁所才能到廚房,是不對的。」
+    實測 7×12 的 1F:客廳的門開在樓梯東側的走道上,餐廚的門卻開在樓梯**西側**
+    浴廁北邊那塊死角(三面是浴廁/梯段/外牆),兩邊只隔著梯段旁 75mm 的縫 ——
+    人根本過不去,而 plan_check 給過。
+    """
+    for _lb, spec in generate_narrow_building(bw, bd, floors=3, seed=0,
+                                              core_style=style):
+        _home, lost = _walk_islands(spec)
+        assert lost == [], (_lb, lost)
+
+
+def test_the_stair_itself_counts_as_an_obstacle():
+    """★★ 關卡真的看得見樓梯 —— 梯段撐滿樓梯間時,動線檢查要抓得到。
+
+    ⚠️ 少了這條,上面那條測試可以靠「產生器剛好沒犯錯」通過,而關卡其實還是瞎的。
+    `room_circulation` 原本的障礙只有家具,把梯段加寬到擋住所有門也一聲不吭。"""
+    spec = generate_narrow_building(7000.0, 12000.0, floors=2, seed=0)[0][1]
+    assert analyze_room_circulation(spec).ok         # 修好之後本來就該過
+    hall = next(r for r in spec.rooms if r.kind == "stair_hall")
+    x0, _y0, x1, _y1 = Polygon(hall.points).bounds
+    spec.stairs[0].width = (x1 - x0) - 200.0         # 梯段撐滿樓梯間
+    rep = analyze_room_circulation(spec)
+    assert not rep.ok
+    assert any(r.kind == "stair_hall" for r in rep.blocked), rep.summary()
+
+
+def test_the_core_never_traps_the_bathroom():
+    """★★ 空格併進樓梯間之後,浴室不准被關在梯段盡頭那塊死角裡。
+
+    浴廁在南時空格落在服務格**北**端,而那一端是梯段的盡頭(折返平台在半層高、
+    直梯只剩一道 75mm 的牆縫)。預設核的浴室又被梯段隔開、只剩南北兩面開得了門
+    → 門一定落進死角。退讓分兩級:先把浴廁翻到北邊(空格改落在起步平台那一側,
+    走得到),翻不動才退回「空格併進居室」。
+
+    ⚠️ 判準是 `room_circulation` **真的量出有門走不到**,不是「核裡有沒有死角」——
+    一塊沒困住任何人的空地只是浪費坪效(與 `room_circulation` 同一條分界)。
+    拿死角當觸發條件的那一版,把沒事的 6×15 也退掉了,連帶弄丟廚房的流理台、
+    浴室的淋浴間與床頭櫃 —— **退讓有代價,不該白付**。"""
+    for bw, bd in [(4500.0, 14500.0), (5100.0, 14600.0), (5200.0, 14100.0),
+                   (6000.0, 15000.0)]:
+        for _lb, spec in generate_narrow_building(bw, bd, floors=3, seed=0):
+            rep = analyze_room_circulation(spec)
+            assert rep.ok, (bw, bd, _lb, rep.summary())
+            _home, lost = _walk_islands(spec)
+            assert lost == [], (bw, bd, _lb, lost)
+
+
+def test_a_garage_floor_bathroom_is_reachable():
+    """★★ 車庫版也一樣:1F 的浴廁不能被關在梯段盡頭那塊死角裡。
+
+    這一版原本是靠 `repair_doors` 為了 `through_bedroom` 補一扇門進去「修好」的
+    —— 補一扇**走不到**的門不叫修好,只是把問題從左手換到右手。"""
+    for bw, bd in [(4400.0, 13800.0), (4300.0, 14000.0), (5300.0, 15200.0)]:
+        for _lb, spec in generate_narrow_building(bw, bd, floors=3, seed=0,
+                                                  garage=True):
+            _home, lost = _walk_islands(spec)
+            assert lost == [], (bw, bd, _lb, lost)

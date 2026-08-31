@@ -72,7 +72,9 @@ def test_nonsense_from_the_llm_is_clamped_into_something_legal():
     assert 1 <= got["floors"] <= 4 and 1 <= got["bedrooms"] <= 4
     assert got["entry_frac"] in topts.ENTRY_FRACS
     assert got["garage"] is False          # 3.6m 面寬放不下一個車位長的前段
-    assert got["patio"] is False           # 天井只有方案 B 的核放得下
+    # 天井只有方案 B 的核放得下 —— 核名亂給時會被夾成預設的那一款,所以這裡
+    # 跟著夾出來的核問(預設 2026-08-28 起是方案 B,見 normalize_options)。
+    assert got["patio"] is (got["core_style"] == "ref")
 
 
 def test_patio_only_survives_on_the_reference_core():
