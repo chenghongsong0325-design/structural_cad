@@ -177,16 +177,20 @@ def test_wall_crossing_detected_and_resolved():
 
 
 def test_table4_uses_tightened_collision_footprint():
-    """table4 的碰撞 footprint 收緊(900),椅子區(1560)不作為穿牆依據——
-    這是 fixture 資料修正,與牆演算法分離。"""
+    """table4 的碰撞 footprint 只算**桌面**,椅子區不作為穿牆依據。
+
+    ⚠️ 2026-09-03 改寫判準。原本比的是**寬度**(碰撞 900 < 畫圖 1560),那在
+    「800×800 正方桌、四邊各一張椅」的年代成立。桌面換成書上的四人方桌
+    1350×850(椅子改擺長邊)之後,畫圖寬度就等於桌寬 —— 寬度不再有差,但意圖
+    完全沒變。**判準要寫成它真正的意思**:碰撞區要**落在畫圖區之內、而且更小**。
+    """
     from src.design.collision.geometry import fixture_obstacles
     spec = generate_floor_plan(
         HouseBrief(site_width=16000, site_depth=14000, bedrooms=3))
     t = next((o for o in fixture_obstacles(spec) if o.tag == "table4"), None)
     if t is not None:                                  # 該案例有方桌時才驗
-        dw = t.poly.bounds[2] - t.poly.bounds[0]       # 畫圖 footprint 寬
-        cw = t.collision_poly.bounds[2] - t.collision_poly.bounds[0]
-        assert cw < dw                                 # 碰撞用的較小
+        assert t.collision_poly.area < t.poly.area     # 碰撞用的較小
+        assert t.poly.buffer(1.0).contains(t.collision_poly)   # 而且包得住
 
 
 # ── Phase 3-1:Void Collision(天井/挑空為硬障礙)────────────────────────────

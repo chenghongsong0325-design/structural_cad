@@ -129,3 +129,97 @@ def test_floor_plan_draws_fixtures(doc_and_layers) -> None:
     fx_inserts = [e for e in msp.query("INSERT") if e.dxf.name.startswith("FX_")]
     assert len(fx_inserts) == 11        # 11 件圖塊(另 2 段流理台是多義線)
     assert all(e.dxf.layer == layers["OTHER"] for e in fx_inserts)
+
+
+def test_dining_set_follows_the_book_sizes():
+    """餐桌照〈空間最適尺寸〉:四人方桌 135×85cm、拉椅活動距離每側 80cm。
+
+    使用者 2026-09-03 給的台灣室內設計書。兩件事以前都不對:
+
+      * 桌面是 **800×800** —— 比書上的**二人桌**(70×85)大不了多少,四個人坐不下。
+      * `COLLISION_SIZES["table4"]` 是 **900×900** —— 擺位器以為整組餐桌椅只佔
+        0.9×0.9m,於是「椅子拉不拉得出來」**從來沒有被檢查過**(圖上畫 1560 寬,
+        擺位只用 900)。
+
+    ⚠️ **拉椅空間不放進 COLLISION_SIZES**(走錯過的路,已退回):那張表同時被
+    穿牆判定吃,放大它會讓「椅子拉開掃到牆」被判成家具穿牆(實測倒 3 條既有
+    測試)。書上四口之家「靠牆擺」本來就是椅子貼著牆。拉椅那件事
+    **早就模擬過了** —— `collision/human_clearance.py` 的 `dining_table` 規則
+    四面各留 900mm(比書上的 800 還嚴),只是它是軟分數不是硬閘門。
+    """
+    from src.design.collision.human_clearance import (
+        HUMAN_CLEARANCE_RULES,
+        HUMAN_TYPE,
+    )
+    from src.drafting.fixtures import (
+        COLLISION_SIZES,
+        DINING_PULL_OUT,
+        FIXTURE_SIZES,
+        TABLE4_TOP,
+    )
+
+    assert TABLE4_TOP == (1350.0, 850.0)          # 書上的四人方桌 135×85cm
+    assert DINING_PULL_OUT == 800.0               # 書上的拉椅活動距離 80cm
+    # 硬閘門只算桌面;椅子區只在畫圖時出現(畫圖比較大,與全表其餘家具一致)。
+    assert COLLISION_SIZES["table4"] == TABLE4_TOP
+    dw, dd = FIXTURE_SIZES["table4"]
+    assert dw == TABLE4_TOP[0], "繪圖寬度就是桌寬(椅子擺長邊,不超出桌寬)"
+    assert dd > TABLE4_TOP[1], "繪圖深度要含長邊的椅子"
+    # 拉椅空間由 human_clearance 管,而且不得低於書上的 80cm。
+    rule = HUMAN_CLEARANCE_RULES[HUMAN_TYPE["table4"]]
+    for side in (rule.front_clearance, rule.side_clearance, rule.back_clearance):
+        assert side >= DINING_PULL_OUT, (side, DINING_PULL_OUT)
+
+
+def test_bathroom_fixtures_follow_the_book_sizes():
+    """浴室設備照〈空間最適尺寸〉Space 6(使用者 2026-09-03 給的書)。
+
+    * 洗手台檯面基本尺寸 **600×600**;窄浴室退而求其次用 `basin_small` 500×450
+      —— 與 `bed_double→bed_single`、`bathtub→shower` 同一條路。
+      ⚠️ 沒有這個退讓,實測洗手台從 21 個掉到 **9** 個(25% 的浴室長邊不到書上
+      全套浴室的 2200 = 馬桶區800+洗手檯600+淋浴間800)。
+    * 淋浴間 800~900 見方、浴缸 150×70(按摩 160×75)—— 本來就符合。
+    * **馬桶寬度維持 380,不採書上的 450**:書上真正要求的是「馬桶**區** 80 寬」,
+      那是活動空間;`human_clearance` 側向各留 200 → 380+400 = **780 ≈ 800**,
+      本來就達標。本體改 450 會讓窄浴室的洗手台少 3 個。
+    """
+    from src.design.collision.human_clearance import (
+        HUMAN_CLEARANCE_RULES,
+        HUMAN_TYPE,
+    )
+    from src.drafting.fixtures import FIXTURE_SIZES
+
+    assert FIXTURE_SIZES["basin"] == (600, 600)          # 書上的基本檯面
+    assert FIXTURE_SIZES["basin_small"] == (500, 450)    # 窄浴室的小一號
+    tw, td = FIXTURE_SIZES["toilet"]
+    assert 750 <= td <= 900, "馬桶深度要落在書上的 75~90cm"
+    zone = tw + 2 * HUMAN_CLEARANCE_RULES[HUMAN_TYPE["toilet"]].side_clearance
+    assert zone >= 780, f"馬桶區只有 {zone}mm,書上要 800"
+    sw, sd = FIXTURE_SIZES["shower"]
+    assert 800 <= sw <= 900 and sd >= 800, "淋浴間 80~90cm 見方"
+    bw, bd = FIXTURE_SIZES["bathtub"]
+    assert (bw, bd) in ((1500, 700), (1600, 750)), "浴缸:單人 150×70 或按摩 160×75"
+
+
+def test_narrow_bathrooms_still_get_a_basin():
+    """★ 洗手台放大到書上的尺寸,**不准讓原本有洗手台的浴室變成沒有**。
+
+    這條釘的是本專案的鐵則(加分項不得讓原本好好的東西壞掉)。實測基準是
+    8 個尺寸 × 3 層 = 24 間浴室裡有 21 個洗手台。
+    """
+    from shapely.geometry import Point, Polygon
+
+    from src.design.layout.narrow_house import generate_narrow_building
+
+    got = 0
+    for bw, bd in ((4500, 14000), (6000, 12500), (7000, 15500), (8000, 16000)):
+        for _lb, spec in generate_narrow_building(bw, bd, floors=3, seed=0):
+            for r in spec.rooms:
+                if r.kind not in ("bathroom", "toilet"):
+                    continue
+                poly = Polygon(r.points)
+                if any(getattr(f, "name", "") in ("basin", "basin_small")
+                       and poly.contains(Point(*f.insert))
+                       for f in spec.fixtures if getattr(f, "insert", None)):
+                    got += 1
+    assert got >= 10, f"只有 {got} 間浴室有洗手台(基準:12 間中的 10 間以上)"

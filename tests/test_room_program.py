@@ -287,3 +287,37 @@ def test_兩條產線用同一把尺() -> None:
 #       雙人房 / 主臥   3~5 坪 = 9.9~16.5 ㎡
 # 沒有寫成測試,因為這個專案主力做**透天**,尺度本來就比公寓大(19×13m 透天的
 # 次臥 4 坪是正常的)。理由與後續做法寫在 room_program.ROOM_PROGRAM 的註解。
+
+
+def test_no_vague_room_when_every_purpose_is_taken():
+    """NG08「用不到的房間是家中亂源」(使用者 2026-09-03 給的〈9 種常見 NG 格局〉)。
+
+    書房、家庭廳都配掉之後,原本會回「多功能室」—— 那正是書上點名的東西:
+    台灣人沒有用和室/多功能室的習慣,最後唯一的功能是堆積雜物。改成回 `None`
+    (=不要切這間),面積由呼叫端併給旁邊天天用的房。
+    """
+    from src.design.room_program import select_overflow_program
+
+    for floor in ("public", "upper"):
+        assert select_overflow_program(
+            floor=floor, bedrooms=3, want_study=True, has_study=True,
+            has_family=True, width_mm=4000, depth_mm=3800) is None
+
+
+def test_two_band_1f_has_no_multi_purpose_room():
+    """整條產線走完也不准冒出「多功能室」——規則存在但關卡沒接,本專案踩過很多次。
+
+    ⚠️ 這條要**跑完整棟**才有意義:選配器改對了,呼叫端沒接住的話,圖上照樣
+    會有那間房(實測 19×13 與 24×16 的 1F 原本各有一間 35㎡ 的多功能室)。
+    """
+    from src.design.building_generator import BuildingBrief, generate_building_auto
+    from src.design.layout_generator import HouseBrief
+
+    for w, d in ((19_000, 13_000), (24_000, 16_000)):
+        b = generate_building_auto(BuildingBrief(
+            typical=HouseBrief(site_width=w, site_depth=d, bedrooms=3,
+                               setback=0, seed=0, dimension_basis="building"),
+            floors=3, differentiated=True))
+        for f in b.floors:
+            bad = [r.name for r in f.spec.rooms if r.name in ("多功能室", "和室")]
+            assert not bad, f"{w}x{d} {f.label} 生出用不到的房間 {bad}"

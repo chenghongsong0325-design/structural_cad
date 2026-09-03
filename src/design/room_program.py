@@ -361,17 +361,31 @@ def compact_width(depth_mm: float, req: RoomRequirement) -> float:
 
 def select_overflow_program(*, floor: str, bedrooms: int, want_study: bool,
                             has_study: bool, has_family: bool,
-                            width_mm: float, depth_mm: float) -> tuple[str, str]:
+                            width_mm: float, depth_mm: float):
     """Program Selector —— 決定 Living Overflow 那塊空間要當成什麼房間。
 
     不固定切成同一種(使用者 2026-07-21):依樓層/已有房間/房數/尺寸決定。回傳
-    (kind, name)。中島(kitchen island)不在此——它屬於廚房區的開放餐廚,由
-    layout_generator._kitchen_island 處理,跟南帶的客廳溢位在不同帶,幾何上不相鄰。
+    (kind, name),**用途排完了就回 `None`**(見下)。中島(kitchen island)不在
+    此——它屬於廚房區的開放餐廚,由 layout_generator._kitchen_island 處理,跟南帶
+    的客廳溢位在不同帶,幾何上不相鄰。
 
       floor       "public"(1F 公共層)/ "upper"(2F+ 臥室層)
       has_study   這棟已經有書房(避免重複切一間書房)
       has_family  這棟已經有家庭廳
       width_mm    溢位寬(沿街方向)· depth_mm 帶進深
+
+    ⚠️ **回 `None` = 「不要切這間」**(使用者 2026-09-03 選的做法 A,對應
+    〈9 種常見 NG 格局〉NG08「用不到的房間是家中亂源」)。原本書房、家庭廳都
+    配掉之後會回「多功能室」—— 那正是書上點名的東西:台灣人沒有用和室/多功能室
+    的習慣,最後唯一的功能是**堆積雜物**。實測 19×13 與 24×16 的 1F 各生出一間
+    **35㎡ 的多功能室,比客廳(28.5㎡)還大**,是全屋最大的房間。
+
+    書上的解是「不常用的機能附屬在另一個常用空間內」,所以這裡改成不給用途,
+    由呼叫端把那塊面積**併給旁邊天天用的房**(南帶併給客廳、北帶併給餐廳)。
+    ⚠️ 呼叫端各自決定怎麼併 —— 但**不准自己補一個房名**回來,那就等於在第二個
+    地方又寫了一套用途規則(本專案「同一件事兩把尺」已經踩過很多次)。
+    唯一的例外是 AI 產線的 BSP:格子已經切出來了、一定要有東西住,見
+    `graph_layout._overflow_rooms` 的說明。
     """
     study_req = ROOM_PROGRAM["study"]
     # 太窄放不下一張桌椅 → 當儲藏室(收納永遠有需求)。
@@ -386,13 +400,13 @@ def select_overflow_program(*, floor: str, bedrooms: int, want_study: bool,
             return "family", "家庭廳"                 # 臥室層最自然的溢位=家庭廳
         if not has_study and not want_study and compact:
             return "study", "書房"
-        return "family", "多功能室"
+        return None                                  # NG08:沒用途就不要切這間
     # 1F 公共層:書齋/家庭機能
     if not has_study and not want_study and compact:
         return "study", "書房"
     if not has_family:
         return "family", "家庭廳"
-    return "family", "多功能室"
+    return None                                      # NG08:同上
 
 
 # =============================================================================

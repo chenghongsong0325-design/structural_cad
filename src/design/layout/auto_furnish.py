@@ -55,7 +55,12 @@ FURNITURE_PROGRAM: dict[str, list] = {
     #    馬桶洗手台先佔位的話它就永遠擠不進去(實測 1.35×2.45m 的浴廁,9 個
     #    候選位置全被門弧與既有家具打回)。馬桶小、後面再排得進去。
     # ⚠️ 洗澡設備不在這張表裡:它由 `_place_bathing` **先擺**(見那支的說明)。
-    "bathroom": ["toilet", "basin"],
+    # ⚠️ 洗手台也要有小一號的:書上(〈空間最適尺寸〉Space 6)的基本檯面是
+    #    600×600,但我們有 25% 的浴室長邊不到書上全套浴室的 2200
+    #    (馬桶區800+洗手檯600+淋浴間800)。實測直接放大到 600,那幾間**一個
+    #    洗手台都擺不下**(21 → 9)。與 `bed_double→bed_single`、
+    #    `bathtub→shower` 同一條路 —— 這個坑床踩過、洗澡設備踩過、餐桌踩過。
+    "bathroom": ["toilet", ("basin", "basin_small")],
     "foyer": ["shoe_cabinet"],
     # 更衣室(narrow_house 主臥切出來的那間,kind=storage):吊衣櫃,兩側各一排。
     "storage": [("wardrobe", "closet_rail"), "closet_rail"],

@@ -37,6 +37,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from ezdxf.enums import TextEntityAlignment
+
 Point = tuple[float, float]
 
 
@@ -51,12 +53,30 @@ def _build_toilet(blk) -> None:
                     dxfattribs={"layer": "0"})
 
 
-def _build_basin(blk) -> None:
-    """洗手台 500×450:檯面矩形 + 內橢圓面盆。"""
-    blk.add_lwpolyline([(-250, 0), (250, 0), (250, 450), (-250, 450)],
+def _basin_block(blk, w: float, d: float) -> None:
+    """洗手台:檯面矩形 + 內橢圓面盆(尺寸由呼叫端給)。"""
+    blk.add_lwpolyline([(-w / 2, 0), (w / 2, 0), (w / 2, d), (-w / 2, d)],
                        close=True, dxfattribs={"layer": "0"})
-    blk.add_ellipse(center=(0, 225), major_axis=(180, 0), ratio=140 / 180,
+    rx = w * 0.36
+    blk.add_ellipse(center=(0, d / 2), major_axis=(rx, 0), ratio=0.78,
                     dxfattribs={"layer": "0"})
+
+
+def _build_basin(blk) -> None:
+    """洗手台 600×600 —— 書上(〈空間最適尺寸〉Space 6)的基本檯面尺寸。"""
+    _basin_block(blk, 600.0, 600.0)
+
+
+def _build_basin_small(blk) -> None:
+    """小一號的洗手台 500×450(窄浴室用)。
+
+    ⚠️ 書上的 600×600 是**基本**尺寸,但我們有 25% 的浴室長邊不到書上全套浴室
+    的 2200(馬桶區800 + 洗手檯600 + 淋浴間800)。實測直接把洗手台放大到 600,
+    那幾間**一個洗手台都擺不下**(21 → 9)。所以照本專案既有的做法給一個小一號的
+    (與 `bed_double→bed_single`、`bathtub→shower` 同一條路),
+    在 `FURNITURE_PROGRAM` 裡寫成 `("basin", "basin_small")`。
+    """
+    _basin_block(blk, 500.0, 450.0)
 
 
 def _build_bathtub(blk) -> None:
@@ -99,15 +119,31 @@ def _build_bed(blk, width: float, pillows: int) -> None:
     blk.add_line((-hw, 560), (hw, 560), dxfattribs={"layer": "0"})   # 被摺線
 
 
+#: 四人方桌本體(使用者 2026-09-03 給的〈空間最適尺寸〉:四人方桌 135×85cm)。
+#: ⚠️ 舊值是 800×800 —— 那比書上的**二人桌**(70×85)大不了多少,四個人坐不下。
+TABLE4_TOP = (1350.0, 850.0)
+DINING_CHAIR = 380.0            # 椅子見方
+#: 拉開椅子起身的活動距離(書上:餐廳範圍 = 桌子大小 + 每側 80cm)。
+DINING_PULL_OUT = 800.0
+
+
 def _build_table4(blk) -> None:
-    """方桌 800×800 + 四張椅子 380×380(原點=桌心)。"""
-    blk.add_lwpolyline([(-400, -400), (400, -400), (400, 400), (-400, 400)],
+    """四人方桌 1350×850 + 四張椅子 380×380(原點=桌心;長邊各坐兩人)。
+
+    尺寸出自使用者 2026-09-03 給的〈空間最適尺寸〉:四人方桌 135×85cm。
+    ⚠️ 椅子擺在**長邊**(上下各兩張)—— 書上的 135×85 就是「一邊坐兩個」的桌子,
+    四邊各一張是舊的 800×800 正方桌才有的排法。
+    """
+    tw, td = TABLE4_TOP[0] / 2.0, TABLE4_TOP[1] / 2.0
+    blk.add_lwpolyline([(-tw, -td), (tw, -td), (tw, td), (-tw, td)],
                        close=True, dxfattribs={"layer": "0"})
-    for cx, cy in ((0, 590), (0, -590), (590, 0), (-590, 0)):
-        blk.add_lwpolyline(
-            [(cx - 190, cy - 190), (cx + 190, cy - 190),
-             (cx + 190, cy + 190), (cx - 190, cy + 190)],
-            close=True, dxfattribs={"layer": "0"})
+    h = DINING_CHAIR / 2.0
+    for cx in (-TABLE4_TOP[0] / 4.0, TABLE4_TOP[0] / 4.0):
+        for cy in (td + h, -(td + h)):
+            blk.add_lwpolyline(
+                [(cx - h, cy - h), (cx + h, cy - h),
+                 (cx + h, cy + h), (cx - h, cy + h)],
+                close=True, dxfattribs={"layer": "0"})
 
 
 def _build_table2(blk) -> None:
@@ -218,6 +254,10 @@ def _build_fridge(blk) -> None:
                        close=True, dxfattribs={"layer": "0"})
     blk.add_line((-350, 0), (350, 700), dxfattribs={"layer": "0"})      # 對角線記號
     blk.add_line((0, 560), (0, 700), dxfattribs={"layer": "0"})         # 門縫
+    # 圖上要寫 REF 才認得出是冰箱(使用者 2026-09-03 給的符號對照表就是這樣標)。
+    blk.add_text("REF", height=180,
+                 dxfattribs={"layer": "0"}).set_placement(
+        (0, 260), align=TextEntityAlignment.MIDDLE_CENTER)
 
 
 def _build_bar_stool(blk) -> None:
@@ -251,6 +291,7 @@ def _build_car(blk) -> None:
 FIXTURE_BUILDERS = {
     "toilet": _build_toilet,
     "basin": _build_basin,
+    "basin_small": _build_basin_small,
     "bathtub": _build_bathtub,
     "shower": _build_shower,
     "bed_single": lambda blk: _build_bed(blk, 1000, pillows=1),
@@ -279,13 +320,23 @@ _CENTER_ORIGIN = {"table4", "car", "coffee_table", "bar_stool"}
 # 各圖塊的佔地外框(寬w × 深d,局部座標;與 builder 幾何一致)。
 # table4 原點在中心(±780),其餘原點在貼牆邊中點、朝 +Y 伸出 d。
 FIXTURE_SIZES = {
-    "toilet": (380, 700),
-    "basin": (500, 450),
+    # 馬桶本體:深度取書上(〈空間最適尺寸〉Space 6)的 75~90 下限 750。
+    # ⚠️ **寬度維持 380,不採書上的 450**。書上真正的要求是「**馬桶區** 80 寬」
+    #    —— 那是活動空間,而 human_clearance 的 toilet 規則側向各留 200,
+    #    380 + 200×2 = **780 ≈ 800**,那個數字本來就達標。
+    #    本體改成 450 實測會讓**洗手台少 3 個**(21 → 18):那 25% 長邊不到 2200
+    #    的窄浴室,馬桶一胖洗手台就擠不下。加分項不得讓原本好好的東西壞掉。
+    "toilet": (380, 750),
+    # 洗手台:書上的基本檯面 600×600;窄浴室退而求其次用 basin_small。
+    "basin": (600, 600),
+    "basin_small": (500, 450),
     "bathtub": (1600, 750),
     "shower": (900, 900),        # 淋浴間(浴缸放不下的小衛浴用)
     "bed_single": (1000, 2000),
     "bed_double": (1600, 2000),
-    "table4": (1560, 1560),      # 桌 800 + 兩側椅子(590+190)×2
+    # 四人方桌:桌 1350×850(書上的四人方桌尺寸)+ 長邊各一排椅子 380。
+    # ⚠️ 這是**繪圖**佔地;椅子拉開起身要的空間在 COLLISION_SIZES(見下面)。
+    "table4": (1350, 1610),
     "table2": (2100, 750),       # 二人靠牆餐桌:桌 1200 + 兩端椅子;窄餐廳用
     "sofa3": (2000, 850),
     "wardrobe": (1500, 600),
@@ -307,7 +358,20 @@ FIXTURE_SIZES = {
 # 故碰撞用「桌體 + 少量餘裕」(900×900),避免正常靠牆餐桌的椅子區被誤判穿牆。
 # 這是 fixture 資料修正,與 wall collision 演算法分離(FIXTURE_SIZES 不動,畫圖與
 # 家具×家具碰撞仍用完整 footprint)。
-COLLISION_SIZES = {**FIXTURE_SIZES, "table4": (900, 900)}
+COLLISION_SIZES = {
+    **FIXTURE_SIZES,
+    # 餐桌的硬閘門只算**桌面本身**,不含椅子區 —— 椅子拉開會掃到牆是正常的
+    # (書上四口之家「靠牆擺」就是這樣),不該判成穿牆。
+    # ⚠️ 走錯過的路(已退回,不要再試一次):照書上把它放大成
+    #    「桌 + 每側 800」= 2950×2450,想讓「椅子拉不拉得出來」變成硬條件。
+    #    **那件事早就模擬過了** —— `collision/human_clearance.py` 的
+    #    `dining_table` 規則四面各留 900mm(比書上的 800 還嚴),只是它是**軟
+    #    分數**不是硬閘門。而 COLLISION_SIZES 同時被穿牆判定吃,放大它會讓
+    #    3 條既有測試判定「家具穿牆」(test_collision 兩條 + test_furniture_engine)。
+    #    要把拉椅升級成硬條件,該動的是 human_clearance 的位階,不是這張表。
+    # ⚠️ 值要跟著桌面走:舊值 900×900 是配舊的 800×800 桌面(桌+100)。
+    "table4": TABLE4_TOP,
+}
 
 
 def _block_name(name: str) -> str:
