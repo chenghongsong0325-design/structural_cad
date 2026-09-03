@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass, field
 
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon
@@ -294,3 +295,101 @@ def analyze_room_circulation(spec, width: float = PASSAGE_WIDTH,
 def circulation_ok(spec, width: float = PASSAGE_WIDTH) -> bool:
     """便捷判斷:所有房間內部都走得通?"""
     return analyze_room_circulation(spec, width).ok
+
+
+# ── 整層動線的「轉幾個彎」(NG05 迷宮動線) ──────────────────────────────────
+# 使用者 2026-09-03 給的〈9 種常見 NG 格局〉NG05:動線沒整併過就會又長又曲折,
+# 書上的 OK 圖是「打造貫穿的中軸 + 公私分區」。上面那幾支問的是**房間內部**走不
+# 走得通(而且是唯讀的幾何檢查);這一支問的是**整層**:從大門走到每一間房要
+# 拐幾次彎。⚠️ 這是量表不是關卡 —— 拐幾個彎算多是設計判斷,不是硬規則,所以
+# 這裡只回數字,不產生 PlanIssue。
+WALK_BODY = 200.0     # 人的半徑:可走區域先內縮這麼多,免得從髮絲縫鑽過去
+WALK_STEP = 100.0     # 走路格網(mm)。粗格會把 750 的走道整條漏掉
+_DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+
+def walkable_floor(spec, body: float = WALK_BODY):
+    """整層真正踩得到的地板:房間聯集 − 牆實體 − 梯段 − 家具,再內縮一個人。
+
+    ⚠️ 牆要用**扣掉洞口**的實體(`plan_check._wall_solid_union`)—— 拿沒扣洞口的
+    牆去減,每一扇門都會變成牆,整層一定斷開。
+    ⚠️ 梯段一定要減掉:樓梯是實心的,這是 2026-08-28 那條坑的單一出處
+    (見 `_room_stairs` 的說明)。"""
+    from src.design.layout.narrow_house import _stair_boxes
+    from src.design.layout.plan_check import VOID_KINDS, _wall_solid_union
+
+    floor = unary_union([Polygon(r.points) for r in spec.rooms
+                         if r.kind not in VOID_KINDS])
+    blocks = [_wall_solid_union(spec)] + list(_stair_boxes(spec))
+    blocks += [o.poly for o in fixture_obstacles(spec)]
+    blocks = [b for b in blocks if b is not None and not b.is_empty]
+    area = floor.difference(unary_union(blocks)) if blocks else floor
+    return area.buffer(-body)
+
+
+def turns_to_rooms(spec, start, *, body: float = WALK_BODY,
+                   step: float = WALK_STEP) -> dict:
+    """從 start 走到每一間房最少要轉幾個彎。回 {房名: 轉彎數};走不到的不列。
+
+    0-1 BFS:狀態是(格子, 方向),直走成本 0、轉彎成本 1,所以答案就是
+    「一條路上的轉折數」——那正是 NG05 講的「曲折」。"""
+    from shapely.prepared import prep
+
+    from src.design.layout.plan_check import VOID_KINDS
+
+    area = walkable_floor(spec, body)
+    if area.is_empty:
+        return {}
+    x0, y0, x1, y1 = area.bounds
+    nx, ny = int((x1 - x0) / step) + 1, int((y1 - y0) / step) + 1
+    pa = prep(area)
+    grid = [[pa.contains(Point(x0 + i * step, y0 + j * step))
+             for j in range(ny)] for i in range(nx)]
+
+    si = int(round((start[0] - x0) / step))
+    sj = int(round((start[1] - y0) / step))
+    if not (0 <= si < nx and 0 <= sj < ny and grid[si][sj]):
+        # 起點落在牆/家具/梯段上 → 吸附到最近的可走格
+        best = None
+        for i in range(nx):
+            for j in range(ny):
+                if not grid[i][j]:
+                    continue
+                d = ((x0 + i * step - start[0]) ** 2
+                     + (y0 + j * step - start[1]) ** 2)
+                if best is None or d < best[0]:
+                    best = (d, i, j)
+        if best is None:
+            return {}
+        si, sj = best[1], best[2]
+
+    inf = float("inf")
+    cost = {(si, sj, d): 0 for d in range(4)}
+    dq = deque((si, sj, d) for d in range(4))
+    while dq:
+        i, j, d = dq.popleft()
+        c = cost[(i, j, d)]
+        for nd, (dx, dy) in enumerate(_DIRS):
+            a, b = i + dx, j + dy
+            if not (0 <= a < nx and 0 <= b < ny) or not grid[a][b]:
+                continue
+            nc = c + (0 if nd == d else 1)
+            if nc < cost.get((a, b, nd), inf):
+                cost[(a, b, nd)] = nc
+                (dq.appendleft if nd == d else dq.append)((a, b, nd))
+
+    best_at = {}
+    for (i, j, _d), c in cost.items():
+        if c < best_at.get((i, j), inf):
+            best_at[(i, j)] = c
+
+    out = {}
+    for r in spec.rooms:
+        if r.kind in VOID_KINDS:
+            continue
+        poly = prep(Polygon(r.points))
+        for (i, j), c in best_at.items():
+            if poly.contains(Point(x0 + i * step, y0 + j * step)):
+                if c < out.get(r.name, inf):
+                    out[r.name] = c
+    return out

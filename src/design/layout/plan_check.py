@@ -29,6 +29,8 @@
     room_no_daylight    居室是內間(四周無外牆也無天井)→ 沒窗
     room_oversize       居室大到不合理
     room_skinny         居室細長得像走廊
+    no_cross_ventilation 這一層找不到一對「拉直線不被牆擋」的對外窗 → 風進不來
+    bath_no_window      浴廁沒有對外窗(濕氣淤積、發霉)
 
 ⚠️ 分界原則:**error = 同一份房間關係圖、換個切法就能解決**;warning = 非改設計
    (房間數/相鄰關係)不可。所以只有 error 拿來擋圖,warning 只回報。
@@ -363,6 +365,12 @@ def check_floor(spec, env=None, level: int = 1, label: str = "") -> list[PlanIss
         for op in w.openings:
             if op.kind != "door":
                 continue
+            # ⚠️ **開放通道不吃這條。** 這條問的是「門扇旁邊站不站得下人」;走道口
+            #    那種滿寬的洞口沒有門扇,兩端就是結構(導牆/界牆),它貼著牆角是
+            #    對的 —— 真實透天的走道口就是從界牆直接開到底(使用者 2026-09-02:
+            #    「走道出入口都不用設置門,也不用用牆隔起來」)。
+            if getattr(op, "is_passage", False):
+                continue
             if not _door_pos_ok(spec, w, op.position, op.width,
                                 DOOR_CORNER_MIN):        # 動線走得通的物理下限
                 px, py = w.point_at(op.position)
@@ -429,7 +437,151 @@ def check_floor(spec, env=None, level: int = 1, label: str = "") -> list[PlanIss
             if ar > ASPECT_LIMIT:
                 issues.append(PlanIssue("warning", "room_skinny", lb, r.name,
                                         f"長寬比 {ar:.1f},細長得像走廊"))
+    issues.extend(_ventilation_issues(spec, env, lb))
     return issues
+
+
+#: 從窗往室內縮多少再拉直線(起點不要落在牆體上)。
+VENT_PROBE = 200.0
+
+
+def _wall_solid_union(spec):
+    """牆的**實體聯集**(已扣掉門窗洞口)—— 風的直線碰到它才叫被擋住。
+
+    ⚠️ 名字不要叫 `_wall_bodies` —— 本檔已經有一支同名的(每道牆一塊、**不扣
+    洞口**),而且 `door_rules` 直接 import 它。重名會把它整支換掉,症狀是
+    「'MultiPolygon' object is not iterable」出現在完全不相干的修門程式裡。
+
+    洞口一律當「開著」:書上的 OK 圖寫的就是「只要保持房門開啟,前後窗就能
+    通風對流」(使用者 2026-09-03 給的〈9 種常見 NG 格局〉NG01)。
+    """
+    from shapely.ops import unary_union
+
+    from src.drafting.wall import solid_segments
+
+    segs = []
+    for w in spec.walls:
+        ux, uy = w.unit_vector
+        sx, sy = w.start
+        for a, b in solid_segments(w.length, w.openings):
+            if b - a < 1.0:
+                continue
+            segs.append(LineString([(sx + ux * a, sy + uy * a),
+                                    (sx + ux * b, sy + uy * b)])
+                        .buffer(w.thickness / 2.0, cap_style=2, join_style=2))
+    return unary_union(segs) if segs else None
+
+
+#: 每扇窗沿寬度取幾個取樣點(風從洞口的哪一段過都算)。
+VENT_SAMPLES = 5
+
+
+def _exterior_window_points(spec, env) -> list:
+    """對外窗 → [([沿寬度的取樣點], 牆法線)];風要從這裡進、從另一個出。
+
+    ⚠️ **一扇窗不是一個點。** 只拿窗心拉線的話,明明已經對齊走道、重疊 500mm
+    的一對前後窗會被判成不通(實測 4.5~7m 面寬全中)——因為兩個窗心連成的那條
+    線剛好落在走道外面。窗有寬度,風從洞口的哪一段過都算,所以要沿寬度取樣。
+
+    ⚠️ **開向天井的窗也算對外窗。** 天井貫穿到屋頂、是通到外面的空氣,連棟街屋
+    開天井本來就是為了通風採光。只認建築外緣的話,開了天井反而會判成「通風變差」
+    —— 這跟 2026-08-26 `code_check` 的 §41 是**同一個 bug**(當時 `_is_exterior`
+    只認建築外緣,天井開了窗也不算採光,等於天井完全沒有意義),只是這次出現在
+    通風這條。實測 7×15.5m 開天井後浴廁採光 3 件 → 0,卻冒出 1 件
+    `no_cross_ventilation`,`_fit_patio_auto` 因此把天井整個退掉。
+    """
+    out = []
+    patios = [Polygon(r.points).buffer(EDGE_TOL) for r in spec.rooms
+              if r.kind == "patio"]
+    # ⚠️ **直接走牆上的洞口,不要繞 `spec.windows` 的索引。** 那份清單存的是
+    #    (wall_index, opening_index),別的地方一動洞口就可能過期 —— 檢查器拿
+    #    過期的索引去查會 IndexError 整支炸掉(`test_detects_removed_doors`
+    #    故意拆光門洞就撞到)。**關卡要能吃畸形的圖**,那正是它要回報的東西。
+    for w in spec.walls:
+        for op in w.openings:
+            if op.kind != "window":
+                continue
+            px, py = w.point_at(op.position)
+            if not (_on_envelope(px, py, env)
+                    or any(p.contains(Point(px, py)) for p in patios)):
+                continue
+            ux, uy = w.unit_vector
+            half = op.width / 2.0 * 0.9          # 留一點邊,不要取在窗框上
+            pts = []
+            for k in range(VENT_SAMPLES):
+                t = -half + (2 * half) * k / max(1, VENT_SAMPLES - 1)
+                pts.append((px + ux * t, py + uy * t))
+            src = next((k for k, pp in enumerate(patios)
+                        if pp.contains(Point(px, py))), -1)   # -1 = 建築外緣
+            out.append((pts, (-uy, ux), src))
+    return out
+
+
+def has_cross_ventilation(spec, env=None) -> bool:
+    """這一層有沒有**對流**:兩個對外窗之間拉一條直線,沒有被牆擋住。
+
+    ⚠️ 判準就是書上教的量法(使用者 2026-09-03):「風走最短直線,沒辦法像人
+    一樣轉身,用同一個開窗不能同時進與出」——所以要**兩個**對外窗,而且
+    「用尺在窗與窗之間拉直線,觀察直線有沒有被阻斷」。
+
+    ⚠️ **同一個天井上的兩扇窗不算一對。** 書上那句「同一個開窗不能同時進與出」
+    講的是同一個空氣來源 —— 一座天井就是一個來源,兩扇窗都開向它等於進出同一口
+    井。不擋這件事的話,「開了天井就一定通風」會變成免費通過的假合格。
+    """
+    env = env if env is not None else building_env(spec)
+    wins = _exterior_window_points(spec, env)
+    if len(wins) < 2:
+        return False
+    bodies = _wall_solid_union(spec)
+    if bodies is None:
+        return True
+    for i in range(len(wins)):
+        for j in range(i + 1, len(wins)):
+            (ps, np_, si), (qs, nq, sj) = wins[i], wins[j]
+            if si >= 0 and si == sj:
+                continue                        # 同一座天井:同一個空氣來源
+            for s1 in (1.0, -1.0):
+                for s2 in (1.0, -1.0):
+                    for p in ps:
+                        a = (p[0] + np_[0] * VENT_PROBE * s1,
+                             p[1] + np_[1] * VENT_PROBE * s1)
+                        for q in qs:
+                            b = (q[0] + nq[0] * VENT_PROBE * s2,
+                                 q[1] + nq[1] * VENT_PROBE * s2)
+                            if not LineString([a, b]).intersects(bodies):
+                                return True
+    return False
+
+
+def _ventilation_issues(spec, env, lb) -> list:
+    """NG01:通風要對流 + 用水空間要有對外窗(使用者 2026-09-03 給的判準)。
+
+    ⚠️ 兩條都是 **warning**:要多開一扇對外窗、或把核搬開,那是**改設計**,
+    不是「換個切法」—— 照本檔的分界原則就該歸 warning(判成 error 會讓產線
+    為了救不動的東西無限重生)。
+    """
+    env = env if env is not None else building_env(spec)
+    out = []
+    if not has_cross_ventilation(spec, env):
+        out.append(PlanIssue("warning", "no_cross_ventilation", lb, "",
+                             "找不到一對拉直線不被牆擋的對外窗,風進得來出不去"))
+    patios = [Polygon(r.points) for r in spec.rooms if r.kind == "patio"]
+    for r in spec.rooms:
+        if r.kind not in ("bathroom", "toilet"):
+            continue
+        poly = Polygon(r.points)
+        lit = any(poly.distance(p) < EDGE_TOL for p in patios)
+        for w in spec.walls:                    # 同上:不繞 spec.windows 的索引
+            for op in w.openings:
+                if op.kind != "window":
+                    continue
+                if (poly.exterior.distance(Point(*w.point_at(op.position)))
+                        < EDGE_TOL):
+                    lit = True
+        if not lit:
+            out.append(PlanIssue("warning", "bath_no_window", lb, r.name,
+                                 "沒有對外窗,濕氣排不掉(容易發霉)"))
+    return out
 
 
 def check_building(floors, env=None) -> PlanCheckReport:

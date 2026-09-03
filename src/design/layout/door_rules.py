@@ -407,6 +407,11 @@ def repair_doors(spec, bx0, by0, bx1, level) -> bool:
         lo = min(sy, ey) if vertical else min(sx, ex)
         hi = max(sy, ey) if vertical else max(sx, ex)
         for op in w.openings:
+            # ⚠️ **開放通道不是門,不吃門角淨距。** 走道口那種滿寬的洞口兩端就是
+            #    結構(導牆/界牆),它「貼著牆角」是對的;照門的規矩把它往裡面挪,
+            #    界牆上就會留下一截凸出來的牆頭(使用者 2026-09-02 圈出來的)。
+            if getattr(op, "is_passage", False):
+                continue
             if op.kind != "door" or _door_pos_ok(spec, w, op.position, op.width):
                 continue
             _sides_raw, _is_ext = _door_sides(spec, w, op, polys, env)
@@ -610,3 +615,59 @@ def _through_bedroom_issues(spec, polys, env, level, lb) -> list:
             "error", "through_bedroom", lb, r.name,
             f"只能穿越 {[n.name for n in nbrs]} 才進得去(臥室不可當通道)"))
     return issues
+
+
+# ── NG09 門撞門(使用者 2026-09-03 給的〈9 種常見 NG 格局〉)────────────────
+# 書上的案例是「走道盡頭集中了 5 扇門」,毛病有兩個:①風水上門對門
+# ②兩扇門同時開會撞在一起。
+#
+# ⚠️ 這**不是** `door_swing_blocked` 已經在管的事。那條問的是「這扇門的開啟弧
+#    有沒有實際壓到另一扇門的弧」——門對門正對面時,兩道弧常常各自轉得開
+#    (中間留得下 1.2m),它一聲不吭;但格局上那就是面面相覷。
+#    同理「一小段牆上擠了 N 扇門」也不是任何一條現行規則在問的。
+#
+# 這兩支是**量表**,不產生 PlanIssue:幾扇門算擠、多近算對門,是設計判斷。
+FACE_GAP = 2600.0       # 兩扇門相距多近才算會打架(門扇各約 850,兩人交會)
+FACE_OFF = 700.0        # 沿牆方向錯開超過這麼多就不算「正對面」
+CLUSTER_R = 2000.0      # 書上的 NG 是「這個半徑內 5 扇門」
+
+
+def _real_doors(spec) -> list:
+    """[(中心點, 寬, 牆的單位向量)]。開放通道(`is_passage`)沒有門扇,不算。"""
+    out = []
+    for w in spec.walls:
+        for op in w.openings:
+            if op.kind != "door" or getattr(op, "is_passage", False):
+                continue
+            out.append((w.point_at(op.position), op.width, w.unit_vector))
+    return out
+
+
+def facing_door_pairs(spec) -> list:
+    """門對門的配對 [(門心, 門心, 相距 mm)]。
+
+    判準:兩扇門在**平行**的牆上(垂直的是轉角,不算面面相覷)、沿牆方向幾乎
+    不錯開、而且中間近到兩扇門會打架。"""
+    from itertools import combinations
+
+    hits = []
+    for (p, _wp, up), (q, _wq, uq) in combinations(_real_doors(spec), 2):
+        if abs(up[0] * uq[0] + up[1] * uq[1]) < 0.9:
+            continue
+        dx, dy = q[0] - p[0], q[1] - p[1]
+        along = abs(dx * up[0] + dy * up[1])
+        across = abs(-dx * up[1] + dy * up[0])
+        if along <= FACE_OFF and 1.0 < across <= FACE_GAP:
+            hits.append((p, q, across))
+    return hits
+
+
+def max_door_cluster(spec, radius: float = CLUSTER_R) -> int:
+    """最擠的一處:半徑內有幾扇門(含自己)。書上的 NG 圖是 5 扇。"""
+    ds = _real_doors(spec)
+    best = 0
+    for p, _w, _u in ds:
+        n = sum(1 for q, _w2, _u2 in ds
+                if (q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2 <= radius ** 2)
+        best = max(best, n)
+    return best

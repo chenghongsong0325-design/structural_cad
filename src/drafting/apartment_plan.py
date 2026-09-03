@@ -34,6 +34,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from ezdxf.enums import TextEntityAlignment
+
 # 支援直接 `python src/drafting/apartment_plan.py` 執行(把專案根補進 sys.path)。
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
@@ -190,6 +192,12 @@ class FloorPlanSpec:
     section_mark_axis: str = "x"        # 對應 section.draw_section 的 axis
 
     # ── 樓梯(B1)/ 電梯與陽台(B3)/ 設備家具(B4)──────────────────────────
+    # 樓梯下方的廁所(2026-08-31,使用者:「廁所通常會在樓梯的下方,所以廁所
+    # 可以用虛線表示」)。**不是一間 Room** —— 使用者選的是「虛線註記」那一種:
+    # 它不進 spec.rooms、不進 spec.fixtures,所以面積表、門窗表、plan_check 的
+    # 房間規則都當它不存在,關卡一條都不用改。圖上畫的是虛線外框 + 「廁所」+
+    # 馬桶/洗手台符號。None = 這層沒有。
+    under_stair_wc: Optional[tuple] = None          # (x0, y0, x1, y1) 世界座標
     stairs: list = field(default_factory=list)      # Stair / UStair
     elevators: list = field(default_factory=list)   # Elevator(牆自動併聯集)
     balconies: list = field(default_factory=list)   # Balcony(牆自動併聯集)
@@ -272,6 +280,112 @@ def _title_insert(spec: FloorPlanSpec) -> Point:
 # ---------------------------------------------------------------------------
 # 生產線:一次畫完整張圖
 # ---------------------------------------------------------------------------
+#: 樓梯下廁所的設備尺寸(mm)——只是畫在圖上的符號,不進碰撞引擎。
+_WC_TOILET = (380.0, 700.0)
+_WC_BASIN = (450.0, 350.0)
+
+
+#: 大門入口三角形的邊長(mm)。
+ENTRY_MARK_SIZE = 320.0
+
+
+PATIO_MARK_INSET = 80.0     # 對角線離房間邊界內縮(mm),免得壓在牆線上
+
+
+def draw_patio_marks(msp, spec, layers) -> None:
+    """天井:矩形 + 對角 X —— 台灣平面圖標示「這裡 2 樓以上沒有樓板」的符號。
+
+    ⚠️ 掛 OTHER 層、內縮一點:壓在牆線上的話兩條線會跟牆糊在一起,看不出是符號。
+    """
+    layer = layers.get("A-OTHER") or layers.get("OTHER") or "0"
+    for room in spec.rooms:
+        if room.kind != "patio":
+            continue
+        xs = [p[0] for p in room.points]
+        ys = [p[1] for p in room.points]
+        x0, x1 = min(xs) + PATIO_MARK_INSET, max(xs) - PATIO_MARK_INSET
+        y0, y1 = min(ys) + PATIO_MARK_INSET, max(ys) - PATIO_MARK_INSET
+        if x1 - x0 < 200 or y1 - y0 < 200:
+            continue
+        for a, b in (((x0, y0), (x1, y1)), ((x0, y1), (x1, y0))):
+            msp.add_line(a, b, dxfattribs={"layer": layer})
+
+
+def draw_entry_marks(msp, spec, layers: dict[str, str]) -> int:
+    """在對外大門的**室外側**畫一個實心三角形 ▲ —— 「這裡是入口」。
+
+    使用者 2026-09-03 給的符號對照表上就是這樣標(「大門入口」指著門外的 ▲)。
+    看圖的人第一眼要找的就是入口,門弧本身分不出哪一扇是大門。
+
+    判準與 `plan_check.no_entry` 同一把尺:門洞在建築外框上、而且不是通往陽台的
+    落地門(那是陽台的門,不是大門)。回畫了幾個。
+    """
+    from src.design.layout.balcony import door_opens_to_balcony
+    from src.design.layout.plan_check import _on_envelope, building_env
+    from shapely.geometry import Point, Polygon
+
+    env = building_env(spec)
+    polys = [Polygon(r.points) for r in spec.rooms]
+    n = 0
+    for dp in getattr(spec, "doors", None) or []:
+        wall = spec.walls[dp.wall_index]
+        op = wall.openings[dp.opening_index]
+        px, py = wall.point_at(op.position)
+        if not _on_envelope(px, py, env):
+            continue
+        if door_opens_to_balcony(spec, wall, op):
+            continue
+        ux, uy = wall.unit_vector
+        nx, ny = -uy, ux
+        # 三角形要畫在**室外**那一側 —— 往室內探得到房間的那一側就是內側。
+        sgn = 1.0
+        probe = Point(px + nx * 300.0, py + ny * 300.0)
+        if any(pl.contains(probe) for pl in polys):
+            sgn = -1.0
+        h = ENTRY_MARK_SIZE
+        tip = (px + nx * sgn * h * 0.25, py + ny * sgn * h * 0.25)
+        base = (px + nx * sgn * h, py + ny * sgn * h)
+        msp.add_solid([
+            tip,
+            (base[0] - ux * h / 2, base[1] - uy * h / 2),
+            (base[0] + ux * h / 2, base[1] + uy * h / 2),
+            (base[0] + ux * h / 2, base[1] + uy * h / 2),
+        ], dxfattribs={"layer": layers["OTHER"]})
+        n += 1
+    return n
+
+
+def draw_under_stair_wc(msp, rect, layers: dict[str, str]) -> None:
+    """畫「樓梯下方的廁所」:虛線外框 + 室名 + 馬桶/洗手台。
+
+    ⚠️ 這是**註記,不是房間**(使用者 2026-08-31 選的做法):它不在 spec.rooms
+    裡,所以面積表、門窗表、plan_check 都看不到它。虛線的意思是「這塊在樓梯
+    底下」——與 stair.py 畫剖切線以上的梯段同一個慣例(linetype HIDDEN)。
+    """
+    x0, y0, x1, y1 = rect
+    attribs = {"layer": layers["A-WALL"], "linetype": "HIDDEN"}
+    msp.add_lwpolyline([(x0, y0), (x1, y0), (x1, y1), (x0, y1)],
+                       close=True, dxfattribs=attribs)
+    # ⚠️ **設備要跟著長邊擺**,不能寫死成上下排:樓梯一橫置,這塊地就從直的變
+    #    成橫的(三區版的 1F 就是 1500×750),寫死的話馬桶會凸到框外面去。
+    #    設備先畫、室名壓在中間**沒有設備的那一段**上 —— 這塊地本來就窄,字擺
+    #    在設備上,底下還有梯step的線,三層疊起來看不懂。
+    horiz = (x1 - x0) >= (y1 - y0)
+    lo, hi = (x0, x1) if horiz else (y0, y1)
+    cross = (y0 + y1) / 2.0 if horiz else (x0 + x1) / 2.0
+    for (w, d), far in ((_WC_TOILET, True), (_WC_BASIN, False)):
+        c = (hi - d / 2 - 60.0) if far else (lo + d / 2 + 60.0)
+        a0, a1 = c - d / 2, c + d / 2            # 設備「深度」沿長邊
+        b0, b1 = cross - w / 2, cross + w / 2    # 設備「寬度」沿短邊
+        pts = ([(a0, b0), (a1, b0), (a1, b1), (a0, b1)] if horiz
+               else [(b0, a0), (b1, a0), (b1, a1), (b0, a1)])
+        msp.add_lwpolyline(pts, close=True, dxfattribs=attribs)
+    txt = msp.add_text("廁所", dxfattribs={"layer": layers["A-TEXT"],
+                                           "height": 220, "style": "STRUCT"})
+    txt.set_placement(((x0 + x1) / 2.0, (y0 + y1) / 2.0),
+                      align=TextEntityAlignment.MIDDLE_CENTER)
+
+
 def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
     """依 FloorPlanSpec 畫出一整張平面圖(順序見模組說明)。"""
 
@@ -357,6 +471,19 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
             draw_u_stair(msp, stair, layers)
         else:
             draw_stair(msp, stair, layers)
+
+    # (7.55) 樓梯下方的廁所:虛線外框 + 室名 + 馬桶/洗手台(見 under_stair_wc)。
+    #        畫在樓梯**之後**,線才壓得住踏step、看得出是「在樓梯底下」。
+    if spec.under_stair_wc:
+        draw_under_stair_wc(msp, spec.under_stair_wc, layers)
+
+    # (7.555) 天井:矩形 + 對角 X(使用者 2026-09-03 給的台灣平面圖符號對照:
+    #         「挑高天井 = 矩形 + 對角 X」,表示 2 樓以上沒有樓板)。不畫的話
+    #         圖上就是一間叫「天井」的空房間,看圖的人分不出那裡沒有地板。
+    draw_patio_marks(msp, spec, layers)
+
+    # (7.56) 大門入口 ▲(畫在門外側;判準同 plan_check.no_entry)。
+    draw_entry_marks(msp, spec, layers)
 
     # (7.6) 電梯轎廂符號 + 陽台欄杆線(牆已在步驟 5 併入聯集)。
     for elev in spec.elevators:

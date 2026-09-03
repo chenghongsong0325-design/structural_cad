@@ -44,6 +44,9 @@ BREAK_POSITION_RATIO = 0.6
 BREAK_ZIGZAG = 150       # 鋸齒凸出量(mm)
 BREAK_SKEW = 300         # 折斷線兩端沿行進方向的錯開量(斜線效果,mm)
 
+#: 起步端的實心圓點半徑(mm)。使用者 2026-09-03 給的符號對照表:樓梯 =
+#: 踏step線 + 上樓方向箭頭 + **起步端一個圓點** —— 圓點才看得出「從這裡開始爬」。
+START_DOT_R = 60
 ARROW_HEAD_LEN = 200     # 箭頭斜邊長(mm)
 ARROW_HEAD_HALF_W = 70   # 箭頭半寬(mm)
 
@@ -133,6 +136,16 @@ def _to_world(origin: Point, length: float, direction: str, t: float, s: float) 
 # ---------------------------------------------------------------------------
 # 畫圖
 # ---------------------------------------------------------------------------
+def _draw_start_dot(msp, stair, t_mid: float, tail_s: float, rail: str) -> None:
+    """箭頭尾端(=起步端)的實心圓點 —— 箭頭只講方向,圓點才講「從這裡起步」。
+
+    畫成一圈細環 + 中心填實(HATCH 太重,兩個同心圓在 1:100 就看得出是實心點)。
+    """
+    c = stair.to_world(t_mid, tail_s)
+    for r in (START_DOT_R, START_DOT_R * 0.55, START_DOT_R * 0.2):
+        msp.add_circle(c, radius=r, dxfattribs={"layer": rail})
+
+
 def _draw_center_handrail(msp, stair, rail: str, s_bot: float, s_top: float) -> None:
     """沿梯段中心線畫「中央扶手」:兩條平行線 + 兩端立柱(小方塊)。
 
@@ -211,6 +224,7 @@ def draw_stair(msp, stair: Stair, layers: dict[str, str], text_height: float = 2
             stair.to_world(t_mid + dt, head_s - ARROW_HEAD_LEN),
             dxfattribs={"layer": rail},
         )
+    _draw_start_dot(msp, stair, t_mid, tail_s, rail)
 
     # (4) 方向文字:起步端、中心線上(上行標級數,如「UP 16」)。
     msp.add_text(
@@ -344,6 +358,7 @@ def draw_u_stair(msp, stair: UStair, layers: dict[str, str], text_height: float 
             stair.to_world(t_mid + dt, head_s - ARROW_HEAD_LEN),
             dxfattribs={"layer": rail},
         )
+    _draw_start_dot(msp, stair, t_mid, tail_s, rail)
     msp.add_text(
         flight_label(stair.label, stair.steps_per_flight * 2), height=text_height,
         dxfattribs={"layer": text_layer, "style": "STRUCT"},

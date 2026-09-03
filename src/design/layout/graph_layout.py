@@ -564,11 +564,26 @@ def _overflow_rooms(n: int, free: list, floor_label: str,
     has_family = "family" in kinds
     out = []
     for i in range(n):
-        kind, name = select_overflow_program(
+        prog = select_overflow_program(
             floor="public" if floor_label == "1F" else "upper",
             bedrooms=bedrooms, want_study=False,
             has_study=has_study, has_family=has_family,
             width_mm=cell_w, depth_mm=cell_d)
+        # ⚠️ 選配器排完用途會回 None(NG08「用不到的房間」:沒用途就不要切一間
+        #    出來)。**但這條產線退不掉** —— 格子是 BSP 先切好的,每一格一定要
+        #    有房間住,否則那塊樓地板誰也不屬於。
+        #
+        # ⚠️ **走錯過的路(已退回,不要再試一次)**:這裡改成 ("storage","儲藏室")
+        #    看起來比「多功能室」誠實,但儲藏室的面積需求小很多(max 8㎡ vs
+        #    家庭廳無上限)→ BSP 換一種切法 → 牆線跟著變 →
+        #    `test_柱網同時滿足藏牆內與等距[22000-13000]` 的 2F 冒出 **2 根孤柱**
+        #    (藏牆率 100% → 83%)。加分項不得讓原本好好的東西壞掉。
+        #
+        # 所以 NG08 目前**只在規則版兩帶式修掉**(那條退得掉:牆還沒立,面積
+        # 併給南帶的客廳/家庭廳就好)。AI 關係圖版仍會生出「多功能室」——
+        # 這是已知缺口,真正的解在更上游:**別把格子切那麼多**
+        # (`_cells_without_a_giant` 的停止條件),不是在這裡換個房名。
+        kind, name = prog if prog is not None else ("family", "多功能室")
         # ⚠️ wants_daylight=False 是刻意的:溢位房間是「多出來的坪數」,不該跟
         #    LLM 原本設計的臥室/客廳**搶外牆**。實測沒設 False 時,3F 的主臥被
         #    擠到內間 → §40 採光不足 → 整份設計被擋掉。

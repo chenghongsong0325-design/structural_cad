@@ -897,3 +897,33 @@ def test_every_door_can_actually_open(w, d, n, floors, cars):
                 bad.append((fl.label, round(px), round(py), round(hit / 1e6, 3)))
     assert seen >= 5, f"只量到 {seen} 扇門,測試自己失效了"
     assert not bad, f"這些門打不開:{bad}"
+
+
+@pytest.mark.parametrize("bw,bd", [(15_000, 12_000), (19_000, 13_000),
+                                   (24_000, 16_000)])
+def test_dining_table_sits_in_the_dining_room(bw, bd):
+    """餐桌要在餐廳/餐廚那一間裡,不是在北帶西段的正中間。
+
+    ⚠️ 舊寫法把餐桌放在 `(bx0 + xk)/2` —— 西段沒切開時它剛好等於餐廳的中心,
+    切成兩三間之後就整個跑掉:19×13 的餐桌落進**中間那一間**。以前那間叫
+    「多功能室」,一張桌子擺在裡面看不太出來;改名成儲藏室之後一眼就是錯的。
+    **判準要寫成它真正的意思,不要寫成當下剛好等價的座標。**
+    """
+    from shapely.geometry import Point, Polygon
+
+    from src.design.building_generator import BuildingBrief, generate_building_auto
+
+    b = generate_building_auto(BuildingBrief(
+        typical=HouseBrief(site_width=bw, site_depth=bd, bedrooms=3,
+                           setback=0, seed=0, dimension_basis="building"),
+        floors=3, differentiated=True))
+    spec = b.floors[0].spec
+    tables = [f for f in spec.fixtures
+              if getattr(f, "name", None) == "table4"]
+    assert tables, f"{bw}x{bd} 1F 沒有餐桌"
+    for t in tables:
+        here = [r.name for r in spec.rooms
+                if Polygon(r.points).contains(Point(*t.insert))]
+        assert here, f"{bw}x{bd} 餐桌不在任何房間裡"
+        assert any(n in ("餐廳", "餐廚", "客餐廳") for n in here), \
+            f"{bw}x{bd} 餐桌被擺進 {here}"

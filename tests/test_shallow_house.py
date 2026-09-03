@@ -130,10 +130,14 @@ def test_auto_router_picks_shallow_then_narrow():
     from src.design.building_generator import BuildingBrief, generate_building_auto
     from src.design.layout_generator import HouseBrief
 
+    # ⚠️ 拿「樓梯朝向」當骨架的替身要**把核的款式釘住**:窄透天的核自動挑之後
+    #    預設是參考圖版(樓梯**橫置**,朝向也是東西向)—— 不釘的話這個替身會把
+    #    走對骨架的案子誤判成走錯。
     def _dir(bw, bd):
         brief = BuildingBrief(
             typical=HouseBrief(site_width=bw + 4000, site_depth=bd + 4000,
-                               bedrooms=3), floors=3, differentiated=True)
+                               bedrooms=3, core_style="default"),
+            floors=3, differentiated=True)
         return generate_building_auto(brief).floors[0].spec.stairs[0].direction
 
     assert _dir(5000, 5000) == "east"

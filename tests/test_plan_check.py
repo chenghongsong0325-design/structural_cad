@@ -94,7 +94,10 @@ def test_detects_open_stair_side():
     旁邊掉下去——這是看圖不明顯、但真實圖面絕不允許的錯誤。"""
     from src.design.layout.narrow_house import generate_narrow_building
 
-    floors = generate_narrow_building(7000.0, 12000.0, floors=2)
+    # 「梯段旁留一條通道 + 一道導牆」是**預設核**的排法;自動挑會給參考圖版
+    # (樓梯橫置、兩側直接貼牆,本來就沒有導牆可拆)。
+    floors = generate_narrow_building(7000.0, 12000.0, floors=2,
+                                      core_style="default")
     env = (SB, SB, SB + 7000.0, SB + 12000.0)
     spec = floors[0][1]
     assert not any(i.code == "stair_side_open"

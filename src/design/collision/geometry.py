@@ -113,14 +113,41 @@ def door_swing_polygon(spec, dp) -> Polygon:
     ])
 
 
+#: 開放通道(走道口那種沒有門扇的滿寬洞口)兩側要留的通行淨深(mm)。
+PASSAGE_CLEAR_DEPTH = 900.0
+
+
 def door_swing_obstacles(spec) -> list[Obstacle]:
-    """門迴轉範圍 → static Obstacle(家具不可壓)。"""
+    """門迴轉範圍 → static Obstacle(家具不可壓);**開放通道的通行區也算**。
+
+    ⚠️ 開放通道沒有門扇,所以它不在 `spec.doors` 裡,`door_swing_polygon` 也
+    看不到它 —— 家具因此會大方地擺在走道口前面,等到動線修復器才被整件移掉
+    (實測 4.5m 三區版的 1F 一次掉了沙發、餐桌、流理台三件)。
+    **擺不下要在擺的時候就知道,不是擺完再拆** —— 本檔那條鐵則:加分項
+    (開放通道)不得讓原本好好的東西壞掉。
+    """
     obs: list[Obstacle] = []
     for dp in spec.doors:
         obs.append(Obstacle(
             poly=door_swing_polygon(spec, dp), kind=DOOR_SWING,
             ref=dp, tag=f"牆 {dp.wall_index} 的門",
             meta={"wall_index": dp.wall_index}))
+    for wi, wall in enumerate(getattr(spec, "walls", None) or []):
+        for op in wall.openings:
+            if not getattr(op, "is_passage", False):
+                continue
+            cx, cy = wall.point_at(op.position)
+            ux, uy = wall.unit_vector
+            nx, ny = -uy, ux
+            half, dep = op.width / 2.0, PASSAGE_CLEAR_DEPTH
+            obs.append(Obstacle(
+                poly=Polygon([
+                    (cx - ux * half - nx * dep, cy - uy * half - ny * dep),
+                    (cx + ux * half - nx * dep, cy + uy * half - ny * dep),
+                    (cx + ux * half + nx * dep, cy + uy * half + ny * dep),
+                    (cx - ux * half + nx * dep, cy - uy * half + ny * dep)]),
+                kind=DOOR_SWING, ref=None, tag=f"牆 {wi} 的開放通道",
+                meta={"wall_index": wi, "passage": True}))
     return obs
 
 

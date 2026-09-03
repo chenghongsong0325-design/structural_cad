@@ -140,13 +140,54 @@ def test_no_windows_on_party_walls():
         assert not _is_party_wall(spec.walls[wp.wall_index], bx0, bx1)
 
 
-def test_no_light_well_at_any_size():
-    """★ 住宅不設天井(使用者 2026-07-29 定調):任何尺寸都不能生出 patio。"""
-    for bw in (5000.0, 6000.0, 7000.0):
-        for bd in (11000.0, 14000.0, 18000.0):
-            for label, spec in generate_narrow_building(bw, bd, floors=3):
-                pat = [r for r in spec.rooms if r.kind == "patio"]
-                assert not pat, (bw, bd, label)
+def test_no_light_well_when_the_caller_says_no():
+    """★ **明講不要天井,任何尺寸都不能自己生出一個**(使用者 2026-07-29 定調)。
+
+    ⚠️ 2026-08-31 縮小範圍到 `default` / `mid` 兩款核。**參考圖版(`ref`)的天井
+    是使用者自己畫在圖上的**,是那款核的一部分,不是這條規則的例外 —— 下面
+    `test_auto_pick_gives_the_reference_core` 釘的就是「自動挑會挑到它」。
+
+    ⚠️ 2026-09-03 使用者說「開天井」(NG06 街屋暗房)之後,`patio` 預設從 `False`
+    改成 `None`=自動,所以這條要**明寫 `patio=False`** —— 原本不寫就等於不開,
+    現在不寫是「自動」,不改的話這條測的就不是它想測的東西了。
+    「自動會不會亂開」由 `test_light_well_opens_only_to_fix_a_dark_bathroom` 管。
+    """
+    for style in ("default", "mid"):
+        for bw in (5000.0, 6000.0, 7000.0):
+            for bd in (11000.0, 14000.0, 18000.0):
+                for label, spec in generate_narrow_building(
+                        bw, bd, floors=3, core_style=style, patio=False):
+                    pat = [r for r in spec.rooms if r.kind == "patio"]
+                    assert not pat, (style, bw, bd, label)
+
+
+@pytest.mark.parametrize("bw,bd", [(6500.0, 15000.0), (7000.0, 15500.0),
+                                   (8000.0, 16000.0)])
+def test_light_well_opens_only_to_fix_a_dark_bathroom(bw, bd):
+    """NG06 街屋暗房:寬面寬退到 `default` 核之後浴廁沒有對外窗 → 自動開天井。
+
+    書上(〈9 種常見 NG 格局〉06)講的就是我們的先天條件:狹長街屋只有前後採光,
+    中段核夾在建築正中間、側面是共同壁開不了窗。三個解法裡我們實作了的只有天井。
+
+    ⚠️ 這條同時釘住「**只在需要時開**」:天井每層要花掉約 3㎡,而且會讓
+    `_core_widths` 跳過浴廁退讓。所以 `patio=False` 的同一個尺寸必須是暗房,
+    自動那版必須是亮的 —— 只驗其中一邊的話,一支「無條件開天井」的實作也會過。
+    """
+    from src.design.layout.plan_check import check_building
+
+    def dark(patio):
+        floors = generate_narrow_building(bw, bd, floors=3, seed=0, patio=patio)
+        rep = check_building(floors)
+        has = any(r.kind == "patio" for _lb, sp in floors for r in sp.rooms)
+        return (sum(1 for i in rep.warnings if i.code == "bath_no_window"),
+                len(rep.errors), has)
+
+    n_off, err_off, has_off = dark(False)
+    n_auto, err_auto, has_auto = dark(None)
+    assert n_off > 0 and not has_off, f"{bw}x{bd} 不開天井時本來就不是暗房,這條測不到東西"
+    assert has_auto, f"{bw}x{bd} 自動沒有開天井"
+    assert n_auto == 0, f"{bw}x{bd} 開了天井浴廁還是暗房({n_auto} 間)"
+    assert err_auto <= err_off, f"{bw}x{bd} 開天井多出硬錯誤"
 
 
 # ── 多層 + 樓梯對齊 ─────────────────────────────────────────────────────────
@@ -168,7 +209,8 @@ def test_stair_riser_is_comfortable():
 
     單跑直梯塞進 3.6m 深的中段核每階要升 ~246mm(太陡);折返梯分兩段爬,~178mm。"""
     from src.design.layout.narrow_house import FLOOR_HEIGHT
-    _, spec = generate_narrow_building(W, D, floors=2)[0]
+    _, spec = generate_narrow_building(W, D, floors=2,
+                                       core_style="default")[0]
     st = spec.stairs[0]
     total = st.steps_per_flight * 2
     assert 150.0 <= FLOOR_HEIGHT / total <= 190.0
@@ -194,7 +236,10 @@ def test_stair_guard_wall_does_not_seal_the_passage():
     """導牆補了之後,樓梯旁的通道仍要走得通(不能為了補牆把前後段封死)。"""
     from src.design.layout.narrow_house import GUARD_WALL_T
 
-    for label, spec in generate_narrow_building(W, D, floors=3):
+    # 「梯段旁邊留一條通道」是**預設核**的排法(浴廁|樓梯|走道);參考圖版的
+    # 樓梯橫置、走道在另一段,不是這條規則要問的東西。
+    for label, spec in generate_narrow_building(W, D, floors=3,
+                                                core_style="default"):
         guards = [w for w in spec.walls if getattr(w, "stair_guard", False)]
         assert guards, label                      # 這個骨架一定有側邊通道 → 一定要補
         assert all(w.thickness == GUARD_WALL_T and not w.openings
@@ -421,7 +466,7 @@ def test_patio_costs_floor_area_every_level():
     from shapely.geometry import Polygon as _P
     def area(patio):
         floors = generate_narrow_building(4500.0, 14450.0, floors=3, seed=7,
-                                          patio=patio)
+                                          patio=patio, core_style="default")
         return [sum(_P(r.points).area for r in sp.rooms if r.kind != "patio")
                 for _l, sp in floors]
     without, with_ = area(False), area(True)
@@ -608,7 +653,12 @@ def test_building_basis_reverse_derives_site():
 
 
 def test_auto_router_picks_narrow_for_narrow_building():
-    """★ 建築 7m 寬 → 自動走窄面寬骨架(樓梯間,無天井)。"""
+    """★ 建築 7m 寬 → 自動走窄面寬骨架(有樓梯間)。
+
+    ⚠️ 2026-08-31 拿掉「無天井」那句:核的款式改成**自動挑**、從使用者自己畫的
+    參考平面(`ref`,天井是它的一部分)往下退,所以這個尺寸現在本來就有天井。
+    「沒人要就不要自己生天井」那條規則搬到 `test_no_light_well_at_any_size`
+    (只問 `default` / `mid`)。"""
     from src.design.building_generator import BuildingBrief, generate_building_auto
     from src.design.layout_generator import HouseBrief
     brief = BuildingBrief(typical=HouseBrief(site_width=11000, site_depth=16000,
@@ -617,7 +667,6 @@ def test_auto_router_picks_narrow_for_narrow_building():
     assert len(building.floors) == 3
     kinds = {r.kind for fl in building.floors for r in fl.spec.rooms}
     assert "stair_hall" in kinds
-    assert "patio" not in kinds
 
 
 def test_auto_router_keeps_two_band_for_wide_building():
@@ -1340,7 +1389,9 @@ def test_narrow_frontage_switches_to_a_straight_flight(bw, bd):
     「穿過廁所才到得了餐廚」。"""
     from src.design.layout.narrow_house import MIN_TREAD
     from src.drafting.stair import Stair, UStair
-    for label, spec in generate_narrow_building(bw, bd, floors=3, seed=7):
+    # 「浴廁 | 樓梯 | 走道」三條並排擠不擠得下,是**預設核**的問題。
+    for label, spec in generate_narrow_building(bw, bd, floors=3, seed=7,
+                                                core_style="default"):
         st = spec.stairs[0]
         assert isinstance(st, Stair) and not isinstance(st, UStair), label
         assert st.tread >= MIN_TREAD - 1e-6, (label, st.tread)   # 仍守法定下限
@@ -1487,8 +1538,10 @@ def test_a_crowded_wall_repacks_all_its_doors_together():
 
     nh._repack_openings_on_wall = spy
     try:
+        # ⚠️ 樣本是在**預設核**這組幾何下撈到的(門擠在同一道牆上)。這條規則
+        #    本身與核的款式無關,但撈得到樣本的尺寸與核有關 —— 核一換就撈不到。
         nh.generate_narrow_building(5200.0, 14500.0, floors=3, seed=33,
-                                    garage=True)
+                                    garage=True, core_style="default")
     finally:
         nh._repack_openings_on_wall = orig
 
@@ -1662,8 +1715,12 @@ def test_opening_a_patio_never_breaks_the_floor_apart():
     from src.design.layout.narrow_house import NarrowVariant
     v = NarrowVariant(mirror=False, bath_north=False, open_kitchen=True,
                       entry_frac=0.22)
+    # ⚠️ 一定要明寫 `core_style="default"`:天井跳過浴廁退讓是**預設核**的幾何。
+    #    交給自動挑的話 3.6m 會落到 `mid`(那款本來就沒有天井),這條測試就變成
+    #    「用一個不會開天井的核去驗證天井退讓」—— 永遠綠,而且什麼都沒驗到。
     floors = generate_narrow_building(3600.0, 12500.0, floors=3, bedrooms=3,
-                                      variant=v, patio=True)
+                                      variant=v, patio=True,
+                                      core_style="default")
     plan = check_building(floors)
     assert plan.ok, [str(i) for i in plan.errors]
     # 退掉的是天井本身,不是整張圖
@@ -1777,7 +1834,8 @@ def test_the_stair_itself_counts_as_an_obstacle():
 
     ⚠️ 少了這條,上面那條測試可以靠「產生器剛好沒犯錯」通過,而關卡其實還是瞎的。
     `room_circulation` 原本的障礙只有家具,把梯段加寬到擋住所有門也一聲不吭。"""
-    spec = generate_narrow_building(7000.0, 12000.0, floors=2, seed=0)[0][1]
+    spec = generate_narrow_building(7000.0, 12000.0, floors=2, seed=0,
+                                    core_style="default")[0][1]
     assert analyze_room_circulation(spec).ok         # 修好之後本來就該過
     hall = next(r for r in spec.rooms if r.kind == "stair_hall")
     x0, _y0, x1, _y1 = Polygon(hall.points).bounds
@@ -1818,3 +1876,338 @@ def test_a_garage_floor_bathroom_is_reachable():
                                                   garage=True):
             _home, lost = _walk_islands(spec)
             assert lost == [], (bw, bd, _lb, lost)
+
+
+# ── 每一個尺寸都做成參考平面那個格式(使用者 2026-08-31)────────────────────
+def _core_of(spec):
+    """這層**實際**用到哪一款核(產線在 `_build_floor` 尾端記上去的)。"""
+    return getattr(spec, "_nh_core", None)
+
+
+@pytest.mark.parametrize("bw,bd", [(4000.0, 11530.0), (4500.0, 14450.0),
+                                   (5000.0, 15000.0), (6000.0, 12450.0),
+                                   (7000.0, 13030.0)])
+def test_auto_pick_gives_the_reference_core(bw, bd):
+    """★★ 不指定核的時候,拿到的要是**使用者自己畫的那張參考平面**(方案 B)。
+
+    使用者 2026-08-31:「我要把每一個尺寸都設計成類似這個格式」。所以
+    `core_style` 預設是 `None` = 自動挑,從 `ref` 開始往下退。"""
+    floors = generate_narrow_building(bw, bd, floors=3, seed=0)
+    assert [_core_of(sp) for _lb, sp in floors] == ["ref"] * 3
+    # 方案 B 的三個特徵:樓梯橫置、有天井、廁所的門開在走道上(門那條在
+    # test_reference_core_puts_the_toilet_door_on_the_passage 已經釘住)。
+    for _lb, sp in floors:
+        assert sp.stairs[0].direction in ("east", "west")
+        assert any(r.kind == "patio" for r in sp.rooms)
+
+
+def test_reserving_column_room_must_not_eat_the_chosen_core():
+    """★★ 留柱位是**加分項**,不得把使用者要的那款核擠掉(`_fit_margin` 的 prefer)。
+
+    4.0×11.53m 實測:留滿 250mm 之後核帶只剩 3500mm 寬,橫置樓梯就跑不完了 ——
+    產線於是靜靜地退回預設核,使用者要的格局憑空消失,而且沒有任何人報錯。
+    退讓階梯要**先只收「拿得到那款核」的那幾級**,整條都拿不到才退而求其次。"""
+    floors = generate_narrow_building(4000.0, 11530.0, floors=3, seed=0,
+                                      core_style="ref")
+    assert [_core_of(sp) for _lb, sp in floors] == ["ref"] * 3
+
+
+@pytest.mark.parametrize("bw,bd", [(3500.0, 12500.0), (3600.0, 12500.0),
+                                   (3800.0, 12500.0)])
+def test_too_narrow_for_the_reference_core_falls_back_to_mid_not_default(bw, bd):
+    """★★ 排不下時退到 `mid`,不是一路退回 `default`。
+
+    橫置樓梯要一整段面寬跑得完,3.5~3.9m 的核帶只有 2.2m、怎麼縮都跑不完。但
+    「廁所的門開在走道上」那件事 `mid` 也做得到 —— 退到 `mid` 比退到 `default`
+    (廁所的門開向餐廚/車庫)接近使用者要的格式。"""
+    floors = generate_narrow_building(bw, bd, floors=3, seed=0)
+    assert [_core_of(sp) for _lb, sp in floors] == ["mid"] * 3
+
+
+@pytest.mark.parametrize("bw,bd", [(7000.0, 15550.0), (8000.0, 16450.0)])
+def test_the_reference_core_steps_aside_when_it_makes_rooms_too_big(bw, bd):
+    """★★ 鐵則第九次:**加分項不得讓原本好好的東西壞掉**(`_fit_core_style`)。
+
+    參考圖版的走道只有**一扇門寬**,而它是那個核唯一的動線 —— 前/後段因此切不成
+    兩間(兩間房的門都得開在那一段牆上)。6.5~8m 面寬又深的案子會生出 30~43㎡ 的
+    臥室。一張漂亮的核不值得拿一間 42㎡ 的臥室去換,所以自動挑會換一款。
+
+    ⚠️ 只有**自動挑**(core_style=None)會這樣退;明講要 `ref` 就給 `ref`,
+       否則指名的呼叫端會拿到別的東西而不自知。"""
+    from src.design.layout.plan_check import check_building
+    auto = generate_narrow_building(bw, bd, floors=3, seed=0)
+    rep = check_building(auto)
+    assert rep.ok, [str(i) for i in rep.errors]
+    n_auto = sum(1 for i in rep.warnings if i.code == "room_oversize")
+    forced = generate_narrow_building(bw, bd, floors=3, seed=0,
+                                      core_style="ref")
+    n_ref = sum(1 for i in check_building(forced).warnings
+                if i.code == "room_oversize")
+    assert n_ref > 0                              # 這個尺寸的 ref 真的會過大
+    assert n_auto < n_ref                         # 自動挑要換掉它
+    assert [_core_of(sp) for _lb, sp in forced] == ["ref"] * 3   # 明講就給
+
+
+def test_mirroring_a_floor_keeps_the_core_it_was_built_with():
+    """★★ 鏡射會做出一個**新的** spec —— `_nh_core` 不跟過來就整條退讓失效。
+
+    `_fit_margin` 的 prefer 靠這個欄位判斷「有沒有拿到指定的核」;欄位不見時
+    `getattr(..., 預設值)` 會一律放行,退讓**靜悄悄地不生效**。實測 60 案隨機
+    掃描有 32 案的核根本沒被記錄,而症狀只是「自動挑的結果剛好跟沒改一樣」。
+
+    本檔「鏡射弄丟東西」第四次(前三次是拉門、陽台、捲門的 label)。"""
+    from src.design.layout.narrow_house import NarrowVariant
+    v = NarrowVariant(mirror=True, bath_north=False, open_kitchen=False,
+                      entry_frac=0.5)
+    floors = generate_narrow_building(4500.0, 14450.0, floors=2, variant=v,
+                                      core_style="ref")
+    assert [_core_of(sp) for _lb, sp in floors] == ["ref", "ref"]
+
+
+# ── 三區版的核(使用者 2026-09-01 自己在 AutoCAD 上畫出來的那張)────────────
+def _room_named(spec, name):
+    return next((r for r in spec.rooms if r.name == name), None)
+
+
+def _door_neighbours(spec, room):
+    """這間房每一扇門的**另一側**是哪些房間(名字)。"""
+    poly = Polygon(room.points)
+    out = []
+    for dp in spec.doors:
+        w = spec.walls[dp.wall_index]
+        op = w.openings[dp.opening_index]
+        cx, cy = w.point_at(op.position)
+        if poly.exterior.distance(Point(cx, cy)) > 50.0:
+            continue
+        nx, ny = w.normal_vector
+        for d in (-160.0, 160.0):
+            p = Point(cx + nx * d, cy + ny * d)
+            hit = next((r.name for r in spec.rooms
+                        if r.name != room.name and Polygon(r.points).contains(p)),
+                       None)
+            if hit:
+                out.append(hit)
+    return out
+
+
+@pytest.mark.parametrize("bw,bd", [(4000.0, 11530.0), (4500.0, 14450.0),
+                                   (6000.0, 12450.0), (7000.0, 13030.0)])
+def test_zone3_core_is_the_layout_the_user_drew(bw, bd):
+    """★★ 三區版的核 = 使用者改過的 1F.dwg:**橫置**樓梯貼西、走道貼東。
+
+    他量出來的是:樓梯只吃掉核 4.4m 進深裡的 1.93m,北邊空出來的那條是儲藏
+    空間。所以這裡釘兩件事 —— 梯跑沿著**面寬**跑(direction 是 east/west),
+    而且它吃掉的進深**不到核的一半**(順著進深跑的樓梯會吃掉幾乎整條)。"""
+    floors = generate_narrow_building(bw, bd, floors=3, seed=0,
+                                      core_style="zone3")
+    for _lb, sp in floors:
+        assert _core_of(sp) == "zone3"
+        st = sp.stairs[0]
+        assert st.direction in ("east", "west")
+        hall = _room_named(sp, "樓梯間")
+        core_d = max(p[1] for p in hall.points) - min(p[1] for p in hall.points)
+        # 順著進深跑的樓梯會吃掉整條核帶(≈100%);橫置的實測 44~51%。
+        assert st.width + 2 * nh.WALL_GAP < core_d * 0.6
+
+
+@pytest.mark.parametrize("bw,bd", [(4000.0, 11530.0), (4500.0, 14450.0),
+                                   (6000.0, 12450.0), (7000.0, 13030.0)])
+def test_zone3_upper_bathroom_opens_onto_the_passage(bw, bd):
+    """★★ 樓上的浴室在樓梯旁邊,而且門要開在**走道**上。
+
+    使用者 2026-09-01:「二樓的廁所會設計在房間裡面,或是樓梯旁邊」。
+    ⚠️ 光把浴室擺到走道旁邊不夠 —— 補門機制先挑到哪一面就開哪一面,實測會
+    變成「上廁所要穿過次臥」,而 `through_bedroom` 對套內浴室是**豁免**的、
+    關卡不會擋。本檔「幾何擺對了不代表結果會對」同一族。"""
+    floors = generate_narrow_building(bw, bd, floors=3, seed=0,
+                                      core_style="zone3")
+    for lb, sp in floors:
+        if lb == "1F":
+            continue
+        baths = [r for r in sp.rooms if r.kind == "bathroom"]
+        assert baths, f"{lb} 沒有浴室"
+        for b in baths:
+            assert "樓梯間" in _door_neighbours(sp, b), \
+                f"{lb} {b.name} 的門沒有開在走道上"
+
+
+@pytest.mark.parametrize("bw,bd", [(5500.0, 9500.0), (6000.0, 12450.0),
+                                   (6000.0, 15400.0)])
+def test_zone3_leftover_width_never_becomes_a_leg_over_the_stair(bw, bd):
+    """★★ 核裡多出來的寬度**不可以**當空格交給第三區那間房。
+
+    交出去的話那間房會多一條腿,而腿的南牆就坐在橫置樓梯上 —— 門開在上面,
+    又被「不得開在階梯上」刪掉,那一整塊就此斷開。這三個尺寸實測就是這樣
+    出 `floor_split` 的(2F 與 3F 都中)。"""
+    from src.design.layout.plan_check import check_building
+    floors = generate_narrow_building(bw, bd, floors=3, seed=0,
+                                      core_style="zone3")
+    rep = check_building(floors)
+    assert rep.ok, [str(i) for i in rep.errors]
+
+
+@pytest.mark.parametrize("bw,bd", [(4000.0, 11530.0), (4500.0, 14450.0),
+                                   (5500.0, 12470.0), (7000.0, 13030.0)])
+def test_zone3_toilet_is_drawn_inside_the_stair_on_the_ground_floor(bw, bd):
+    """★★ 1F 的廁所畫在**樓梯裡**(疊在梯段底下),而且只有 1F。
+
+    使用者 2026-09-02:「你就正常化廁所,只是用虛線畫出來,而且畫在樓梯裡」。
+    它是註記不是房間(不進 `spec.rooms`),所以這裡量的是 `spec.under_stair_wc`。
+
+    ⚠️ 位置由頭高決定,而樓梯是**橫置**的 —— 拿世界座標寫死上下半段會靜靜地
+    算錯邊,所以這裡釘的是「整塊都落在樓梯的外框裡」。"""
+    from shapely.geometry import box
+    floors = generate_narrow_building(bw, bd, floors=3, seed=0,
+                                      core_style="zone3")
+    for lb, sp in floors:
+        wc = getattr(sp, "under_stair_wc", None)
+        if lb != "1F":
+            assert wc is None, f"{lb} 不該有樓梯下廁所(樓上要洗澡)"
+            continue
+        assert wc is not None, "1F 應該有樓梯下廁所"
+        st = sp.stairs[0]
+        ox, oy = st.origin
+        if st.direction in ("east", "west"):
+            foot = box(ox, oy, ox + st.length, oy + st.width)
+        else:
+            foot = box(ox, oy, ox + st.width, oy + st.length)
+        assert foot.contains(box(*wc).buffer(-1.0)), "廁所沒有落在樓梯裡"
+        w, d = wc[2] - wc[0], wc[3] - wc[1]
+        assert min(w, d) >= nh.UNDER_STAIR_WC_MIN[0]
+        assert max(w, d) >= nh.UNDER_STAIR_WC_MIN[1]
+
+
+@pytest.mark.parametrize("bw,bd", [(4000.0, 11530.0), (4500.0, 14450.0),
+                                   (5500.0, 15450.0), (7500.0, 16450.0)])
+def test_zone3_passage_mouths_have_no_door_and_no_wall_stub(bw, bd):
+    """★★ 走道的兩個出入口不設門、也不隔牆,而且界牆上不留凸出來的牆頭。
+
+    使用者 2026-09-02:「走道出入口都不用設置門,也不用用牆隔起來」、
+    「這兩個突出來的牆也不需要設計,要讓空間最大化」。
+
+    ⚠️ 那兩截牆頭**不是牆垛**,是三支修復器各自把這個通道當成一般門洞在搬:
+    躲柱(`shift_openings_off_columns`)、門角修正(`door_rules`)、
+    `plan_check.door_in_corner`。通道兩端是**結構**決定的(一邊導牆、一邊界牆),
+    貼著牆角是對的 —— 所以標記成 `is_passage`,那三支各自跳過。
+    唯一准動它的是**收邊到柱面**(只縮不移),否則角柱會穿過洞口。
+    """
+    from src.design.layout.room_circulation import OPEN_PASSAGE_MIN
+    floors = generate_narrow_building(bw, bd, floors=3, seed=0,
+                                      core_style="zone3")
+    for lb, sp in floors:
+        found = []
+        for w in sp.walls:
+            for oi, op in enumerate(w.openings):
+                if not getattr(op, "is_passage", False):
+                    continue
+                found.append(op)
+                # 沒有門扇:不能有任何 DoorPlacement 掛在這個洞口上。
+                wi = sp.walls.index(w)
+                assert not any(dp.wall_index == wi and dp.opening_index == oi
+                               for dp in sp.doors), f"{lb} 走道口不該有門扇"
+                assert op.width >= OPEN_PASSAGE_MIN
+                # 通道要開到牆的盡頭(界牆那一端);柱吃掉的部分才准收。
+                lo = min(w.start[0], w.end[0])
+                hi = max(w.start[0], w.end[0])
+                cx = w.point_at(op.position)[0]
+                assert hi - (cx + op.width / 2.0) <= 350.0, \
+                    f"{lb} 界牆上留了一截牆頭"
+        assert len(found) == 2, f"{lb} 應該有 2 個走道口,實際 {len(found)}"
+
+
+# NG05:從大門走到每一間房,最多准轉這麼多個彎(量出來的基準是 4)。
+MAZE_TURN_LIMIT = 4
+
+
+def _front_door_inside(spec):
+    """大門內側一點(NG05 的起點)。"""
+    from src.design.layout.plan_check import building_env
+
+    env = building_env(spec)
+    cy = (env[1] + env[3]) / 2.0
+    for w in spec.walls:
+        for op in w.openings:
+            if op.kind != "door" or op.width < 850:
+                continue
+            px, py = w.point_at(op.position)
+            on_edge = (abs(py - env[1]) < 200 or abs(py - env[3]) < 200
+                       or abs(px - env[0]) < 200 or abs(px - env[2]) < 200)
+            if on_edge:
+                return (px, py + (600 if py < cy else -600))
+    raise AssertionError("1F 找不到對外大門")
+
+
+@pytest.mark.parametrize("bw,bd", [(4000, 12000), (5500, 15000),
+                                   (7000, 15500), (8000, 16000)])
+def test_front_door_to_every_room_is_not_a_maze(bw, bd):
+    """NG05 迷宮動線(使用者 2026-09-03 給的〈9 種常見 NG 格局〉)。
+
+    書上的判準是「動線又長又曲折」,OK 圖的解是**貫穿的中軸**。量法就照字面:
+    從大門出發,走到每一間房最少要**轉幾個彎**——三區/中段核的走道貼著界牆
+    前後貫穿,那就是那條中軸,所以實測 1F 最多 4 個彎。
+
+    ⚠️ 這條釘的是**上限不回歸**,不是「越少越好」:格局本來就有轉折,
+    重點是別退化成迷宮。走不到的房間則是硬錯誤(`circulation_blocked`
+    另有關卡),這裡順便一起釘。
+    """
+    from src.design.layout.room_circulation import turns_to_rooms
+    from src.design.layout.plan_check import VOID_KINDS
+
+    _lb, spec = generate_narrow_building(bw, bd, floors=3, seed=0)[0]
+    turns = turns_to_rooms(spec, _front_door_inside(spec))
+    for r in spec.rooms:
+        if r.kind in VOID_KINDS:
+            continue
+        assert r.name in turns, f"{bw}x{bd} 從大門走不到 {r.name}"
+        assert turns[r.name] <= MAZE_TURN_LIMIT, \
+            f"{bw}x{bd} 走到 {r.name} 要轉 {turns[r.name]} 個彎(迷宮動線)"
+
+
+# NG09:一個 2m 半徑內最多准擠這麼多扇門(書上的 NG 圖是 5 扇)。
+DOOR_CLUSTER_LIMIT = 3
+
+
+@pytest.mark.parametrize("bw,bd", [(4000, 12000), (5500, 15000),
+                                   (7000, 15500), (8000, 16000)])
+def test_doors_do_not_face_each_other_or_pile_up(bw, bd):
+    """NG09 面面相覷的門撞門(使用者 2026-09-03 給的〈9 種常見 NG 格局〉)。
+
+    ⚠️ 這**不是** `door_swing_blocked` 已經在管的事:門對門正對面時,兩道開啟
+    弧常常各自轉得開(中間留得下 1.2m),那條一聲不吭 —— 但格局上就是面面相覷。
+    書上的 NG 是「走道盡頭集中 5 扇門」,量的是**幾扇門擠在一起**。
+
+    一般透天走道貼界牆前後貫穿、門沿著它散開,所以實測是 0 對門對門、
+    最擠 2 扇。這條釘的是**不回歸**。
+    """
+    from src.design.layout.door_rules import facing_door_pairs, max_door_cluster
+
+    for lb, spec in generate_narrow_building(bw, bd, floors=3, seed=0):
+        pairs = facing_door_pairs(spec)
+        assert not pairs, (f"{bw}x{bd} {lb} 有 {len(pairs)} 對門對門"
+                           f"(最近 {min(h[2] for h in pairs):.0f}mm)")
+        n = max_door_cluster(spec)
+        assert n <= DOOR_CLUSTER_LIMIT, \
+            f"{bw}x{bd} {lb} 有 {n} 扇門擠在 2m 內(走道盡頭門撞門)"
+
+
+@pytest.mark.parametrize("bw,bd", [(5000.0, 10600.0), (6400.0, 12100.0),
+                                   (7000.0, 15500.0)])
+def test_passage_mouths_survive_mirroring(bw, bd):
+    """走道兩端的無門無牆通道,**鏡射之後仍然是通道**。
+
+    ⚠️ `is_passage` 不是 `Opening` 的正式欄位,是後掛的標記 —— `_mirror_spec`
+    重建洞口時漏掉的話,鏡射過的那半批圖上通道就變回「一扇貼在牆角的門」,
+    `plan_check.door_in_corner`、躲柱、門角修正三支全都不再跳過它。
+    實測 50 案有 **20 案**冒出 `door_in_corner`,而且錯誤座標是**鏡射後**的位置,
+    對著原圖怎麼找都找不到那扇門。
+    「鏡射弄丟東西」在本專案已經是第五次(拉門 label、陽台、捲門 label、
+    `_nh_core`,現在是 `is_passage`),所以這條要釘住。
+    """
+    from src.design.layout.plan_check import check_building
+
+    floors = generate_narrow_building(bw, bd, floors=3, seed=0)
+    n = sum(1 for _lb, sp in floors for w in sp.walls for op in w.openings
+            if getattr(op, "is_passage", False))
+    assert n >= 2, f"{bw}x{bd} 走道口只剩 {n} 個(鏡射弄丟了?)"
+    rep = check_building(floors)
+    assert not rep.errors, [i.code for i in rep.errors]

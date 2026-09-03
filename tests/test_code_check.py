@@ -26,8 +26,8 @@ W, D = 7000.0, 12000.0
 ENV = (SB, SB, SB + W, SB + D)
 
 
-def _floors(bw=W, bd=D, n=3):
-    return generate_narrow_building(bw, bd, floors=n)
+def _floors(bw=W, bd=D, n=3, core_style=None):
+    return generate_narrow_building(bw, bd, floors=n, core_style=core_style)
 
 
 # ── 產線合規 ────────────────────────────────────────────────────────────────
@@ -49,14 +49,25 @@ def test_rule_pipeline_is_code_compliant():
 def test_stair_meets_code_dimensions():
     """★ §33:級高 ≤20cm、級深 ≥21cm、梯段淨寬 ≥75cm、**平臺深 ≥梯段寬**。
 
-    平臺那條最容易漏:梯段變寬(樓梯間變寬)時平臺要跟著加深,否則轉身空間不足。"""
+    平臺那條最容易漏:梯段變寬(樓梯間變寬)時平臺要跟著加深,否則轉身空間不足。
+
+    ⚠️ 三款核都要問(2026-08-31):它們的梯型不一樣(預設核順著進深跑、參考圖版
+    橫置、窄面寬會換單跑直梯),而 §33 對哪一種都一樣要守。單跑直梯沒有
+    `steps_per_flight`,總級數要分開取 —— 只問折返梯的話,橫置直梯那一半的案子
+    等於沒人檢查。"""
     from src.design.layout.narrow_house import FLOOR_HEIGHT
-    for _lb, spec in _floors():
-        st = spec.stairs[0]
-        assert FLOOR_HEIGHT / (st.steps_per_flight * 2) <= 200.0
-        assert st.tread >= 210.0
-        assert st.flight_width >= 750.0
-        assert st.landing_depth >= st.flight_width - 1e-6
+    for style in ("default", "mid", "ref"):
+        for _lb, spec in _floors(core_style=style):
+            st = spec.stairs[0]
+            total = getattr(st, "steps_per_flight", 0) * 2 or st.steps
+            assert FLOOR_HEIGHT / total <= 200.0, style
+            assert st.tread >= 210.0, style
+            # 單跑直梯只有一個梯段 → 梯段寬就是 `width`;折返梯的 `width` 是
+            # 兩段加中間的梯井,單段寬要問 `flight_width`。
+            fw = getattr(st, "flight_width", st.width)
+            assert fw >= 750.0, style
+            if hasattr(st, "steps_per_flight"):      # 折返端平台才有這條
+                assert st.landing_depth >= fw - 1e-6, style
 
 
 def test_daylight_area_meets_one_eighth():
@@ -82,8 +93,11 @@ def test_daylight_area_meets_one_eighth():
 
 # ── 檢查器本身抓不抓得到 ────────────────────────────────────────────────────
 def test_detects_steep_stair():
-    """★ 人為把樓梯改陡(級數砍半)→ 檢查器必須抓到級高超標。"""
-    floors = _floors(n=2)
+    """★ 人為把樓梯改陡(級數砍半)→ 檢查器必須抓到級高超標。
+
+    ⚠️ 明寫預設核:`steps_per_flight` 是**折返梯**才有的欄位,自動挑到橫置直梯
+    的話這個破壞根本做不出來(測試會變成 AttributeError,不是「抓不抓得到」)。"""
+    floors = _floors(n=2, core_style="default")
     spec = floors[0][1]
     spec.stairs[0].steps_per_flight = 4              # 8 級爬 3.2m = 每階 400mm
     codes = {i.code for i in check_code_floor(spec, ENV, 1, "1F")}

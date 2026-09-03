@@ -167,7 +167,8 @@ def test_window_places_three_lines_across_opening(doc_and_layers) -> None:
     op = Opening(position=2000, width=1500)
     wall = Wall(start=(0, 0), end=(4000, 0), thickness=240, openings=[op])
 
-    ref = Window(lines=3).place_in_wall(msp, wall, op, layers)
+    # ⚠️ n 條平行線是**固定窗**的符號;窗的預設已改成交錯型(見下面那條測試)。
+    ref = Window(lines=3, style="fixed").place_in_wall(msp, wall, op, layers)
     assert ref.dxf.layer == layers["A-GLAZ"]
 
     lines = [e for e in ref.virtual_entities() if e.dxftype() == "LINE"]
@@ -187,9 +188,37 @@ def test_window_double_line(doc_and_layers) -> None:
     op = Opening(position=2000, width=1500)
     wall = Wall(start=(0, 0), end=(4000, 0), thickness=240, openings=[op])
 
-    ref = Window(lines=2).place_in_wall(msp, wall, op, layers)
+    ref = Window(lines=2, style="fixed").place_in_wall(msp, wall, op, layers)
     lines = [e for e in ref.virtual_entities() if e.dxftype() == "LINE"]
     assert len(lines) == 2
+
+
+def test_window_defaults_to_the_sliding_symbol(doc_and_layers) -> None:
+    """★★ 窗的預設是**交錯型窗**(左右滑動),不是三條等距平行線的固定窗。
+
+    使用者 2026-09-03 給了台灣室內設計書的符號對照表:三條等距平行線 = 固定窗
+    (打不開),而住宅的窗幾乎都是交錯型 —— 兩片窗扇在不同軌道上左右滑動,
+    平面上畫成**兩條錯開、中段重疊**的線,外加牆兩面的框線。
+    """
+    doc, layers = doc_and_layers
+    msp = doc.modelspace()
+    op = Opening(position=2000, width=1500)
+    wall = Wall(start=(0, 0), end=(4000, 0), thickness=240, openings=[op])
+
+    ref = Window().place_in_wall(msp, wall, op, layers)
+    lines = [e for e in ref.virtual_entities() if e.dxftype() == "LINE"]
+    assert len(lines) == 4                       # 兩條框線 + 兩片窗扇
+    frame = [ln for ln in lines
+             if abs(abs(round(ln.dxf.start.y)) - 120) < 1]
+    sash = [ln for ln in lines if ln not in frame]
+    assert len(frame) == 2 and len(sash) == 2
+    # 框線橫跨整個洞口;窗扇各佔一段、而且**分別在牆中心線的兩側**(交錯)。
+    for ln in frame:
+        assert sorted([round(ln.dxf.start.x), round(ln.dxf.end.x)]) == [1250, 2750]
+    ys = sorted(round(ln.dxf.start.y) for ln in sash)
+    assert ys[0] < 0 < ys[1]
+    spans = sorted(sorted([ln.dxf.start.x, ln.dxf.end.x]) for ln in sash)
+    assert spans[0][1] > spans[1][0]             # 中段真的重疊
 
 
 # ---------------------------------------------------------------------------

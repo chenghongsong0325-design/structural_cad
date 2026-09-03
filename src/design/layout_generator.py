@@ -242,15 +242,25 @@ class HouseBrief:
                                           # 決定法定建蔽率上限 → 決定建築進深
     coverage: Optional[float] = None      # 直接指定建蔽率(0~1)。有都市計畫書的
                                           # 實際數字時用它,比分區的常見值可信
-    patio: bool = False                   # 中段開天井(連棟街屋常見)。⚠️ 它**不會**
-                                          # 讓你蓋更深(實測 0.0m,見 narrow_house),
-                                          # 是拿每層約 3㎡ 換浴廁/樓梯間有自然採光
+    # 中段開天井(連棟街屋常見)。⚠️ 它**不會**讓你蓋更深(實測 0.0m,見
+    # narrow_house),是拿每層約 3㎡ 換浴廁/樓梯間有自然採光。
+    #   None(預設)= **自動**:只有浴廁會變暗房、而且開了不會讓別的東西變差時
+    #               才開(NG06 街屋暗房,使用者 2026-09-03「開天井」)
+    #   True / False = 一定試 / 永遠不開
+    # ⚠️ 預設一定要是 None 而不是 False —— 這個欄位是網站與 scan_plans 通到
+    #    narrow_house 的唯一路徑,留 False 的話 `_fit_patio_auto` 永遠跑不到,
+    #    改了等於沒改(本專案「規則存在但關卡沒接」的同一族)。
+    patio: Optional[bool] = None
     # 中段核的排法(只有窄透天骨架看它):
-    #   "default" = 浴廁|樓梯|走道(走道貼界牆)
-    #   "ref"     = 使用者 2026-08-28 給的參考平面「方案 B」:樓梯**橫置**在核的
-    #               南半、天井與廁所並排在北半、廁所的門直接開在走道上
-    # 排不下時自動退回 default —— 加一個排法不該讓原本生得出來的案子生不出來。
-    core_style: str = "default"
+    #   None      = **預設,自動挑**:從 "ref" 往下退到房間不會過大的第一款
+    #               (使用者 2026-08-31:「我要把每一個尺寸都設計成類似這個格式」)
+    #   "ref"     = 使用者自己畫的參考平面「方案 B」:樓梯**橫置**在核的南半、
+    #               天井與廁所並排在北半、廁所的門直接開在走道上
+    #   "mid"     = 樓梯|浴廁|走道:廁所的門一樣開在走道上,但沒有天井
+    #   "default" = 浴廁|樓梯|走道(走道貼界牆),廁所的門開向餐廚/車庫
+    # 排不下時自動退讓 **ref → mid → default** —— 加一個排法不該讓原本生得出來
+    # 的案子生不出來。
+    core_style: str | None = None
 
 
 @dataclass
@@ -2012,10 +2022,20 @@ def _plan_overflow(f: SimpleNamespace, brief: HouseBrief, floor: str, *,
     溢位在南帶西端 [bx0, x_lv];客廳留東端(靠 1F 玄關/2F 樓梯的生活重心)。"""
     if f.x_lv is None:
         return None
-    kind, name = select_overflow_program(
+    prog = select_overflow_program(
         floor=floor, bedrooms=brief.bedrooms, want_study=brief.want_study,
         has_study=has_study, has_family=has_family,
         width_mm=f.x_lv - f.bx0, depth_mm=f.ds)
+    if prog is None:
+        # NG08「用不到的房間是家中亂源」(使用者 2026-09-03 選的做法 A):
+        # 書房、家庭廳都配掉之後就沒有真的用得到的用途了,這時**不切這間**,
+        # 整塊留給客廳(南帶天天用的空間)—— 書上的建議就是「不常用的機能
+        # 附屬在另一個常用空間內」。實測 19×13 與 24×16 的 1F 原本各生出一間
+        # 35㎡ 的「多功能室」,比客廳(28.5㎡)還大,是全屋最大的房間。
+        # ⚠️ 回 None 就是「沒有溢位」,呼叫端的 `live_w0` 會自動讓客廳吃到
+        #    bx0 —— 不要在這裡自己補一個房名(那是第二把尺)。
+        return None
+    kind, name = prog
     connect = "open" if kind == "family" else "door"
     return SimpleNamespace(x0=f.bx0, x1=f.x_lv, kind=kind, name=name,
                            connect=connect)
@@ -2501,27 +2521,44 @@ def _west_zone_cuts(f: SimpleNamespace, zone_hi: float, x_max: float,
 
 
 def _west_zone_program(f: SimpleNamespace, brief: HouseBrief,
-                       xws: list[float]) -> list[tuple]:
-    """1F 北帶西段切出來的每一間各是什麼房 → [(x0, x1, kind, name)]。
+                       xws: list[float], *, has_study: bool = False,
+                       has_family: bool = False
+                       ) -> tuple[list[tuple], list[float]]:
+    """1F 北帶西段切出來的每一間各是什麼房 → ([(x0, x1, kind, name)], 留下的切點)。
 
     用途由 `select_overflow_program`(Program Selector)決定,跟南帶的 Living
     Overflow 同一支——**同一個問題只能有一套答案**,不要在這裡另寫一份「夠寬
     就當書房、否則儲藏室」的判斷。已經配過的用途會記下來(`has_study`/
-    `has_family`),所以切三間會得到「書房 → 家庭廳 → 多功能室」而不是三間書房。
+    `has_family`),所以切兩間會得到「書房 → 家庭廳」而不是兩間書房。
+
+    ⚠️ 選配器排完用途會回 `None`(NG08:沒用途就不要切一間出來),這時**這一刀
+    就不切了**,剩下的寬度併進東邊那一格(最後一格是餐廳/餐廚,天天用的空間)。
+    所以本函式**同時回傳留下來的切點**,呼叫端要拿它去算 `zone_edges` 與北窗
+    —— 拿原本那份 `xws` 的話會多開一扇窗、牆卻沒立,兩邊對不上。
     """
     out: list[tuple] = []
-    has_study, has_family = brief.want_study, False
+    kept: list[float] = []
+    has_study = has_study or brief.want_study
     lo = f.bx0
     for hi in xws:
-        kind, name = select_overflow_program(
+        prog = select_overflow_program(
             floor="public", bedrooms=brief.bedrooms, want_study=brief.want_study,
             has_study=has_study, has_family=has_family,
             width_mm=hi - lo, depth_mm=f.dn)
+        # ⚠️ **北帶退不掉這一刀**(和 graph_layout 的 BSP 同一個道理:那塊地一定
+        #    要有東西住)。這幾刀的存在就是為了把餐廳/餐廚壓在合理面積內 ——
+        #    退掉的話 19×13 的餐廚會變 50.5㎡,`test_deep_site_dining_stays_capped`
+        #    當場就咬(那條是既有斷言,不准為了通過而放寬)。
+        #    所以這裡挑一個**真的天天用**的用途:儲藏室(收納永遠有需求)。
+        #    ⚠️ 不要補回「多功能室」—— 那就是 NG08 點名的雜物間。書上那張照片
+        #    的和室最後也是變成儲藏室,錯的是**當初假裝它是和室**,不是收納本身。
+        kind, name = prog if prog is not None else ("storage", "儲藏室")
         out.append((lo, hi, kind, name))
+        kept.append(hi)
         has_study = has_study or kind == "study"
         has_family = has_family or kind == "family"
         lo = hi
-    return out
+    return out, kept
 
 
 def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
@@ -2563,18 +2600,27 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
     zone_hi = f.xb if open_kitchen else xk
     xws = [] if elder else _west_zone_cuts(f, zone_hi, xk,
                                            open_kitchen=open_kitchen)
-    zone_edges = [f.bx0] + xws + [xk]
-    west_prog = _west_zone_program(f, brief, xws)     # 每一間各是什麼房
 
-    # Living Overflow(客廳過細時切西端出來)。1F 北帶西段已經切出書房/家庭廳時,
-    # Program Selector 就不會在南帶再切一間同樣的(避免整層兩間「家庭廳」)。
-    # 孝親房版的南帶是客餐廳(併餐),不切。
-    north_study = any(k == "study" for _a, _b, k, _n in west_prog)
-    north_family = any(k == "family" for _a, _b, k, _n in west_prog)
+    # ⚠️ **南帶先配、北帶後配**(使用者 2026-09-03 選 NG08 做法 A 之後量出來的)。
+    #    原本是北帶先:北帶兩刀吃掉「書房」「家庭廳」,輪到南帶就沒用途可給,
+    #    只好叫「多功能室」——書上點名的雜物間。但南帶那塊是**貼著客廳、全屋
+    #    最大的一塊**(實測 35㎡,比客廳還大),家庭廳本來就該長在那裡。
+    #    順序一換,南帶拿到家庭廳,沒用途的變成北帶的第二刀 —— 而那一刀退掉
+    #    只是把寬度還給餐廚(天天用),不會讓客廳變成 18m 長的細長條。
+    #    ⚠️ 這不是「哪個房間比較重要」的美學排序,是量出來的:
+    #      北帶先配 → 多功能室 6 間;南帶先配 → 0 間,而且客廳不會變細長。
+    # Living Overflow(客廳過細時切西端出來)。孝親房版的南帶是客餐廳(併餐),不切。
     ov = None if elder else _plan_overflow(
-        f, brief, "public",
-        has_study=(north_study or brief.want_study), has_family=north_family)
+        f, brief, "public", has_study=brief.want_study, has_family=False)
     live_w0 = f.bx0 if ov is None else ov.x1     # 客廳西界(有溢位就往東縮)
+
+    # ⚠️ 用途排不出來的那一刀會被退掉(NG08),所以牆線一律以**選配器留下來的
+    #    切點**為準,不能用上面那份候選——否則北窗會多開一扇、牆卻沒立。
+    west_prog, xws = _west_zone_program(
+        f, brief, xws,
+        has_study=(ov is not None and ov.kind == "study"),
+        has_family=(ov is not None and ov.kind == "family"))
+    zone_edges = [f.bx0] + xws + [xk]
 
     # 北窗:西段每一間各一扇(切開了就兩扇)+ 廚房 + 衛浴。開口索引動態記錄,
     # 免得加了房間之後 WindowPlacement 的固定索引對不上。
@@ -2761,8 +2807,15 @@ def generate_house_public(brief: HouseBrief) -> FloorPlanSpec:
         # 孝親房(西端格):床+衣櫃+床頭櫃(空間守門)。
         _bedroom_set(fixtures, f.bx0, xk, f.by1, double=True)
     else:
-        fixtures.append(FixturePlacement(                            # 餐桌(西,餐廳)
-            "table4", ((f.bx0 + xk) / 2, (f.yd + f.by1) / 2), 0))
+        # 餐桌放在**餐廳那一格**的正中間,不是整條北帶西段的正中間。
+        # ⚠️ 舊寫法是 (f.bx0 + xk)/2 —— 西段沒切開時它剛好等於餐廳的中心,
+        #    切成兩三間之後就整個跑掉:19×13 的餐桌被畫進**中間那間**
+        #    (改名成儲藏室之後一眼就看得出來,在那之前它躲在「多功能室」裡)。
+        #    **判準要寫成它真正的意思,不要寫成當下剛好等價的座標** —— 本檔
+        #    「一改幾何,綁在舊幾何上的式子就會靜靜地算錯」的又一則。
+        dine_w0 = xws[-1] if xws else f.bx0
+        fixtures.append(FixturePlacement(                            # 餐桌(餐廳)
+            "table4", ((dine_w0 + xk) / 2, (f.yd + f.by1) / 2), 0))
 
     spec = FloorPlanSpec(walls=walls, rooms=rooms, doors=doors, windows=windows,
                          fixtures=fixtures,
@@ -3025,9 +3078,24 @@ def _mirror_spec(spec: FloorPlanSpec, mx: bool, my: bool) -> FloorPlanSpec:
 
     mirrored = mx != my            # 奇數次鏡射(左右手翻轉)
 
+    def _op(op):
+        """鏡射一個洞口。⚠️ **私有標記要跟著走。**
+
+        `is_passage`(走道兩端的無門無牆通道)不是 `Opening` 的正式欄位,是後掛的
+        標記 —— 這裡漏掉的話,鏡射過的那半批圖上,通道就變回「一扇貼在牆角的門」:
+        `plan_check.door_in_corner`、躲柱、門角修正三支全都不再跳過它。實測 50 案
+        有 **20 案**冒出 `door_in_corner`,而錯誤座標是**鏡射後**的位置,對著原圖
+        怎麼找都找不到那扇門。
+        ⚠️ 「鏡射弄丟東西」在本專案已經是第**五**次(拉門 label、陽台、捲門
+        label、`_nh_core`,現在是 `is_passage`)。加新的後掛標記時記得回來這裡。
+        """
+        out = Opening(op.position, op.width, op.kind)
+        if getattr(op, "is_passage", False):
+            out.is_passage = True
+        return out
+
     walls = [Wall(start=tp(w.start), end=tp(w.end), thickness=w.thickness,
-                  openings=[Opening(op.position, op.width, op.kind)
-                            for op in w.openings])
+                  openings=[_op(op) for op in w.openings])
              for w in spec.walls]
     doors = [DoorPlacement(dp.wall_index, dp.opening_index,
                            Door(hinge=dp.door.hinge,
@@ -3039,7 +3107,8 @@ def _mirror_spec(spec: FloorPlanSpec, mx: bool, my: bool) -> FloorPlanSpec:
                                 label=dp.door.label))
              for dp in spec.doors]
     windows = [WindowPlacement(wp.wall_index, wp.opening_index,
-                               Window(lines=wp.window.lines, width=wp.window.width))
+                               Window(lines=wp.window.lines, width=wp.window.width,
+                                      style=wp.window.style))
                for wp in spec.windows]
     rooms = [Room(name=r.name, points=[tp(p) for p in r.points],
                   kind=r.kind, code=r.code, note=r.note)

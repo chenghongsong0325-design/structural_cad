@@ -82,6 +82,37 @@ def create_window_block(doc, lines: int = 3) -> str:
     return name
 
 
+#: 交錯型窗的窗扇線離牆中心線多遠(佔牆厚的比例)。
+SLIDING_SASH_OFFSET = 0.20
+#: 兩片窗扇各佔洞口寬的比例(>0.5 才會「交錯」重疊,那正是這個符號的意思)。
+SLIDING_SASH_SPAN = 0.55
+
+
+def sliding_window_block_name() -> str:
+    return "WINDOW_SLIDING"
+
+
+def create_sliding_window_block(doc) -> str:
+    """建立(或取得)**交錯型窗**的單位圖塊 —— 台灣住宅最常見的左右滑動玻璃窗。
+
+    使用者 2026-09-03 給的符號對照表:三條等距平行線是**固定窗**(打不開),
+    住宅的窗幾乎都是交錯型 —— 兩片窗扇在不同的軌道上左右滑動,平面上畫成
+    **兩條錯開、在中段重疊**的線,外加牆兩面的框線。
+
+    單位窗:沿 +X 從 0 到 1(洞口寬方向),跨牆厚方向 y 從 -0.5 到 0.5。
+    """
+    name = sliding_window_block_name()
+    if name in doc.blocks:
+        return name
+    blk = doc.blocks.new(name)
+    for y in (-0.5, 0.5):                       # 牆兩面的窗框線
+        blk.add_line((0, y), (1, y), dxfattribs={"layer": "0"})
+    off, span = SLIDING_SASH_OFFSET, SLIDING_SASH_SPAN
+    blk.add_line((0.0, -off), (span, -off), dxfattribs={"layer": "0"})
+    blk.add_line((1.0 - span, off), (1.0, off), dxfattribs={"layer": "0"})
+    return name
+
+
 # ---------------------------------------------------------------------------
 # 共用:牆角度、洞口端點
 # ---------------------------------------------------------------------------
@@ -200,6 +231,10 @@ class Window:
 
     lines: int = 3
     width: float | None = None
+    #: "sliding" = 交錯型窗(左右滑動,台灣住宅預設);"fixed" = 固定窗(n 條平行線)。
+    #: ⚠️ 鏡射與 unit.py 複製窗的時候**要把這個欄位帶著走** —— 本專案「鏡射弄丟
+    #:    東西」已經踩過四次(拉門、陽台、捲門 label、核的款式)。
+    style: str = "sliding"
 
     def place_in_wall(self, msp, wall: Wall, opening: Opening, layers: dict[str, str]):
         """把這扇窗對齊放進 wall 的 opening,回傳插入的 blockref。
@@ -207,7 +242,11 @@ class Window:
         窗沿洞口寬方向(牆長)展開,跨度 = 牆厚(yscale=wall.thickness),
         因此三條線分別落在牆的兩面與中線。
         """
-        create_window_block(msp.doc, self.lines)
+        if self.style == "sliding":
+            name = create_sliding_window_block(msp.doc)
+        else:
+            create_window_block(msp.doc, self.lines)
+            name = window_block_name(self.lines)
 
         w = self.width if self.width is not None else opening.width
         d0, _ = _opening_jambs(opening)
@@ -215,7 +254,7 @@ class Window:
         start_pt = wall.point_at(d0)
 
         return msp.add_blockref(
-            window_block_name(self.lines),
+            name,
             start_pt,
             dxfattribs={
                 "layer": layers["A-GLAZ"],

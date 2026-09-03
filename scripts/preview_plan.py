@@ -69,9 +69,22 @@ def main() -> int:
                     help="中段核改用**參考平面「方案 B」**的排法:樓梯橫置在核的"
                          "南半、天井與廁所並排在北半、廁所的門開在走道上"
                          "(⚠️ 只有窄透天骨架吃這個開關)")
-    ap.add_argument("--patio", action="store_true",
-                    help="中段開天井(每層約 -3㎡,換浴廁/樓梯間有自然採光;"
-                         "⚠️ 不會讓建築蓋得更深,實測 0.0m)")
+    ap.add_argument("--zone3-core", action="store_true",
+                    help="中段核用**三區版**:客廳｜樓梯(貼一側界牆)+走道(貼另一"
+                         "側)｜廚房,1F 廁所疊在樓梯下方(虛線)")
+    ap.add_argument("--default-core", action="store_true",
+                    help="中段核固定用**原本**那款(浴廁|樓梯|走道);不加任何"
+                         "--*-core 開關的話是自動挑(從參考平面那款往下退)")
+    # ⚠️ 預設是 None(自動:浴廁會變暗房才開,見 narrow_house._fit_patio_auto)。
+    #    `store_true` 的預設是 False = **永遠不開**,那會讓這支預覽出來的圖跟
+    #    產線出來的不一樣 —— 使用者驗收看的就是這支的圖(本專案「規則存在但
+    #    關卡沒接」的同一族,這是第三個入口)。
+    ap.add_argument("--patio", action="store_const", const=True, default=None,
+                    help="強制中段開天井(每層約 -3㎡,換浴廁/樓梯間有自然採光;"
+                         "⚠️ 不會讓建築蓋得更深,實測 0.0m)。"
+                         "不加 = 自動:浴廁會變暗房才開")
+    ap.add_argument("--no-patio", dest="patio", action="store_const", const=False,
+                    help="永遠不開天井")
     args = ap.parse_args()
 
     brief = BuildingBrief(
@@ -84,9 +97,14 @@ def main() -> int:
                            dimension_basis="site" if args.site else "building",
                            zone=args.zone, coverage=args.coverage,
                            patio=args.patio,
-                           core_style=("ref" if args.ref_core
+                           # ⚠️ 不加開關 = **自動挑**(None),與網站/產線預設
+                           #    同一條路;寫死 "default" 的話預覽永遠看不到
+                           #    自動挑的結果(踩過)。
+                           core_style=("zone3" if args.zone3_core
+                                       else "ref" if args.ref_core
                                        else "mid" if args.mid_core
-                                       else "default"),
+                                       else "default" if args.default_core
+                                       else None),
                            car_spaces=1 if args.garage else 0),
         floors=args.floors,
         # 跟 nl_parser / scan_plans 一致:透天只要多層就走層別分化

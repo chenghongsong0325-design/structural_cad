@@ -164,7 +164,8 @@ def place_unit(
     for wp in unit.windows:
         target.windows.append(WindowPlacement(
             base + wp.wall_index, wp.opening_index,
-            Window(lines=wp.window.lines, width=wp.window.width),
+            Window(lines=wp.window.lines, width=wp.window.width,
+                   style=wp.window.style),
         ))
 
     # 房間。
