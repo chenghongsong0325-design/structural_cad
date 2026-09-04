@@ -105,8 +105,19 @@ def test_draw_floor_plan_layers(doc_and_layers) -> None:
     assert by_layer.get("COL") == 12
     # 牆(聯集後的輪廓)至少一條。
     assert by_layer.get("WALL", 0) >= 1
-    # 門 7(含樓梯間門)+ 窗 7 = 14 個 INSERT 在 DW。
-    assert by_layer.get("DW") == 14
+    # 門 7(含樓梯間門)+ 窗 7 個 INSERT 在 DW。
+    # ⚠️ 判準要寫成它真正的意思,不要釘死一個數字:2026-09-04 起洞口 ≥1m 的
+    #    大門畫成**子母門**(一寬一窄兩片),那扇門就多一個 INSERT。從 spec
+    #    自己推,以後再加別的門型也不會假性失敗。
+    from src.drafting.door_window import PAIR_DOOR_MIN_W
+    spec = demo_spec()
+    extra = sum(1 for dp in spec.doors
+                if not getattr(dp.door, "sliding", False)
+                and (dp.door.width
+                     or spec.walls[dp.wall_index]
+                     .openings[dp.opening_index].width) >= PAIR_DOOR_MIN_W)
+    assert extra >= 1, "demo_spec 要有一扇大門,不然這條測試驗不到子母門"
+    assert by_layer.get("DW") == len(spec.doors) + len(spec.windows) + extra
     # OTHER:A3 圖框 2 + 標題欄 1 + 電梯符號 3 + 設備家具圖塊 11 +
     #        流理台(2 段多義線 + 1 水槽圓)3 + 北向箭頭 1 = 21;
     #        2026-08-03 起再加圖面標註(對照丙級檢定參考圖):門窗編號圈 14 +

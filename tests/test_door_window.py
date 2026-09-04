@@ -278,3 +278,49 @@ def test_whole_floor_plan_has_no_missing_glyph_text() -> None:
             if any(ord(c) > 127 for c in s) and e.dxf.style != "STRUCT":
                 bad.append((s, e.dxf.style))
     assert not bad, f"這些中文字沒用 STRUCT 樣式,CAD 裡會變成問號:{bad}"
+
+
+# ── 子母門:台灣透天大門的畫法(使用者 2026-09-04 給的〈平面圖符號〉)─────────
+def test_wide_entry_door_is_drawn_as_a_pair():
+    """★★ 洞口 ≥1m 的大門畫成**子母門**(一寬一窄兩片,各一條弧)。
+
+    書上寫的是「兩片門一寬一窄,平常使用較寬的門」—— 一片 1m 寬的門扇在真實圖
+    上幾乎不會出現(太重)。⚠️ 這是**畫法**不是格局:碰撞/關卡仍以整個洞口寬
+    計算門扇迴轉(而子母門的母扇更窄,掃過的面積只會更小),所以不影響任何檢查。
+    """
+    from src.drafting.door_window import PAIR_DOOR_MIN_W
+
+    doc = new_document()
+    layers = apply_standard(doc, load_standard())
+    msp = doc.modelspace()
+    wall = Wall(start=(0, 0), end=(4000, 0), thickness=150)
+    wall.openings.append(Opening(2000, PAIR_DOOR_MIN_W, "door"))
+    before = len([e for e in msp if e.dxftype() == "INSERT"])
+    Door().place_in_wall(msp, wall, wall.openings[0], layers)
+    pair = len([e for e in msp if e.dxftype() == "INSERT"]) - before
+    assert pair == 2, f"大門要畫成兩片,實際 {pair} 片"
+
+    # 內門(<1m)仍是單開門 —— 不能把整批門都變成子母門。
+    wall2 = Wall(start=(0, 3000), end=(4000, 3000), thickness=150)
+    wall2.openings.append(Opening(2000, 850, "door"))
+    before = len([e for e in msp if e.dxftype() == "INSERT"])
+    Door().place_in_wall(msp, wall2, wall2.openings[0], layers)
+    assert len([e for e in msp if e.dxftype() == "INSERT"]) - before == 1
+
+
+def test_pair_door_leaves_are_unequal_and_fill_the_opening():
+    """★ 子母門的兩片一寬一窄,合起來剛好是洞口寬(不能重疊也不能有縫)。"""
+    from src.drafting.door_window import PAIR_DOOR_MAIN_FRAC, PAIR_DOOR_MIN_W
+
+    doc = new_document()
+    layers = apply_standard(doc, load_standard())
+    msp = doc.modelspace()
+    wall = Wall(start=(0, 0), end=(4000, 0), thickness=150)
+    wall.openings.append(Opening(2000, 1200.0, "door"))
+    Door().place_in_wall(msp, wall, wall.openings[0], layers)
+    widths = sorted(abs(e.dxf.xscale) for e in msp if e.dxftype() == "INSERT")
+    assert len(widths) == 2
+    assert widths[0] < widths[1]                       # 一寬一窄
+    assert abs(sum(widths) - 1200.0) < 1.0             # 合起來等於洞口寬
+    assert abs(widths[1] - 1200.0 * PAIR_DOOR_MAIN_FRAC) < 1.0
+    assert PAIR_DOOR_MIN_W <= 1200.0

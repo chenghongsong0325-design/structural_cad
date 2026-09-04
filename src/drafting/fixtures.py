@@ -510,13 +510,14 @@ def draw_counter(msp, counter: Counter, layers: dict[str, str]) -> None:
         mx, my = (x1 + x2) / 2 + nx * d / 2, (y1 + y2) / 2 + ny * d / 2
         msp.add_circle((mx, my), radius=180, dxfattribs={"layer": layers["OTHER"]})
     if counter.stove:
-        # 四口爐:2×2 圓圈,中心在段長 30% 處(避開中點的水槽)。
+        # **三口爐**:前排兩口 + 後排(貼牆側)中間一口,中心在段長 30% 處
+        # (避開中點的水槽)。⚠️ 舊版畫 2×2 四口 —— 使用者給的台灣平面圖符號
+        # 對照寫的是「爐具 = 矩形 + **三個圓**」,台灣住宅的檯面爐也多是三口。
         cx = x1 + ux * length * 0.3 + nx * d / 2
         cy = y1 + uy * length * 0.3 + ny * d / 2
-        for da in (-190, 190):
-            for db in (-140, 140):
-                msp.add_circle((cx + ux * da + nx * db, cy + uy * da + ny * db),
-                               radius=110, dxfattribs={"layer": layers["OTHER"]})
+        for da, db in ((-190, -140), (190, -140), (0, 150)):
+            msp.add_circle((cx + ux * da + nx * db, cy + uy * da + ny * db),
+                           radius=110, dxfattribs={"layer": layers["OTHER"]})
 
 
 # =============================================================================

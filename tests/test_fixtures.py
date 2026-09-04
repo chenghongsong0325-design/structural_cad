@@ -223,3 +223,20 @@ def test_narrow_bathrooms_still_get_a_basin():
                        for f in spec.fixtures if getattr(f, "insert", None)):
                     got += 1
     assert got >= 10, f"只有 {got} 間浴室有洗手台(基準:12 間中的 10 間以上)"
+
+
+def test_counter_stove_draws_three_burners():
+    """★ 爐具照使用者給的〈平面圖符號〉畫**三口**(矩形 + 三個圓)。
+
+    ⚠️ 舊版畫 2×2 四口。台灣住宅的檯面爐多是三口,而符號對照表寫的也是三個圓。
+    """
+    doc = new_document()
+    layers = apply_standard(doc, load_standard())
+    msp = doc.modelspace()
+    draw_counter(msp, Counter(start=(0, 0), end=(2400, 0), depth=600,
+                              sink=True, stove=True), layers)
+    circles = [e for e in msp if e.dxftype() == "CIRCLE"]
+    burners = [c for c in circles if abs(c.dxf.radius - 110) < 1]
+    sinks = [c for c in circles if abs(c.dxf.radius - 180) < 1]
+    assert len(burners) == 3, f"爐口要 3 個,實際 {len(burners)}"
+    assert len(sinks) == 1, "水槽一個圓"

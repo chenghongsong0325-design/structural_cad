@@ -40,6 +40,12 @@ DEFAULT_WINDOW_WIDTH = 1200  # 窗寬常見值。預設值,待確認
 DOOR_BLOCK = "DOOR"
 DOOR_SWING_ANGLE = 90.0      # 開啟弧線角度(度)。固定 90°,待確認
 
+#: 洞口寬到這裡(mm)就改畫**子母門**(一寬一窄兩片,各一條弧)。
+#: 台灣的透天大門是 1m 級的雙扇門;單一片 1m 寬的門扇太重,真實圖不會這樣畫。
+PAIR_DOOR_MIN_W = 1000.0
+#: 子母門的「母」(平常在用的那片)佔洞口寬多少。
+PAIR_DOOR_MAIN_FRAC = 0.68
+
 
 # ---------------------------------------------------------------------------
 # 圖塊定義(單位大小,內部實體掛圖層 "0" 以繼承插入圖層)
@@ -176,6 +182,25 @@ class Door:
         else:
             raise ValueError(f"swing 只能是 'out' 或 'in',收到 {self.swing!r}")
 
+        # 子母門:洞口寬到一定程度(台灣的透天大門)就畫成**一寬一窄兩片**,
+        # 各自一條弧、往同一側開 —— 使用者給的〈平面圖標示符號〉寫的就是
+        # 「兩片門一寬一窄,平常使用較寬的門」。一片 1m 寬的門扇在真實圖上
+        # 幾乎不會出現(太重),看圖的人一眼就知道那不是大門的畫法。
+        if w >= PAIR_DOOR_MIN_W:
+            main = self._leaf(msp, wall, hinge_dist, latch_angle, desired_swing,
+                              w * PAIR_DOOR_MAIN_FRAC, layers)
+            # 子扇:鉸鏈在**另一端**,開啟方向與母扇同側。
+            other_dist = d1 if self.hinge == "left" else d0
+            other_angle = theta + 180 if self.hinge == "left" else theta
+            self._leaf(msp, wall, other_dist, other_angle, desired_swing,
+                       w * (1.0 - PAIR_DOOR_MAIN_FRAC), layers)
+            return main
+        return self._leaf(msp, wall, hinge_dist, latch_angle, desired_swing,
+                          w, layers)
+
+    def _leaf(self, msp, wall: Wall, hinge_dist: float, latch_angle: float,
+              desired_swing: float, w: float, layers: dict[str, str]):
+        """畫一片門扇(門板 + 開啟弧)。單開門一片,子母門兩片。"""
         hinge_pt = wall.point_at(hinge_dist)
         # 單位門的 +Y(門扇開啟方向)在旋轉 latch_angle 後指向 latch_angle+90;
         # 若和 desired_swing 差 180° 就用 yscale 負值鏡射過去。
