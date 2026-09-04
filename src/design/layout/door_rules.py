@@ -180,6 +180,47 @@ def _swing_sector(wall, op, door) -> Polygon:
     return poly if not poly.is_empty else Polygon()
 
 
+def _swing_into_rank(room) -> int:
+    """門扇往這一側掃,好不好?(越小越好)
+
+    使用者 2026-09-05:「門都是往內推可以開門」。「內」指的是**要進去的那一間**:
+    從走道推進臥室、從臥室推進套內浴室,不是把門推到公共動線上,更不是往室外開。
+
+    ⚠️ **居室與附屬空間要分兩級**,不能都算「內」。臥室↔套內浴室這種門兩側都不是
+    公共空間,同一級的話就變成擲骰子 —— 實測淺基地 5×5 的浴室門因此往**臥室**開,
+    連同走道那扇門兩道弧一夾,`_declutter_for_circulation` 就把**床**清掉了
+    (`test_shallow_bedrooms_all_have_a_bed` 當場咬)。附屬空間是「被進去」的那一間,
+    排在臥室前面。(本檔鐵則:加分項不得讓原本好好的東西壞掉。)
+    """
+    if room is None:
+        return 100                      # 室外:大門一律往室內推,不往人行道開
+    if room.kind in PUBLIC_KINDS:
+        return 10                       # 走道/客廳/樓梯間:門推過去會擋掉動線
+    if room.kind in BATH_KINDS or room.kind in SERVICE_KINDS:
+        return 0                        # 浴室/更衣/儲藏:附屬空間,是「進去」的那一間
+    return 5                            # 臥室/書房:從走道進來時推進這裡
+
+
+def _hinge_wall_dist(wall, op, env) -> dict:
+    """兩種鉸鏈邊各自的「門扇開到底之後離外牆多遠」。
+
+    使用者 2026-09-05:「開門後門是會靠外牆那側」。門扇開到底是**垂直於門的牆面**、
+    立在鉸鏈那一端 —— 所以鉸鏈挑離外牆近的那一端,打開的門就貼著外牆,不會站在
+    房間中間把空間切成兩半。這裡量的是鉸鏈點到建築外框四條邊的最短距離。
+    """
+    (sx, sy), (ex, ey) = wall.start, wall.end
+    L = math.hypot(ex - sx, ey - sy) or 1.0
+    ux, uy = (ex - sx) / L, (ey - sy) / L
+    cx, cy = wall.point_at(op.position)
+    half = op.width / 2.0
+    out = {}
+    for hinge, sign in (("left", -1.0), ("right", 1.0)):
+        hx, hy = cx + ux * half * sign, cy + uy * half * sign
+        out[hinge] = min(abs(hx - env[0]), abs(hx - env[2]),
+                         abs(hy - env[1]), abs(hy - env[3]))
+    return out
+
+
 def _swing_obstacles(spec, wall, op):
     """會擋住這扇門的東西:牆體(自己這道除外)、柱、家具、其他門的開啟弧線。"""
     from src.design.collision.geometry import fixture_obstacles
@@ -356,6 +397,11 @@ def repair_doors(spec, bx0, by0, bx1, level) -> bool:
             obs = _swing_obstacles(spec, w, op) + _other_door_sectors(spec, dp)
             corridors = [Polygon(r.points) for r in spec.rooms
                          if r.kind == "corridor"]
+            # 使用者 2026-09-05:「門都是往內推可以開門,開門後門是會靠外牆那側」。
+            # 兩件事拆開來看:**往哪一側掃**(swing)決定推進哪一間、**鉸鏈在哪一端**
+            # (hinge)決定門扇開到底之後貼在哪一面牆上。
+            sides, _is_ext = _door_sides(spec, w, op, polys, env)   # [+n 側, -n 側]
+            hinge_dist = _hinge_wall_dist(w, op, env)              # {hinge: 離外牆}
             best = None
             for hinge in ("left", "right"):
                 for swing in ("out", "in"):
@@ -368,11 +414,20 @@ def repair_doors(spec, bx0, by0, bx1, level) -> bool:
                     into_corridor = sum(sec.intersection(c).area
                                         for c in corridors)
                     score = hit + into_corridor
-                    if best is None or score < best[0]:
-                        best = (score, hinge, swing, hit)
+                    # ⚠️ **偏好只在物理上打平時才作用**:撞得夠少(同一把尺:下面
+                    #    判要不要改拉門用的也是 SWING_OVERLAP_TOL)就一律算乾淨,
+                    #    幾種乾淨的開法之間才輪到「往內推」「開了靠外牆」決定。
+                    #    真的撞到東西時仍然是撞得最少的那種贏 —— 偏好不得讓一扇
+                    #    本來開得了的門變成開不了(本檔「加分項不得讓原本好好的
+                    #    東西壞掉」)。
+                    key = (score if score > SWING_OVERLAP_TOL else 0.0,
+                           _swing_into_rank(sides[0 if swing == "out" else 1]),
+                           hinge_dist[hinge])
+                    if best is None or key < best[0]:
+                        best = (key, hinge, swing, hit)
             if best is None:
                 continue
-            _score, hinge, swing, hit = best
+            _key, hinge, swing, hit = best
             if (hinge, swing) != (dp.door.hinge, dp.door.swing):
                 dp.door.hinge, dp.door.swing = hinge, swing
                 changed = True
@@ -633,11 +688,17 @@ CLUSTER_R = 2000.0      # 書上的 NG 是「這個半徑內 5 扇門」
 
 
 def _real_doors(spec) -> list:
-    """[(中心點, 寬, 牆的單位向量)]。開放通道(`is_passage`)沒有門扇,不算。"""
+    """[(中心點, 寬, 牆的單位向量)]。開放通道(`is_passage`)沒有門扇,不算。
+
+    ⚠️ 走道口接的是房間時會裝門扇(`passage_door`,使用者 2026-09-05)——
+    那是一扇真的門,門對門/門擠一堆都要算它。"""
     out = []
     for w in spec.walls:
         for op in w.openings:
-            if op.kind != "door" or getattr(op, "is_passage", False):
+            if op.kind != "door":
+                continue
+            if (getattr(op, "is_passage", False)
+                    and not getattr(op, "passage_door", False)):
                 continue
             out.append((w.point_at(op.position), op.width, w.unit_vector))
     return out

@@ -3096,12 +3096,15 @@ def _mirror_spec(spec: FloorPlanSpec, mx: bool, my: bool) -> FloorPlanSpec:
         `plan_check.door_in_corner`、躲柱、門角修正三支全都不再跳過它。實測 50 案
         有 **20 案**冒出 `door_in_corner`,而錯誤座標是**鏡射後**的位置,對著原圖
         怎麼找都找不到那扇門。
-        ⚠️ 「鏡射弄丟東西」在本專案已經是第**五**次(拉門 label、陽台、捲門
-        label、`_nh_core`,現在是 `is_passage`)。加新的後掛標記時記得回來這裡。
+        ⚠️ 「鏡射弄丟東西」在本專案已經是第**六**次(拉門 label、陽台、捲門
+        label、`_nh_core`、`is_passage`,現在是 `passage_door`)。加新的後掛標記
+        時記得回來這裡。
         """
         out = Opening(op.position, op.width, op.kind)
         if getattr(op, "is_passage", False):
             out.is_passage = True
+        if getattr(op, "passage_door", False):   # 走道口裝了門扇(接的是房間)
+            out.passage_door = True
         return out
 
     walls = [Wall(start=tp(w.start), end=tp(w.end), thickness=w.thickness,

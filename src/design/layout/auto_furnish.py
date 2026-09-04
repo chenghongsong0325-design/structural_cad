@@ -358,14 +358,25 @@ def _add_nightstands(spec, room, weights=None) -> int:
     th = math.radians(bed.rotation)
     ux, uy = math.cos(th), math.sin(th)              # 沿牆方向(床頭那道牆)
     added = 0
+    # ⚠️ 合法**不等於**放得下:碰撞引擎只問「有沒有撞到東西」,不問「放了這間房
+    #    還走不走得通」。擋住通道的床頭櫃會被後面的動線修復器清掉,而它清的不
+    #    一定是床頭櫃 —— 實測 6×15 seed7 是把**別間房的床**搬走,呼叫端一看有床
+    #    不見就整批回退,連這間房那個放得好好的床頭櫃一起賠掉(症狀是「有床沒有
+    #    床頭櫃」,看起來完全不像動線問題)。判準與補床/補流理台同一支
+    #    `_room_walkable`,本來就走不通的房間不吃這條(否則一個都補不回去)。
+    walkable0 = _room_walkable(spec, room)
     for sgn in (-1.0, 1.0):
         ns = FixturePlacement("nightstand",
                               (bed.insert[0] + ux * half * sgn,
                                bed.insert[1] + uy * half * sgn),
                               bed.rotation)
-        if FurnitureCollisionEngine(spec).check(ns).valid:
-            spec.fixtures.append(ns)
-            added += 1
+        if not FurnitureCollisionEngine(spec).check(ns).valid:
+            continue
+        spec.fixtures.append(ns)
+        if walkable0 and not _room_walkable(spec, room):
+            spec.fixtures.pop()                      # 擋住通道 → 這一側不放
+            continue
+        added += 1
     return added
 
 

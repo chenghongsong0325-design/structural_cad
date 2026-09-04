@@ -1395,12 +1395,45 @@ def _remove_openings(spec, targets: set):
 #: 走道口兩端各留這麼一小段牆:讓開口不要正好切在垂直牆(導牆/界牆)的牆體上。
 PASSAGE_MOUTH_PIER = 90.0
 
+#: 走道口**可以不裝門扇**的鄰室 —— 只有公共空間。
+#:
+#: 使用者 2026-09-02 說「走道出入口不用設門也不用隔牆」,講的是參考平面圖上那條
+#: 走道:一端接客廳、一端接餐廚,兩端都是公共空間,中間本來就不該有門。
+#: 2026-09-05 補上另一半:「走道如果出口或入口是房間就要放門」「房間門口都要有門」
+#: —— 樓上的走道兩端接的是**臥室/書房**(1F 車庫版接的是車庫),那不是通道,
+#: 那是房間的門口。沒有門的臥室不是設計選擇,是漏畫。
+PASSAGE_OPEN_KINDS = frozenset({
+    "living", "dining", "kitchen", "foyer", "stair_hall", "corridor", "balcony",
+})
+
+
+def _mouth_far_room(spec, wall, pos: float):
+    """走道口的**另一邊**是哪一間房(走道自己那一側不算)。取不到給 None。
+
+    兩側各探 300mm:一側是走道(樓梯間),另一側就是這個口通往的房間。判斷要裝不
+    裝門扇全看它 —— 見 `PASSAGE_OPEN_KINDS`。
+    """
+    px, py = wall.point_at(pos)
+    got = []
+    for sgn in (1.0, -1.0):
+        pt = Point(px, py + sgn * 300.0)
+        got.append(next((r for r in spec.rooms
+                         if Polygon(r.points).contains(pt)), None))
+    far = [r for r in got if r is not None
+           and r.kind not in ("stair_hall", "corridor")]
+    return far[0] if len(far) == 1 else None
+
 
 def _open_passage_mouth(spec, y, x0, x1) -> bool:
-    """走道的出入口**不設門、也不隔牆**:把那一段整條開成通道。回有沒有動到。
+    """走道的出入口:接公共空間就整條開成通道,接房間就給它一扇門。回有沒有動到。
 
     使用者 2026-09-02:「走道出入口都不用設置門,也不用用牆隔起來」。真實透天的
     走道就是這樣 —— 從客廳走進去、從走道走出到餐廚,中間沒有門扇也沒有牆。
+
+    ⚠️ 但那句話只對**公共空間**成立。使用者 2026-09-05:「走道如果出口或入口是
+    房間就要放門」「房間門口都要有門」—— 樓上的走道兩端接的是臥室/書房,整條開
+    掉等於那間臥室沒有門。所以這裡先問另一邊是誰(`_mouth_far_room`):公共空間
+    照舊整條開,房間就改成一扇**正常寬度的內門**(位置仍是走道口的中心)。
 
     做法是把那一段開成一個**沒有門扇的洞口**(`Opening` 本身就只是「把牆斷開」,
     見 `wall.solid_segments`),原本開在那裡的門連同門扇一起拆掉。所以圖上那一段
@@ -1431,21 +1464,38 @@ def _open_passage_mouth(spec, y, x0, x1) -> bool:
             b -= PASSAGE_MOUTH_PIER
         if b - a < INTERIOR_DOOR_WIDTH:
             continue
-        # 這一段上原有的門/窗先拆掉(門扇一起),再開一個滿寬的洞。
+        mid = (a + b) / 2.0
+        pos = mid - sx if sx < ex else sx - mid
+        far = _mouth_far_room(spec, w, pos)
+        # 另一邊是房間 → 裝門扇(門寬用一般內門,不是整條走道那麼寬);
+        # 是客廳/餐廚那種公共空間、或看不出來是誰 → 照舊整條開成通道。
+        leaf = far is not None and far.kind not in PASSAGE_OPEN_KINDS
+        # 這一段上原有的門/窗先拆掉(門扇一起),再開洞。
         drop = set()
         for oi, op in enumerate(w.openings):
             cx = w.point_at(op.position)[0]
             if a - op.width / 2 - 1.0 <= cx <= b + op.width / 2 + 1.0:
                 drop.add((wi, oi))
         _remove_openings(spec, drop)
-        mid = (a + b) / 2.0
-        pos = mid - sx if sx < ex else sx - mid
-        op = Opening(position=pos, width=b - a, kind="door")
-        # ⚠️ 標記成「開放通道」:躲柱那支會把它當一般門洞沿著牆挪開,結果就是
+        op = Opening(position=pos,
+                     width=INTERIOR_DOOR_WIDTH if leaf else b - a, kind="door")
+        # ⚠️ 標記成「走道口」:躲柱那支會把它當一般門洞沿著牆挪開,結果就是
         #    使用者圈出來的那兩截凸出來的牆頭。通道的兩端是**結構**決定的
-        #    (一邊是導牆、一邊是界牆),不是可以挑位置的門。
+        #    (一邊是導牆、一邊是界牆),不是可以挑位置的門。裝了門扇也一樣 ——
+        #    走道只有一扇門寬時,門的兩側本來就是那兩道牆,那不是「卡在牆角」。
         op.is_passage = True
+        if leaf:
+            op.passage_door = True      # ⚠️ 後掛標記 → `_mirror_spec` 要跟著帶
         spec.walls[wi].openings.append(op)
+        if leaf:
+            # 門扇往**房間**那一側開:往走道開的話,一條 0.9m 的走道會被門擋死。
+            ux, uy = w.unit_vector
+            nx, ny = -uy, ux
+            px, py = w.point_at(pos)
+            fc = Polygon(far.points).centroid
+            swing = "out" if (fc.x - px) * nx + (fc.y - py) * ny > 0 else "in"
+            spec.doors.append(DoorPlacement(wi, len(spec.walls[wi].openings) - 1,
+                                            Door(swing=swing)))
         return True
     return False
 
@@ -2605,6 +2655,45 @@ def _align_windows_for_ventilation(spec, by0, by1) -> int:
     return moved
 
 
+def _slide_passage_door_off_columns(spec, wall, op, along, blocks) -> bool:
+    """走道口的**門扇**閃柱:寬度保持一扇門,只在原本那段牆的空檔裡讓開。
+
+    ⚠️ 不能沿用開放通道那條「收到柱面」—— 那條的下限是 `OPEN_PASSAGE_MIN`(750,
+    沒有門扇,走得過去就好),而這是**居室門**,收到 800 以下 `plan_check` 的
+    `room_door_narrow` 就擋圖(實測 5.45×15.45 收成 770,四個尺寸一起紅)。
+    ⚠️ 也不能改走一般門的 `_nearest_ok_position`:走道只有一扇門寬,`_door_pos_ok`
+    的牆角淨距永遠不可能滿足,那支會直接放棄,柱就留在門框裡。
+    """
+    from src.design.layout.door_rules import ROOM_DOOR_MIN
+
+    (sx, sy), (ex, ey) = wall.start, wall.end
+    vertical = abs(sx - ex) < 1.0
+    lo, hi = (sy, ey) if vertical else (sx, ex)
+    a, b = op.position - op.width / 2.0, op.position + op.width / 2.0
+    if not any(t0 < b and a < t1 for t0, t1 in blocks):
+        return False                                  # 這扇沒壓到柱
+    keep = list(wall.openings)
+    wall.openings = [o for o in keep if o is not op]  # 算空檔時先把自己拿掉
+    try:
+        free = _free_intervals(wall, lo, hi, along, blocks, edge_clear=0.0)
+    finally:
+        wall.openings = keep
+    best = None                                       # (離原位多遠, -寬, pos, 寬)
+    for a0, b0 in free:
+        if b0 - a0 < ROOM_DOOR_MIN:
+            continue
+        w_new = min(op.width, b0 - a0)
+        pos = min(max(op.position, a0 + w_new / 2.0), b0 - w_new / 2.0)
+        cand = (abs(pos - op.position), -w_new, pos, w_new)
+        if best is None or cand[:2] < best[:2]:
+            best = cand
+    if best is None:
+        return False                # 讓不開 → 原地不動,交給關卡回報(不偷偷縮小)
+    _d, _w, pos, w_new = best
+    op.position, op.width = pos, w_new
+    return True
+
+
 def _trim_passage_off_columns(spec, wall, op, along) -> bool:
     """把開放通道的**端點**收到柱面(只縮不移)。回有沒有收過。
 
@@ -2614,6 +2703,8 @@ def _trim_passage_off_columns(spec, wall, op, along) -> bool:
     blocks = _column_blocks(spec, wall, along, 0.0)
     if not blocks:
         return False
+    if getattr(op, "passage_door", False):
+        return _slide_passage_door_off_columns(spec, wall, op, along, blocks)
     a, b = op.position - op.width / 2.0, op.position + op.width / 2.0
     for t0, t1 in blocks:
         if t0 <= a < t1:                    # 柱蓋住起點那一端

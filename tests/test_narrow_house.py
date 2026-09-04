@@ -1376,15 +1376,36 @@ def test_restored_bed_gets_its_nightstands(bw, bd, seed):
     ⚠️ 補床頭櫃要跑在最後,而且跑完仍要再過閃柱/動線/穿牆三道修復器,
     再依「有沒有床不見了」決定整批回退 —— 不補後面那段,淺透天掃描會冒出
     `furniture_in_wall` / `circulation_blocked`(實測 2 案);補了不回退,
-    動線修復器會把床搬走(實測 2 張)。**加分項不得讓原本好好的東西壞掉。**"""
+    動線修復器會把床搬走(實測 2 張)。**加分項不得讓原本好好的東西壞掉。**
+
+    ⚠️ 2026-09-05:床頭櫃只驗**放得下的房間**。門改成往房間內推之後(使用者要求),
+    6×15 的 3F 前臥室(淨寬 2575)剩下的空檔是 2575 − 床 1600 = 975,而一個床頭櫃
+    500 加上走得過去的 600 要 1100 —— 幾何上就是放不下,不是修復器沒補。放不下的
+    房間仍然**必須有床**(那條不放寬),只是不強求床頭櫃。
+    """
+    from src.drafting.fixtures import FIXTURE_SIZES
     from src.design.layout.auto_furnish import BEDS
+    from shapely.geometry import Point, Polygon
+    WALK = 600.0                       # 床頭櫃旁邊還要走得過去
     for label, spec in generate_narrow_building(bw, bd, floors=3, seed=seed):
         for r in spec.rooms:
             if canonical_room(r.kind) != "bedroom":
                 continue
             got = _fixtures_in(spec, r)
             assert set(got) & set(BEDS), (label, r.name, got)
-            assert "nightstand" in got, (label, r.name, got)
+            if "nightstand" in got:
+                continue
+            # 沒有床頭櫃的話,要能說明「這間房本來就放不下」——量床頭那道牆。
+            poly = Polygon(r.points)
+            bed = next(f for f in spec.fixtures
+                       if getattr(f, "name", "") in BEDS
+                       and poly.buffer(1.0).contains(Point(*f.insert)))
+            x0, y0, x1, y1 = poly.bounds
+            head_along_x = abs(bed.rotation % 180.0) < 45.0
+            inner = (x1 - x0 if head_along_x else y1 - y0) - 150.0
+            spare = inner - FIXTURE_SIZES[bed.name][0]
+            assert spare < FIXTURE_SIZES["nightstand"][0] + WALK, (
+                label, r.name, got, f"床頭那道牆還空著 {spare:.0f}mm,放得下床頭櫃")
 
 
 # ---------------------------------------------------------------------------
@@ -2149,10 +2170,16 @@ def test_zone3_toilet_is_drawn_inside_the_stair_on_the_ground_floor(bw, bd):
 @pytest.mark.parametrize("bw,bd", [(4000.0, 11530.0), (4500.0, 14450.0),
                                    (5500.0, 15450.0), (7500.0, 16450.0)])
 def test_zone3_passage_mouths_have_no_door_and_no_wall_stub(bw, bd):
-    """★★ 走道的兩個出入口不設門、也不隔牆,而且界牆上不留凸出來的牆頭。
+    """★★ 走道口接**公共空間**時不設門、也不隔牆,界牆上不留凸出來的牆頭。
 
     使用者 2026-09-02:「走道出入口都不用設置門,也不用用牆隔起來」、
     「這兩個突出來的牆也不需要設計,要讓空間最大化」。
+
+    ⚠️ 2026-09-05 改寫:那句話只對**公共空間**成立。使用者接著說「走道如果出口
+    或入口是房間就要放門」「每個臥室門口都要有門」—— 樓上的走道兩端接的是臥室,
+    整條開掉等於那間臥室沒有門。所以這條只釘公共空間那一端(仍然無門無牆、仍然
+    不留牆頭);接房間的那一端由 `test_a_passage_mouth_into_a_room_gets_a_door`
+    釘住。
 
     ⚠️ 那兩截牆頭**不是牆垛**,是三支修復器各自把這個通道當成一般門洞在搬:
     躲柱(`shift_openings_off_columns`)、門角修正(`door_rules`)、
@@ -2170,10 +2197,14 @@ def test_zone3_passage_mouths_have_no_door_and_no_wall_stub(bw, bd):
                 if not getattr(op, "is_passage", False):
                     continue
                 found.append(op)
-                # 沒有門扇:不能有任何 DoorPlacement 掛在這個洞口上。
                 wi = sp.walls.index(w)
-                assert not any(dp.wall_index == wi and dp.opening_index == oi
-                               for dp in sp.doors), f"{lb} 走道口不該有門扇"
+                has_leaf = any(dp.wall_index == wi and dp.opening_index == oi
+                               for dp in sp.doors)
+                if getattr(op, "passage_door", False):
+                    assert has_leaf, f"{lb} 接房間的走道口沒有門扇"
+                    continue              # 那一端是門,不吃下面幾條
+                # 沒有門扇:不能有任何 DoorPlacement 掛在這個洞口上。
+                assert not has_leaf, f"{lb} 走道口不該有門扇"
                 assert op.width >= OPEN_PASSAGE_MIN
                 # 通道要開到牆的盡頭(界牆那一端);柱吃掉的部分才准收。
                 lo = min(w.start[0], w.end[0])
@@ -2280,3 +2311,73 @@ def test_passage_mouths_survive_mirroring(bw, bd):
     assert n >= 2, f"{bw}x{bd} 走道口只剩 {n} 個(鏡射弄丟了?)"
     rep = check_building(floors)
     assert not rep.errors, [i.code for i in rep.errors]
+    # 裝了門扇的走道口(接房間的那一端)也要活過鏡射 —— `passage_door` 同樣是
+    # 後掛標記,漏掉的話鏡射那半批圖的門會被躲柱/門角修正當成一般門搬走。
+    leaf = sum(1 for _lb, sp in floors for w in sp.walls for op in w.openings
+               if getattr(op, "passage_door", False))
+    assert leaf >= 2, f"{bw}x{bd} 接房間的走道口只剩 {leaf} 個(鏡射弄丟了?)"
+
+
+@pytest.mark.parametrize("bw,bd,garage", [(4500.0, 14000.0, False),
+                                          (7000.0, 15500.0, False),
+                                          (4500.0, 14000.0, True)])
+def test_a_passage_mouth_into_a_room_gets_a_door(bw, bd, garage):
+    """★★ 走道口的另一邊是**房間**就要有門扇;是客廳/餐廚才維持開放。
+
+    使用者 2026-09-05:「走道如果出口或入口是房間就要放門」「每個臥室門口都要有
+    門」。2026-09-02 那句「走道出入口不用設門」講的是參考平面圖上那條走道 ——
+    一端客廳、一端餐廚,兩端都是公共空間。樓上完全不是那回事:走道兩端接的是
+    臥室/書房(車庫版 1F 接的是車庫),整條開掉就是一間沒有門的臥室。
+
+    ⚠️ 這條同時釘住**反向**:公共空間那一端不准長出門來。一條規則只做一半的話,
+    就變成把使用者 2026-09-02 要的東西也一起改掉了。
+    """
+    from src.design.layout.narrow_house import (PASSAGE_OPEN_KINDS,
+                                                _mouth_far_room)
+
+    floors = generate_narrow_building(bw, bd, floors=3, seed=0, garage=garage)
+    seen = 0
+    for lb, sp in floors:
+        for wi, w in enumerate(sp.walls):
+            for oi, op in enumerate(w.openings):
+                if not getattr(op, "is_passage", False):
+                    continue
+                far = _mouth_far_room(sp, w, op.position)
+                if far is None:
+                    continue
+                leaf = any(dp.wall_index == wi and dp.opening_index == oi
+                           for dp in sp.doors)
+                seen += 1
+                if far.kind in PASSAGE_OPEN_KINDS:
+                    assert not leaf, f"{lb} 走道口接 {far.name} 不該有門扇"
+                else:
+                    assert leaf and getattr(op, "passage_door", False), (
+                        f"{lb} 走道口接 {far.name}(房間)卻沒有門")
+    assert seen >= 6, f"撈到的走道口只有 {seen} 個 —— 換一組尺寸,不要刪測試"
+
+
+@pytest.mark.parametrize("bw,bd", [(4500.0, 14000.0), (6000.0, 15000.0),
+                                   (7000.0, 15500.0)])
+def test_every_bedroom_has_a_real_door(bw, bd):
+    """★★ 每一間臥室的門口都要有**門扇**,不是一個洞(使用者 2026-09-05)。
+
+    ⚠️ 判準要問「有沒有掛 DoorPlacement」,不是「牆上有沒有洞口」—— 開放通道在
+    `spec.walls` 裡就是一個 `Opening(kind="door")`,只數洞口的話一間四面開口的
+    臥室也會通過,這條等於沒驗。
+    """
+    from shapely.geometry import Point, Polygon
+
+    floors = generate_narrow_building(bw, bd, floors=3, seed=0)
+    for lb, sp in floors:
+        leaves = []
+        for dp in sp.doors:
+            w = sp.walls[dp.wall_index]
+            if dp.opening_index < len(w.openings):
+                leaves.append(Point(*w.point_at(
+                    w.openings[dp.opening_index].position)))
+        for r in sp.rooms:
+            if r.kind not in ("bedroom", "master_bedroom", "elder_room"):
+                continue
+            edge = Polygon(r.points).buffer(120.0)
+            assert any(edge.contains(p) for p in leaves), (
+                f"{lb} 的 {r.name} 沒有門扇(門口是個洞)")

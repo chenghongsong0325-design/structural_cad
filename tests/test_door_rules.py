@@ -275,3 +275,56 @@ def test_swing_obstacles_builds_wall_bodies_once():
     got = [b.area for b in bodies]
     for a in want:
         assert any(abs(a - g) < 1.0 for g in got), "少了某道牆的實體"
+
+
+@pytest.mark.parametrize("bw,bd", SIZES_NARROW + [(4500.0, 14000.0)])
+def test_doors_push_into_the_room_and_hinge_on_the_outer_wall(bw, bd):
+    """★★ 門一律**往內推**,而且**開了之後貼著外牆那一側**(使用者 2026-09-05)。
+
+    兩件事是分開的:
+      · 往哪一側掃(`swing`)= 推進哪一間 —— 要推進「要進去的那一間」,不是把門
+        推到走道/客廳這種共用動線上,大門更不能往室外開。
+      · 鉸鏈在哪一端(`hinge`)= 門扇開到底之後立在哪 —— 挑離外牆近的那一端,
+        打開的門就貼著外牆,不會站在房間中間把空間切成兩半。
+
+    ⚠️ 這是**偏好不是硬規則**:門扇會撞到東西的時候仍然以「撞得最少」為準
+    (撞遍了才改橫拉門)。所以這條測試只驗**開得了的平開門** —— 橫拉門沒有
+    開啟弧線,不在這條的射程內。
+    """
+    from shapely.geometry import Polygon
+
+    from src.design.layout.door_rules import (_door_sides, _hinge_wall_dist,
+                                              _swing_into_rank, _swing_sector,
+                                              _swing_obstacles,
+                                              SWING_OVERLAP_TOL)
+    from src.design.layout.plan_check import building_env
+
+    floors = generate_narrow_building(bw, bd, floors=3, seed=0)
+    checked = 0
+    for lb, sp in floors:
+        env = building_env(sp)
+        polys = [(r, Polygon(r.points)) for r in sp.rooms]
+        for dp in sp.doors:
+            w = sp.walls[dp.wall_index]
+            if dp.opening_index >= len(w.openings):
+                continue
+            op = w.openings[dp.opening_index]
+            if op.kind != "door" or getattr(dp.door, "sliding", False):
+                continue
+            # 撞得到東西的門不吃這條(它是被實體逼著轉的,不是被偏好挑的)。
+            obs = _swing_obstacles(sp, w, op)
+            sec = _swing_sector(w, op, dp.door)
+            if sum(sec.intersection(o).area
+                   for o in obs if o.intersects(sec)) > SWING_OVERLAP_TOL:
+                continue
+            checked += 1
+            sides, _ext = _door_sides(sp, w, op, polys, env)
+            into = sides[0 if dp.door.swing == "out" else 1]
+            other = sides[1 if dp.door.swing == "out" else 0]
+            assert _swing_into_rank(into) <= _swing_into_rank(other), (
+                f"{lb} 有一扇門往外推(推向 "
+                f"{into.kind if into else '室外'})")
+            dist = _hinge_wall_dist(w, op, env)
+            assert dist[dp.door.hinge] <= min(dist.values()) + 1.0, (
+                f"{lb} 有一扇門的鉸鏈在離外牆遠的那一端(開了會擋在房間中間)")
+    assert checked >= 8, f"只驗到 {checked} 扇平開門 —— 換一組尺寸,不要刪測試"

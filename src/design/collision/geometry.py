@@ -136,6 +136,10 @@ def door_swing_obstacles(spec) -> list[Obstacle]:
         for op in wall.openings:
             if not getattr(op, "is_passage", False):
                 continue
+            # 走道口接的是房間時會裝門扇(`passage_door`),它的門弧已經在
+            # spec.doors 裡算過一次了 —— 再補一塊留空區就是同一件事兩把尺。
+            if getattr(op, "passage_door", False):
+                continue
             cx, cy = wall.point_at(op.position)
             ux, uy = wall.unit_vector
             nx, ny = -uy, ux
