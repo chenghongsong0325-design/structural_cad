@@ -202,7 +202,7 @@ def _narrow_to_building(named_floors, floor_height: float) -> BuildingSpec:
 def _townhouse_lot(house, min_w: float, max_w: float):
     """這個需求是不是「連棟街屋基地」?是的話回 `zoning.TownhouseLot`,否則 None。
 
-    判準是**面寬**:3.5~8m 的基地退完側院就不成立(5m 退掉左右各 2m 只剩 1m),
+    判準是**面寬**:4~8m 的基地退完側院就不成立(5m 退掉左右各 2m 只剩 1m),
     在台灣只可能是與鄰戶共壁的連棟街屋。再寬的基地兩種都可能,維持原本的獨棟
     規則(四面退縮),免得既有尺寸的行為整批改變。
 
@@ -220,7 +220,7 @@ def _townhouse_lot(house, min_w: float, max_w: float):
 
 
 def generate_building_auto(brief: BuildingBrief) -> BuildingSpec:
-    """依建築面寬自動選骨架:**窄面寬單戶透天**(建築寬 3.5~8m)走 narrow_house
+    """依建築面寬自動選骨架:**窄面寬單戶透天**(建築寬 4~8m)走 narrow_house
     的前後串聯+中段核+單樓梯骨架;其餘走既有兩帶式 generate_building。
 
     ⚠️ 只有單戶透天(HouseBrief)才有窄面寬版;窄透天暫不含地下室(basements 忽略)。

@@ -28,7 +28,7 @@ from src.design.layout.door_rules import (
 from src.design.layout.narrow_house import SETBACK, generate_narrow_building
 from src.design.layout.shallow_house import generate_shallow_building
 
-SIZES_NARROW = [(3500.0, 11000.0), (5000.0, 12000.0), (7000.0, 14000.0)]
+SIZES_NARROW = [(4000.0, 11000.0), (5000.0, 12000.0), (7000.0, 14000.0)]
 SIZES_SHALLOW = [(5000.0, 5000.0), (7000.0, 6000.0), (9000.0, 8000.0)]
 
 

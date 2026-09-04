@@ -76,7 +76,7 @@ def test_no_storage_room_at_any_size():
     ⚠️ **主臥的更衣室不在此列**(2026-08-27 的 2F 參考平面上就有一間):它是
     刻意切出來、有人用、而且是主臥的附屬空間 —— 這條規則擋的是「吃剩的空格
     被隔成一間沒人用的小房」,判準因此改成「storage 只能是更衣室」,不是放寬。"""
-    for bw in (3500.0, 5000.0, 7000.0):
+    for bw in (4000.0, 5000.0, 7000.0):
         for bd in (10500.0, 12000.0, 16000.0):
             for lb, spec in generate_narrow_building(bw, bd, floors=3):
                 junk = [r for r in spec.rooms if r.kind == "storage"
@@ -295,11 +295,11 @@ def test_too_narrow_is_rejected():
 def test_min_depth_depends_on_width():
     """★ 面寬越寬,後段房間越「寬而淺」(像走廊)→ 6m 以上的面寬要多留進深。
 
-    窄的 3.5m 在 9.5m 進深就成立;7m 面寬同樣進深會生出長寬比 3.9 的後臥室。"""
+    窄的 4.0m 在 9.5m 進深就成立;7m 面寬同樣進深會生出長寬比 3.9 的後臥室。"""
     from src.design.layout.narrow_house import min_depth_for
-    assert min_depth_for(3500) == 9500.0
+    assert min_depth_for(4000) == 9500.0
     assert min_depth_for(7000) == 10500.0
-    generate_narrow_house(3500, 9500)                      # 窄的可以
+    generate_narrow_house(4000, 9500)                      # 窄的可以
     with pytest.raises(ValueError):
         generate_narrow_house(7000, 9500)                  # 寬的不行
 
@@ -324,20 +324,24 @@ def test_deep_lot_caps_building_and_leaves_yards():
     assert site_d == 18000 + 2 * spec.setback              # 基地仍是原尺寸
 
 
-# ── 定義域全掃描:下限放寬(5×11 → 3.5×9.5)後,整個定義域仍要零錯誤零警告 ──
-@pytest.mark.parametrize("bw", [3500.0, 4000.0, 5000.0, 6000.0, 7000.0, 8000.0])
+# ── 定義域全掃描:整個定義域仍要零錯誤零警告 ────────────────────────────────
+@pytest.mark.parametrize("bw", [4000.0, 5000.0, 6000.0, 7000.0, 8000.0])
 @pytest.mark.parametrize("bd", [11000.0, 13000.0, 15000.0, 18000.0])
 @pytest.mark.slow
 def test_whole_domain_passes_both_gates(bw, bd):
     """★★ 定義域內每個尺寸都要過**兩道關卡**,而且不得有「太小」類的警告。
 
-    下限是實測出來的、不是估的:再窄(3.0m)或再淺(9.0m)就會出臥室短邊不足、
-    房間細長這類警告 —— 這條測試就是那條線的看門人,誰把常數再往下調就會紅。
-    (room_oversize「房間過大」是另一個方向的設計警告,與下限無關,不在此列。)"""
+    下限是實測出來的、不是估的:再淺(9.0m)就會出臥室短邊不足、房間細長這類
+    警告 —— 這條測試就是那條線的看門人,誰把常數再往下調就會紅。
+    (room_oversize「房間過大」是另一個方向的設計警告,與下限無關,不在此列。)
+
+    ⚠️ 面寬下限 3.5 → **4.0m**(2026-09-04,使用者:「樓梯只要做折返梯就好」)。
+    折返梯比原本備用的單跑直梯寬 0.9m,而那 0.9m 正是「廁所|樓梯|走道」並排
+    時走道的位置 —— 3.5~3.9m 因此排不下了。這是幾何,不是參數,見 MIN_WIDTH。"""
     from src.design.layout.code_check import check_code_building
     from src.design.layout.plan_check import check_building
     from src.design.layout.narrow_house import MIN_DEPTH, MIN_WIDTH
-    assert (MIN_WIDTH, MIN_DEPTH) == (3500.0, 9500.0)
+    assert (MIN_WIDTH, MIN_DEPTH) == (4000.0, 9500.0)
 
     floors = generate_narrow_building(bw, bd, floors=3)
     plan = check_building(floors)            # 外框由 spec 自推(深基地封頂留院子)
@@ -436,7 +440,7 @@ def test_patio_window_counts_as_daylight():
     assert all(_faces_daylight(w, env, pats) for w in inner),         "有窗開在內牆上,而且連天井都不算 → 那扇窗是白開的"
 
 
-@pytest.mark.parametrize("bw", [3500.0, 4450.0, 5450.0])
+@pytest.mark.parametrize("bw", [4000.0, 4450.0, 5450.0])
 def test_patio_does_not_buy_extra_depth(bw):
     """★★ **天井不會讓你蓋得更深**(2026-08-26 實測,別再試一次)。
 
@@ -462,16 +466,22 @@ def test_patio_does_not_buy_extra_depth(bw):
 def test_patio_costs_floor_area_every_level():
     """★ 天井是貫穿到屋頂的洞:**每一層**都少掉那塊樓地板,不是只有一層。
 
-    ⚠️ 尺寸換成天井真的留得住的那一組(理由同上一條測試)。"""
+    ⚠️ 尺寸換成天井真的留得住的那一組(理由同上一條測試)。
+    ⚠️ 判準原本是「開天井那版比不開那版每層少 ≥2.5㎡」。那是拿**兩棟不同的
+       建築**在比:留柱位是退讓階梯,而開天井會讓服務格跳過浴廁退讓 → 同一個
+       面寬留得起的柱位變少 → 開天井那版的建築反而**比較寬**,樓地板不減反增
+       (實測 54.2 → 57.8㎡)。改成直接量天井本人:每一層都有、每層都有那麼大、
+       而且三層在同一個位置(貫穿到屋頂才叫天井)。這比原本的差值更貼近意圖。"""
     from shapely.geometry import Polygon as _P
-    def area(patio):
-        floors = generate_narrow_building(4500.0, 14450.0, floors=3, seed=7,
-                                          patio=patio, core_style="default")
-        return [sum(_P(r.points).area for r in sp.rooms if r.kind != "patio")
-                for _l, sp in floors]
-    without, with_ = area(False), area(True)
-    for a, b in zip(without, with_):
-        assert a - b > 2.5e6, (a, b)       # 每層都少掉 ≥2.5㎡
+    floors = generate_narrow_building(4500.0, 14450.0, floors=3, seed=7,
+                                      patio=True, core_style="default")
+    seen = set()
+    for lb, sp in floors:
+        pats = [r for r in sp.rooms if r.kind == "patio"]
+        assert len(pats) == 1, (lb, "這一層沒有天井 → 它就不是貫穿的洞")
+        assert _P(pats[0].points).area > 2.5e6, (lb, "每層少掉的樓地板 <2.5㎡")
+        seen.add(tuple(sorted((round(x), round(y)) for x, y in pats[0].points)))
+    assert len(seen) == 1, ("天井每層位置不一樣,那是三個洞不是一個豎井", seen)
 
 
 # ── 進深 12~18m(使用者 2026-08-25:「15 米左右是主流」)─────────────────────
@@ -511,7 +521,7 @@ def test_all_floors_share_one_depth(bw):
     assert len(envs) == 1, envs
 
 
-@pytest.mark.parametrize("bw", [3500.0, 4500.0, 5500.0, 6500.0, 8000.0])
+@pytest.mark.parametrize("bw", [4000.0, 4500.0, 5500.0, 6500.0, 8000.0])
 @pytest.mark.parametrize("bd", [15000.0, 18000.0])
 def test_deep_lots_still_pass_daylight(bw, bd):
     """★★ 上限放寬之後,深基地仍要過 §40 —— 表估太樂觀時由 `_fit_depth` 收回來。
@@ -547,10 +557,49 @@ def test_service_slot_never_wider_than_a_bathroom_needs():
     浴廁用不到那麼寬,多出來的會被 `_core` 當成「空格」塞給隔壁居室,反而把那間
     房撐得更大;多的寬度要給樓梯間(=旁邊的通道變寬),前後段才切得動。"""
     from src.design.layout.narrow_house import BATH_MAX_W, _core_widths
-    for bw in (3500.0, 4450.0, 5450.0, 6450.0, 7450.0):
+    for bw in (4000.0, 4450.0, 5450.0, 6450.0, 7450.0):
         svc, sw = _core_widths(bw)
         assert abs(svc + sw - bw) < 1e-6, bw          # 兩格要剛好鋪滿面寬
         assert svc <= BATH_MAX_W + 1e-6, (bw, svc)
+
+
+def test_passage_hard_min_matches_the_mouth_rule():
+    """★★ 量走道的尺,要跟**開通道口**那支用的尺對得起來(同一件事兩把尺,第七次)。
+
+    走道兩端 2026-09-03 起改成開放通道口(`_open_passage_mouth`),而那支開得成
+    的條件是「這一段扣掉牆垛還有一扇內門那麼寬」。走道判準卻還停在 750(一扇門
+    的寬度)—— 走道 750~864 的樓層開不出通道口,前後段照樣斷開,而量走道的那把
+    尺一路回報「有走道」。三個面寬(3.8/4.0/4.2m)實測全中。
+
+    釘的是**算式**,不是那個數字:哪天門寬或牆垛改了,兩邊要一起動。"""
+    from src.design.layout.narrow_house import (INTERIOR_DOOR_WIDTH,
+                                                PASSAGE_HARD_MIN,
+                                                PASSAGE_MOUTH_PIER, WALL_GAP)
+    assert PASSAGE_HARD_MIN == (INTERIOR_DOOR_WIDTH + PASSAGE_MOUTH_PIER
+                                - WALL_GAP)
+
+
+def test_ultra_narrow_wc_can_take_a_door():
+    """★★ 浴廁最後一級的寬度是「**開得出一扇門**」,不是書上的馬桶區 80cm。
+
+    這間浴廁只有南北兩面牆開得了門(東面是梯段、西面是共同壁),牆長就是它的
+    寬度 —— 門 850 + 兩側牆角淨距 90×2 = 1030。第一版照書上訂 800,實測 3.5/3.6m
+    直接 `room_no_door` + `floor_split`(門根本開不出來)。
+    **書上的數字要先分清楚它在講設備還是在講可用性。**
+
+    第二個 assert 守住「這一級只在真的需要時才用」:5m 面寬的浴廁不得退到這麼窄。
+    """
+    from src.design.layout.narrow_house import (BATH_TIGHT_W, BATH_WC_W,
+                                                DOOR_CORNER_MIN,
+                                                INTERIOR_DOOR_WIDTH,
+                                                MIN_WIDTH, PASSAGE_HARD_MIN,
+                                                _core_widths, _hall_of)
+    assert BATH_WC_W == INTERIOR_DOOR_WIDTH + 2 * DOOR_CORNER_MIN
+    svc, sw = _core_widths(MIN_WIDTH)                  # 最窄的面寬(留柱位 0)
+    assert svc >= BATH_WC_W - 1e-6, ("廁所窄到開不出門", svc)
+    assert _hall_of(sw) >= PASSAGE_HARD_MIN - 1e-6, ("沒有走道", sw)
+    svc5, _ = _core_widths(5000.0)
+    assert svc5 >= BATH_TIGHT_W, ("一般面寬也退到窄廁所了", svc5)
 
 
 def test_band_split_leaves_wall_for_the_west_room_door():
@@ -796,13 +845,21 @@ def test_garage_plans_pass_both_gates(bw, bd):
 
 
 def test_garage_needs_a_deeper_building():
-    """★★ 車庫要多一個車位長的進深(≥13.1m);3.5m 面寬的採光上限只有 12.5m,
-    放不下 —— 這是**真實的限制**,要擋得明白,不是默默生一張擠壞的圖。"""
-    from src.design.layout.narrow_house import max_depth_for, min_depth_for
+    """★★ 車庫要多一個車位長的進深(≥13.1m),進深不夠要擋得明白,不是默默生
+    一張擠壞的圖。
+
+    ⚠️ 這條原本釘的是「3.5m 面寬的採光上限 12.5m < 車庫要的 13.1m,所以那個
+    面寬**怎麼樣都配不起車庫**」。面寬下限升到 4.0m 之後(2026-09-04 只做折返
+    梯),定義域裡**每個面寬的採光上限都撐得住車庫** —— 那個情境不存在了,
+    釘著它等於釘一個不會發生的情境(本檔踩過的坑)。改釘還活著的那條:
+    同一個面寬,配車庫要的進深就是比不配深,不夠深就 raise。"""
+    from src.design.layout.narrow_house import (MIN_WIDTH, max_depth_for,
+                                                min_depth_for)
     assert min_depth_for(4450.0, garage=True) > min_depth_for(4450.0)
-    assert max_depth_for(3500.0) < min_depth_for(3500.0, garage=True)
+    # 定義域內每個面寬的採光上限都容得下車庫(上面那個情境消失的理由)。
+    assert max_depth_for(MIN_WIDTH) >= min_depth_for(MIN_WIDTH, garage=True)
     with pytest.raises(ValueError, match="車庫"):
-        generate_narrow_building(3500.0, 12500.0, floors=3, garage=True)
+        generate_narrow_building(4000.0, 12000.0, floors=3, garage=True)
 
 
 def test_single_floor_house_refuses_a_garage():
@@ -1333,7 +1390,7 @@ def test_restored_bed_gets_its_nightstands(bw, bd, seed):
 # ---------------------------------------------------------------------------
 # 樓梯與走道(使用者 2026-08-27:「這個樓梯做得不太對…沒有路可以到廚房」)
 # ---------------------------------------------------------------------------
-_PASSAGE_CASES = [(3600.0, 12500.0), (4000.0, 13450.0), (4500.0, 14450.0),
+_PASSAGE_CASES = [(4000.0, 13450.0), (4200.0, 13950.0), (4500.0, 14450.0),
                   (5450.0, 15450.0), (6000.0, 15000.0), (8000.0, 16450.0)]
 
 
@@ -1372,41 +1429,29 @@ def test_front_and_rear_connect_without_walking_on_the_stair(bw, bd):
         assert _front_to_rear_walkable(spec), label
 
 
-@pytest.mark.parametrize("bw,bd", [(3600.0, 12500.0), (3800.0, 12500.0),
-                                   (4000.0, 13450.0), (4300.0, 13450.0),
-                                   (4500.0, 14450.0), (5000.0, 14450.0)])
-def test_narrow_frontage_switches_to_a_straight_flight(bw, bd):
-    """★★ 3.6~5.0m 面寬改用**單跑直梯**(使用者的參考平面圖畫的就是這種)。
-
-    折返梯要兩個梯段並排,這個面寬連法定下限(2×750+100=1600)配上最窄的浴廁
-    (1200)都留不下一條**開得出門**的走道 —— 幾何上兜不攏,不是擺法的問題。
-    單跑直梯只有一個梯段,省下的 0.9m 正好是那條走道。代價是踏面從 25cm 縮到
-    21~22cm。
-
-    ⚠️ 上界從 4.3m 抬到 5.0m,是走道判準改嚴的連帶結果:走道要**開得出一扇門**
-    (`PASSAGE_DOOR_NEED` + 餘裕),不是「走得過去」就好。剛好夠走(750~1000)的
-    走道,後段那扇門的合法窗口只剩幾十 mm,補門機制只好改走浴廁 → 動線變成
-    「穿過廁所才到得了餐廚」。"""
-    from src.design.layout.narrow_house import MIN_TREAD
-    from src.drafting.stair import Stair, UStair
-    # 「浴廁 | 樓梯 | 走道」三條並排擠不擠得下,是**預設核**的問題。
-    for label, spec in generate_narrow_building(bw, bd, floors=3, seed=7,
-                                                core_style="default"):
-        st = spec.stairs[0]
-        assert isinstance(st, Stair) and not isinstance(st, UStair), label
-        assert st.tread >= MIN_TREAD - 1e-6, (label, st.tread)   # 仍守法定下限
-
-
-@pytest.mark.parametrize("bw,bd", [(5450.0, 14450.0), (6000.0, 15000.0),
+@pytest.mark.parametrize("bw,bd", [(4000.0, 13450.0), (4200.0, 13950.0),
+                                   (4500.0, 14450.0), (5000.0, 14450.0),
+                                   (5450.0, 14450.0), (6000.0, 15000.0),
                                    (8000.0, 16450.0)])
-def test_wider_frontage_keeps_the_two_flight_stair(bw, bd):
-    """★★ 面寬夠的時候**不要**換成直梯 —— 折返梯比較好走(踏面 25cm),而且省進深。
+@pytest.mark.parametrize("core", ["default", None])
+def test_every_stair_is_a_switchback(bw, bd, core):
+    """★★ 使用者 2026-09-04:「樓梯只要做折返梯就好,其他樓梯幫我移除」。
 
-    釘住「換梯型只是窄面寬的備案」,不是全面改掉。分界線在 5.45m:那是第一個
-    「梯段縮到 1800 之後,旁邊還留得下一條開得出門的走道」的面寬。"""
+    ⚠️ 這條**取代**了原本兩條相反的測試(「3.6~5.0m 面寬改用單跑直梯」與
+    「面寬夠就別換直梯」)。當時直梯是窄面寬擠出走道的唯一辦法 —— 折返梯要兩個
+    梯段並排,少的那 0.9m 正好是走道的位置。使用者決定統一梯型之後,那個手段
+    連同 `drafting.stair.Stair` 一起拿掉了,代價寫在 `narrow_house.MIN_WIDTH`:
+    面寬下限 3.5 → 4.0m。
+
+    釘兩件事:每一層的樓梯都是折返梯,而且踏面仍守法定下限(§33)。
+    """
+    from src.design.layout.narrow_house import MIN_TREAD
     from src.drafting.stair import UStair
-    for label, spec in generate_narrow_building(bw, bd, floors=3, seed=7):
-        assert isinstance(spec.stairs[0], UStair), label
+    for label, spec in generate_narrow_building(bw, bd, floors=3, seed=7,
+                                                core_style=core):
+        for st in spec.stairs:
+            assert isinstance(st, UStair), (label, type(st).__name__)
+            assert st.tread >= MIN_TREAD - 1e-6, (label, st.tread)
 
 
 def test_stair_landing_is_only_as_deep_as_it_needs_to_be():
@@ -1458,7 +1503,8 @@ def test_passage_hugs_the_party_wall(bw, bd):
     界牆邊。
 
     另外釘住走道的**寬度判準是「開得出一扇門」**(`PASSAGE_DOOR_NEED`),
-    不是「人擠得過去」——見 `test_narrow_frontage_switches_to_a_straight_flight`。
+    不是「人擠得過去」—— 擠得過去但開不出通道口的走道等於沒有走道
+    (見 `narrow_house.PASSAGE_HARD_MIN`)。
     """
     from src.design.layout.narrow_house import PASSAGE_DOOR_NEED
     from src.design.layout.plan_check import building_env
@@ -1502,6 +1548,14 @@ def test_a_crowded_wall_repacks_all_its_doors_together():
     幾何一動樣本就沒了(120 組隨機尺寸一個都撈不到)—— 那時這條規則等於沒人守。
     改成**在產線跑的時候攔截**:確認這件事真的還會發生,而且發生的當下每一項
     不變量都成立。第一個 assert 就是守門的:撈不到樣本要換尺寸,不是刪掉測試。
+
+    ⚠️ 2026-09-04 換尺寸 + 把「一道牆上要有 ≥3 個洞口」降成 **≥2**。兩件事都是
+    幾何真的變了,不是為了讓測試過:①梯型統一成折返梯之後面寬下限升到 4.0m,
+    舊樣本(5.2m 車庫版)的那道牆不再排得出擠不動的門;②走道兩端 2026-09-03
+    起改成**開放通道口**,而通道口在重排時是**不動的固定障礙**(跟柱同級)——
+    以前那道牆上的三扇門,現在有一扇是通道口,可動的就只剩兩扇(120 組隨機尺寸
+    掃過,重排到的牆**最多就是 2 個洞口**)。重排的四項不變量(順序、鄰室、
+    不壓柱、不卡牆角)一條都沒放寬。
     """
     from src.design.layout import narrow_house as nh
     seen = []
@@ -1540,13 +1594,13 @@ def test_a_crowded_wall_repacks_all_its_doors_together():
     try:
         # ⚠️ 樣本是在**預設核**這組幾何下撈到的(門擠在同一道牆上)。這條規則
         #    本身與核的款式無關,但撈得到樣本的尺寸與核有關 —— 核一換就撈不到。
-        nh.generate_narrow_building(5200.0, 14500.0, floors=3, seed=33,
-                                    garage=True, core_style="default")
+        nh.generate_narrow_building(4500.0, 13500.0, floors=3, seed=483,
+                                    core_style="default")
     finally:
         nh._repack_openings_on_wall = orig
 
     assert seen, "產線裡撈不到「整排洞口一起推」的樣本了 —— 換一組尺寸,不要刪測試"
-    assert any(r["n"] >= 3 for r in seen), [r["n"] for r in seen]
+    assert any(r["n"] >= 2 for r in seen), [r["n"] for r in seen]
     for r in seen:
         assert r["moved"], r            # 真的推了(不是原地不動也回 True)
         assert r["order_kept"], r       # 左右順序沒亂
@@ -1622,10 +1676,17 @@ def building_env_of(spec):
 def test_reference_core_falls_back_when_it_does_not_fit():
     """★★ 加一種排法**不得**讓原本生得出來的案子生不出來。
 
-    參考圖版要「橫置樓梯 + 天井 + 廁所 + 走道」四樣東西並排,最窄的面寬排不下 ——
-    那時要靜靜退回預設核,不是 raise(本檔那條鐵則,這已經是第五次登場)。"""
+    參考圖版要「橫置樓梯 + 天井 + 廁所 + 走道」四樣東西並排,排不下時要靜靜退回
+    預設核、不是 raise(本檔那條鐵則,第五次登場)。
+
+    ⚠️ 面寬下限升到 4.0m 之後(2026-09-04 只做折返梯),**定義域裡每個尺寸 ref
+       都排得下** —— 原本釘的 3.6m 已經不在定義域內。整棟那一層改釘「最窄的面寬
+       指名 ref 仍然生得出合格的圖」,退不退得動則直接問 `_core_ref` 本人:
+       核帶窄到跑不完橫置樓梯時要回 None(靜靜退讓的入口)。"""
+    from src.design.layout.narrow_house import _ref_core_plan
     from src.design.layout.plan_check import check_building
-    floors = generate_narrow_building(3600.0, 12500.0, floors=3, seed=7,
+    assert _ref_core_plan(0.0, 3600.0, 0.0, 4400.0) is None
+    floors = generate_narrow_building(4000.0, 13450.0, floors=3, seed=7,
                                       core_style="ref")
     assert check_building(floors).ok
 
@@ -1694,7 +1755,7 @@ def test_mid_core_keeps_the_stair_running_along_the_depth(bw, bd):
 def test_mid_core_falls_back_when_it_does_not_fit():
     """★★ 加一種排法不得讓原本生得出來的案子生不出來(本檔鐵則,第六次)。"""
     from src.design.layout.plan_check import check_building
-    floors = generate_narrow_building(3600.0, 12500.0, floors=3, seed=7,
+    floors = generate_narrow_building(4000.0, 13450.0, floors=3, seed=7,
                                       core_style="mid")
     assert check_building(floors).ok
 
@@ -1718,7 +1779,7 @@ def test_opening_a_patio_never_breaks_the_floor_apart():
     # ⚠️ 一定要明寫 `core_style="default"`:天井跳過浴廁退讓是**預設核**的幾何。
     #    交給自動挑的話 3.6m 會落到 `mid`(那款本來就沒有天井),這條測試就變成
     #    「用一個不會開天井的核去驗證天井退讓」—— 永遠綠,而且什麼都沒驗到。
-    floors = generate_narrow_building(3600.0, 12500.0, floors=3, bedrooms=3,
+    floors = generate_narrow_building(4000.0, 13450.0, floors=3, bedrooms=3,
                                       variant=v, patio=True,
                                       core_style="default")
     plan = check_building(floors)
@@ -1912,16 +1973,24 @@ def test_reserving_column_room_must_not_eat_the_chosen_core():
     assert [_core_of(sp) for _lb, sp in floors] == ["ref"] * 3
 
 
-@pytest.mark.parametrize("bw,bd", [(3500.0, 12500.0), (3600.0, 12500.0),
-                                   (3800.0, 12500.0)])
-def test_too_narrow_for_the_reference_core_falls_back_to_mid_not_default(bw, bd):
+def test_reference_core_falls_back_to_mid_before_default():
     """★★ 排不下時退到 `mid`,不是一路退回 `default`。
 
-    橫置樓梯要一整段面寬跑得完,3.5~3.9m 的核帶只有 2.2m、怎麼縮都跑不完。但
-    「廁所的門開在走道上」那件事 `mid` 也做得到 —— 退到 `mid` 比退到 `default`
-    (廁所的門開向餐廚/車庫)接近使用者要的格式。"""
-    floors = generate_narrow_building(bw, bd, floors=3, seed=0)
-    assert [_core_of(sp) for _lb, sp in floors] == ["mid"] * 3
+    橫置樓梯要一整段面寬跑得完;跑不完的話「廁所的門開在走道上」那件事 `mid`
+    也做得到,退到 `mid` 比退到 `default`(廁所的門開向餐廚/車庫)接近使用者
+    要的格式。
+
+    ⚠️ 原本釘的是 3.5/3.6/3.8m 三個尺寸實際生出來會落到 `mid`。面寬下限升到
+       4.0m(2026-09-04 只做折返梯)之後,**定義域裡 ref 每個尺寸都排得下** ——
+       那三個參數已經不在定義域內,而釘一個不會發生的情境等於什麼都沒驗
+       (本檔踩過的坑)。改釘還活著的兩件事:退讓的**順序**,以及「ref 跑不完
+       的核帶寬度,mid 還排得下」這個分界本身。
+    """
+    from src.design.layout.narrow_house import (CORE_STYLE_STEPS,
+                                                _mid_core_plan, _ref_core_plan)
+    assert CORE_STYLE_STEPS == ("ref", "mid", "default")
+    assert _ref_core_plan(0.0, 3600.0, 0.0, 4400.0) is None
+    assert _mid_core_plan(0.0, 4400.0, 0.0, 4400.0) is not None
 
 
 @pytest.mark.parametrize("bw,bd", [(7000.0, 15550.0), (8000.0, 16450.0)])

@@ -173,22 +173,16 @@ def _faces_daylight(wall, env, patios) -> bool:
 
 def _stair_dims(stair, floor_height: float):
     """→ (級高, 級深, 梯段淨寬, 平臺深);拿不到的回 None。"""
+    # ⚠️ 全專案只有折返梯一種梯型(使用者 2026-09-04)。以前這裡還有一支
+    #    單跑直梯的分支(它沒有折返平臺,`landing` 回 None = 不檢查那條)——
+    #    梯型統一之後拿掉了,§33 的平臺深度因此**每一座樓梯都會被檢查到**。
     tread = getattr(stair, "tread", None)
     spf = getattr(stair, "steps_per_flight", None)
-    steps = getattr(stair, "steps", None)
-    if spf:                                     # UStair:兩段折返
-        total = spf * 2
-        width = getattr(stair, "flight_width", None)
-        landing = getattr(stair, "landing_depth", None)
-    elif steps:                                 # Stair:單跑直梯
-        total = steps
-        width = getattr(stair, "width", None)
-        # ⚠️ 單跑直梯**沒有折返平臺**:頂端那段只是梯段與牆之間的空隙,不是 §33
-        #    講的「平臺」(平臺深 ≥梯段寬 是針對轉向/折返處)。拿空隙去比梯段寬,
-        #    會把每一座直梯都誤判成違規(實測兩帶式透天全中)。故回 None = 不檢查。
-        landing = None
-    else:
+    if not spf:
         return None
+    total = spf * 2                             # 折返梯:兩段
+    width = getattr(stair, "flight_width", None)
+    landing = getattr(stair, "landing_depth", None)
     if not total or not tread or not width:
         return None
     return floor_height / total, tread, width, landing

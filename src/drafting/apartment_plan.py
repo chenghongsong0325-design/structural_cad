@@ -75,7 +75,7 @@ from src.drafting.annotations import (
     place_north_arrow,
 )
 from src.drafting.room import Room, draw_room_label, draw_room_tag
-from src.drafting.stair import Stair, UStair, draw_stair, draw_u_stair
+from src.drafting.stair import UStair, draw_u_stair
 from src.drafting.titleblock import (
     A3_HEIGHT,
     A3_WIDTH,
@@ -481,12 +481,11 @@ def draw_floor_plan(msp, spec: FloorPlanSpec, layers: dict[str, str]) -> None:
         ents += list(draw_room_tag(msp, room, layers["A-TEXT"]) or [])
         label_groups.append((room, ents))
 
-    # (7.5) 樓梯(踏步線/折斷線/方向箭頭,HANDRAIL 層;直梯或折返梯)。
+    # (7.5) 樓梯(踏步線/折斷線/方向箭頭,HANDRAIL 層)。
+    # ⚠️ 只有折返梯一種梯型(使用者 2026-09-04:「樓梯只要做折返梯就好」)——
+    #    以前這裡還要分流到單跑直梯的 draw_stair,那個梯型已經整批拿掉。
     for stair in spec.stairs:
-        if isinstance(stair, UStair):
-            draw_u_stair(msp, stair, layers)
-        else:
-            draw_stair(msp, stair, layers)
+        draw_u_stair(msp, stair, layers)
 
     # (7.55) 樓梯下方的廁所:虛線外框 + 室名 + 馬桶/洗手台(見 under_stair_wc)。
     #        畫在樓梯**之後**,線才壓得住踏step、看得出是「在樓梯底下」。
@@ -702,9 +701,12 @@ def demo_spec() -> FloorPlanSpec:
         doors=doors,
         windows=windows,
         # 樓梯:放在「樓梯間」牆內(x6600~8000 × y2000~4800,內淨空約 1280×2665)。
-        # 直梯往北上樓,9 級 × 260 = 2340 ≤ 2500。
-        stairs=[Stair(origin=(6680, 2150), width=1200, length=2500,
-                      direction="north", steps=9, tread=260)],
+        # 折返梯往北上樓:每段 5 級 × 260 = 1300 梯跑 + 1200 端部平台 = 2500。
+        # ⚠️ 梯井縫取 80(不是預設 100):單一梯段淨寬要 ≥600,而樓梯間內淨只有
+        #    1280 —— (1280−100)/2 = 590 就建不起來了。
+        stairs=[UStair(origin=(6660, 2150), width=1280, length=2500,
+                       direction="north", steps_per_flight=5, tread=260,
+                       well_gap=80)],
         # 電梯:疊在樓梯間正上方(井道中心線 x6600~8000 × y4800~7000,RC20 牆),
         # 門洞開東面(通餐廳);井牆自動併入牆聯集。
         elevators=[Elevator(origin=(6600, 4800), width=1400, depth=2200,

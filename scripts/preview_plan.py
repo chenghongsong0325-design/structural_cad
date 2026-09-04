@@ -61,7 +61,7 @@ def main() -> int:
                     help="直接指定建蔽率 0~1(比分區的常見值可信),同上")
     ap.add_argument("--garage", action="store_true",
                     help="1F 做車庫(前段整段停車 + 臨路捲門;客廳往上挪到 2F)。"
-                         "⚠️ 需要建築進深 ≥13.1m,面寬也要夠(3.5m 放不下)")
+                         "⚠️ 需要建築進深 ≥13.1m")
     ap.add_argument("--mid-core", action="store_true",
                     help="中段核改成**樓梯|廁所|走道**:服務格搬到樓梯與走道中間,"
                          "廁所的門直接開在走道上(樓梯仍順著進深跑)")

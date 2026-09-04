@@ -121,7 +121,7 @@ def _stair_flight(msp, stair, axis: str, e0: float, e1: float,
                   layer: str, origin: Point) -> None:
     """一段樓梯的剖面示意:階梯折線(踏步)+ 底下平行的梯板斜線。
 
-    stair 鴨子型別吃 Stair(單跑,steps)或 UStair(折返,steps_per_flight×2);
+    stair 是折返梯(UStair):總級數 = steps_per_flight × 2;
     u 範圍 = 樓梯符號在剖切方向上的投影(origin + width/length 依方向)。
     """
     ox, oy = stair.origin
@@ -133,7 +133,7 @@ def _stair_flight(msp, stair, axis: str, e0: float, e1: float,
         u0 = oy
         u1 = oy + (stair.width if along_x else stair.length)
 
-    n = getattr(stair, "steps", None) or getattr(stair, "steps_per_flight", 8) * 2
+    n = getattr(stair, "steps_per_flight", 8) * 2
     du, dv = (u1 - u0) / n, (e1 - e0) / n
     pts = [(u0, e0)]
     for i in range(n):                    # 一階 = 先上(級高)再前進(級深)

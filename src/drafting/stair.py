@@ -1,14 +1,17 @@
-"""樓梯(Stair)—— 平面圖的踏步線、折斷線、上/下方向箭頭。
+"""樓梯(UStair)—— 平面圖的踏步線、折斷線、上/下方向箭頭。
+
+⚠️ **本專案只做折返梯(U 形)**(使用者 2026-09-04:「樓梯只要做折返梯就好,
+其他樓梯幫我移除」)。以前還有一個單跑直梯的 `Stair`,窄面寬擠不出走道時當備案
+用;梯型統一之後整個拿掉了 —— 四條產線出的圖現在只會有一種樓梯。
+要再加梯型(L 形、螺旋)請照 `UStair` 的樣子另開一個類別,不要把直梯撿回來。
 
 建築平面元素(ROADMAP 階段 B1)。沿用專案一貫模式:
-  * 資料模型(Stair)與畫圖函式(draw_stair)分開,方便單元測試。
+  * 資料模型(UStair)與畫圖函式(draw_u_stair)分開,方便單元測試。
   * 圖層不寫死:踏步/折斷線/箭頭掛 HANDRAIL(競賽規範:樓梯、扶手、陽台),
     「上/下」文字掛 TEXT(經 A-TEXT 別名),由呼叫端的 layers 對照表決定。
 
-平面圖畫法(單跑梯段,v2):
+平面圖畫法(每個梯段):
   * 踏步線:垂直於行進方向的等距線(間距 = 踏步深度 tread),橫跨梯寬。
-  * 中央扶手:沿梯段中心線的兩條平行線(扶手在平面上看到的兩緣),兩端各
-    畫一個小方塊當「立柱(欄杆柱)」——照使用者提供的實際樓梯平面圖畫法。
   * 折斷線:一條帶鋸齒的斜線,畫在梯段約 60% 處——平面圖的剖切高度以上
     (折斷線之後)的踏步用「虛線」表示(HIDDEN 線型,by-entity 蓋掉圖層線型)。
   * 方向箭頭:沿梯段中心線(兩扶手線之間),從起步端畫到折斷線前,末端加
@@ -20,11 +23,11 @@
 
 典型用法::
 
-    from src.drafting.stair import Stair, draw_stair
+    from src.drafting.stair import UStair, draw_u_stair
 
-    stair = Stair(origin=(6500, 2400), width=1200, length=2700,
-                  direction="north", steps=10, tread=260)
-    draw_stair(msp, stair, layers)
+    stair = UStair(origin=(6500, 2400), width=1400, length=2700,
+                   direction="north", steps_per_flight=8, tread=260)
+    draw_u_stair(msp, stair, layers)
 
 ⚠️ 待確認假設見模組結尾 PENDING 區塊(踏步尺寸、折斷線畫法、箭頭樣式)。
 """
@@ -50,11 +53,6 @@ START_DOT_R = 60
 ARROW_HEAD_LEN = 200     # 箭頭斜邊長(mm)
 ARROW_HEAD_HALF_W = 70   # 箭頭半寬(mm)
 
-# 中央扶手:兩條平行線的半間距(距中心線,mm)與端部立柱(小方塊)邊長。
-# 依使用者提供的實際樓梯平面圖:梯段中央一道扶手,兩端有欄杆立柱。畫法慣例。
-HANDRAIL_RAIL_HALF = 60  # 兩扶手線各距中心 60(兩線相隔 120mm)
-NEWEL_POST_SIZE = 120    # 立柱小方塊邊長(mm)
-
 _DIRECTIONS = ("north", "south", "east", "west")
 
 
@@ -72,48 +70,6 @@ def flight_label(label: str, steps: int) -> str:
     if label.strip() in ("下", DOWN_WORD):
         return DOWN_WORD
     return f"{UP_WORD} {steps}" if steps else UP_WORD
-
-
-@dataclass
-class Stair:
-    """一座單跑樓梯(平面圖)。
-
-    origin:    樓梯間矩形的「左下角」世界座標(不論方向,一律最小 x/y 角)。
-    width:     梯寬(垂直於行進方向,mm)。
-    length:    樓梯間沿行進方向的長度(mm);踏步總長需 ≤ length。
-    direction: 上樓的行進方向:"north"(+Y)/"south"(-Y)/"east"(+X)/"west"(-X)。
-    steps:     踏步數(級數)。
-    tread:     踏步深度(級深,mm)。
-    label:     起步端文字,預設「上」;畫下行梯段時傳「下」。
-    """
-
-    origin: Point
-    width: float
-    length: float
-    direction: str = "north"
-    steps: int = 10
-    tread: float = DEFAULT_TREAD
-    label: str = "上"
-
-    def __post_init__(self) -> None:
-        if self.direction not in _DIRECTIONS:
-            raise ValueError(f"direction 只能是 {_DIRECTIONS},收到 {self.direction!r}")
-        if self.steps < 2:
-            raise ValueError(f"踏步數至少 2,收到 {self.steps}")
-        if self.flight_length > self.length + 1e-6:
-            raise ValueError(
-                f"踏步總長 {self.flight_length:.0f}(= {self.steps} 級 × {self.tread:.0f})"
-                f" 超過樓梯間長度 {self.length:.0f},放不下"
-            )
-
-    @property
-    def flight_length(self) -> float:
-        """踏步總長 = 踏步數 × 踏步深度。"""
-        return self.steps * self.tread
-
-    def to_world(self, t: float, s: float) -> Point:
-        """局部座標 → 世界座標(t=橫向 0..width,s=沿行進方向,s=0 起步端)。"""
-        return _to_world(self.origin, self.length, self.direction, t, s)
 
 
 def _to_world(origin: Point, length: float, direction: str, t: float, s: float) -> Point:
@@ -144,95 +100,6 @@ def _draw_start_dot(msp, stair, t_mid: float, tail_s: float, rail: str) -> None:
     c = stair.to_world(t_mid, tail_s)
     for r in (START_DOT_R, START_DOT_R * 0.55, START_DOT_R * 0.2):
         msp.add_circle(c, radius=r, dxfattribs={"layer": rail})
-
-
-def _draw_center_handrail(msp, stair, rail: str, s_bot: float, s_top: float) -> None:
-    """沿梯段中心線畫「中央扶手」:兩條平行線 + 兩端立柱(小方塊)。
-
-    s_bot/s_top:扶手沿行進方向的起訖(局部座標 s);扶手線畫在中心 ± 半間距,
-    兩線的上下端各放一個小方塊代表欄杆立柱。座標一律經 stair.to_world 轉世界。
-    """
-    t_mid = stair.width / 2
-    half_post = NEWEL_POST_SIZE / 2
-    for dt in (-HANDRAIL_RAIL_HALF, +HANDRAIL_RAIL_HALF):
-        t = t_mid + dt
-        msp.add_line(stair.to_world(t, s_bot), stair.to_world(t, s_top),
-                     dxfattribs={"layer": rail})
-        for s_c in (s_bot, s_top):                    # 兩端立柱
-            corners = [
-                (t - half_post, s_c - half_post),
-                (t + half_post, s_c - half_post),
-                (t + half_post, s_c + half_post),
-                (t - half_post, s_c + half_post),
-            ]
-            msp.add_lwpolyline(
-                [stair.to_world(ct, cs) for ct, cs in corners],
-                close=True, dxfattribs={"layer": rail},
-            )
-
-
-def draw_stair(msp, stair: Stair, layers: dict[str, str], text_height: float = 250) -> None:
-    """把一座樓梯畫到 modelspace(踏步線 + 折斷線 + 方向箭頭 + 文字)。
-
-    踏步線在折斷線之前用實線、之後用 HIDDEN 虛線(平面剖切高度以上的部分)。
-    """
-    rail = layers["HANDRAIL"]
-    text_layer = layers["A-TEXT"]
-    w = stair.width
-    break_s = stair.flight_length * BREAK_POSITION_RATIO
-
-    # (1) 踏步線:s = i×tread,i = 1..steps。
-    for i in range(1, stair.steps + 1):
-        s = i * stair.tread
-        attribs = {"layer": rail}
-        if s > break_s:
-            attribs["linetype"] = "HIDDEN"   # 剖切線以上 → 虛線
-        msp.add_line(stair.to_world(0, s), stair.to_world(w, s), dxfattribs=attribs)
-
-    # (2) 折斷線:斜線 + 中央鋸齒(局部座標算好再轉世界)。
-    #     兩端沿行進方向錯開 BREAK_SKEW 形成斜線;中央凸出/凹入各一次形成鋸齒。
-    s0 = break_s - BREAK_SKEW / 2
-    s1 = break_s + BREAK_SKEW / 2
-    mid_s = (s0 + s1) / 2
-    pts_local = [
-        (0.0, s0),
-        (w * 0.42, s0 + (s1 - s0) * 0.42),
-        (w * 0.46, mid_s + BREAK_ZIGZAG),   # 凸
-        (w * 0.54, mid_s - BREAK_ZIGZAG),   # 凹
-        (w * 0.58, s0 + (s1 - s0) * 0.58),
-        (w, s1),
-    ]
-    msp.add_lwpolyline(
-        [stair.to_world(t, s) for t, s in pts_local],
-        dxfattribs={"layer": rail},
-    )
-
-    # (2.5) 中央扶手:兩平行線 + 兩端立柱(從第一階到梯段頂)。
-    _draw_center_handrail(msp, stair, rail, s_bot=stair.tread, s_top=stair.flight_length)
-
-    # (3) 方向箭頭:中心線從起步端畫到折斷線前,末端加兩撇箭頭。
-    t_mid = w / 2
-    tail_s = min(500.0, break_s * 0.2)          # 箭尾(留空間給文字)
-    head_s = s0 - 100                            # 箭頭尖(折斷線前)
-    msp.add_line(
-        stair.to_world(t_mid, tail_s), stair.to_world(t_mid, head_s),
-        dxfattribs={"layer": rail},
-    )
-    for dt in (+ARROW_HEAD_HALF_W, -ARROW_HEAD_HALF_W):
-        msp.add_line(
-            stair.to_world(t_mid, head_s),
-            stair.to_world(t_mid + dt, head_s - ARROW_HEAD_LEN),
-            dxfattribs={"layer": rail},
-        )
-    _draw_start_dot(msp, stair, t_mid, tail_s, rail)
-
-    # (4) 方向文字:起步端、中心線上(上行標級數,如「UP 16」)。
-    msp.add_text(
-        flight_label(stair.label, stair.steps),
-        height=text_height,
-        dxfattribs={"layer": text_layer, "style": "STRUCT"},
-    ).set_placement(stair.to_world(t_mid, max(tail_s - 250, 100)),
-                    align=TextEntityAlignment.MIDDLE_CENTER)
 
 
 # ---------------------------------------------------------------------------
@@ -377,10 +244,10 @@ def draw_u_stair(msp, stair: UStair, layers: dict[str, str], text_height: float 
 #    也有畫法是直接省略不畫。待確認。
 # 4. 箭頭樣式:單線箭桿 + 兩撇開放式箭頭(長 200、半寬 70);「上」字在起步端。
 #    考題常見「上 N」含級數、或箭尾畫小圓圈,皆可再加。待確認。
-# 4b. 中央扶手(v2,使用者 2026-07-20 依實際樓梯平面圖):梯段中心兩條平行線
-#    (相隔 120mm)+ 兩端立柱小方塊(邊長 120)。目前只加在單跑直梯 draw_stair;
-#    折返梯 draw_u_stair 尚未加中央扶手。實際扶手位置/是否雙側各事務所略異,待確認。
-# 5. 支援單跑直梯(Stair)與折返梯(UStair);L形梯、螺旋梯之後視需要擴充。
+# 4b. 中央扶手(2026-07-20 加在單跑直梯上)隨著直梯一起拿掉了(2026-09-04:
+#    只做折返梯)。折返梯的扶手畫法各事務所略異(中央一道 vs 兩側各一),
+#    要補的話是新功能,不是把舊的搬過來。
+# 5. **只支援折返梯(UStair)**;L形梯、螺旋梯之後視需要擴充。
 #    折返梯的畫法:起步梯段在右、折返在左;折返梯段全畫虛線(剖切面以上)、
 #    折斷線只畫在起步梯段——與參考的實際建案圖一致,但各事務所畫法略異。待確認。
 # 6. 樓梯間的圍牆不歸本模組(用 Wall 照常畫);本模組只畫梯段符號本身。

@@ -61,17 +61,17 @@ class _FakeClient:
 def test_nonsense_from_the_llm_is_clamped_into_something_legal():
     """★★ schema 擋得住型別,擋不住「物理上不可能」。
 
-    10 層樓、0 間臥室、不存在的核、0.9 的大門位置、3.6m 面寬配車庫 —— 這些
+    10 層樓、0 間臥室、不存在的核、0.9 的大門位置、淺基地配車庫 —— 這些
     LLM 都給得出來,夾不住就會一路帶到 `generate_narrow_building` 那邊 raise。"""
     got = topts.normalize_options(
         {"core_style": "沒有這款", "floors": 99, "bedrooms": 0, "garage": True,
          "patio": True, "mirror": "yes", "open_kitchen": False,
          "entry_frac": 0.93, "rationale": ""},
-        width=3600.0, depth=12500.0)
+        width=4000.0, depth=12500.0)
     assert got["core_style"] in topts.CORE_STYLES
     assert 1 <= got["floors"] <= 4 and 1 <= got["bedrooms"] <= 4
     assert got["entry_frac"] in topts.ENTRY_FRACS
-    assert got["garage"] is False          # 3.6m 面寬放不下一個車位長的前段
+    assert got["garage"] is False          # 12.5m 進深放不下一個車位長的前段
     # 天井只有方案 B 的核放得下 —— 核名亂給時會被夾成預設的那一款,所以這裡
     # 跟著夾出來的核問(預設 2026-08-28 起是方案 B,見 normalize_options)。
     assert got["patio"] is (got["core_style"] == "ref")
@@ -99,10 +99,14 @@ def test_one_floor_never_gets_a_garage():
 def test_impossible_combo_retreats_instead_of_raising():
     """★★ 加分項不得讓原本生得出來的案子生不出來(AGENTS.md 那條鐵則)。
 
-    3.6m 面寬 + 方案 B(要塞下橫置樓梯、天井、廁所、走道四樣)排不下 —— 那時
-    要退回預設核把圖生出來,而不是把 ValueError 丟給使用者。"""
+最窄的面寬 + 車庫(前段要一整個車位長 5.5m)在 12.5m 進深下排不下 —— 那時
+    要退掉車庫把圖生出來,而不是把 ValueError 丟給使用者。
+
+    ⚠️ 原本釘的是「3.6m 面寬配方案 B 排不下」。面寬下限升到 4.0m(2026-09-04
+       只做折返梯)之後,定義域裡 ref 每個尺寸都排得下,那個組合已經不會發生 ——
+       改用**還會發生**的那一種(車庫),否則這條測試等於什麼都沒驗。"""
     floors, used = topts.build_from_options(
-        3600.0, 12500.0, {**_GOOD, "core_style": "ref", "patio": True})
+        4000.0, 12500.0, {**_GOOD, "core_style": "ref", "garage": True})
     assert floors and check_building(floors).ok
     assert used["core_style"] in topts.CORE_STYLES
 

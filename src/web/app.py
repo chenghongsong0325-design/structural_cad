@@ -246,7 +246,7 @@ def _ai_generate(brief_text: str, brief, client):
     else:
         bw = t.site_width                       # 共壁,無側院
         bd = t.site_depth - t.setback           # 前院退縮,後貼界
-    # ⚠️ 定義域是**兩條的聯集**:選配版走透天骨架(3.5~8m),關係圖版走 BSP
+    # ⚠️ 定義域是**兩條的聯集**:選配版走透天骨架(4~8m),關係圖版走 BSP
     #    (5~30m)。只拿關係圖版的下限去擋,4~5m 的真實街屋(最常見的面寬)會
     #    在這裡就被踢掉,永遠走不到選配版。
     from src.design.layout import townhouse_options as topts

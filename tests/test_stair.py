@@ -1,16 +1,21 @@
-"""樓梯(Stair)的單元測試。
+"""樓梯(UStair 折返梯)的單元測試。
+
+⚠️ **全專案只有折返梯一種梯型**(使用者 2026-09-04:「樓梯只要做折返梯就好,
+其他樓梯幫我移除」)。以前這支還測一個單跑直梯 `Stair` —— 連同它的畫圖函式
+`draw_stair`、中央扶手都拿掉了,對應的測試也一併刪除(不是註解掉)。
+`test_the_straight_stair_is_gone` 釘住這件事,免得日後誰又把它撿回來。
 
 驗證重點:
-  1. 資料模型:方向/踏步數/放不下的檢查;局部→世界座標(四個方向)。
-  2. draw_stair:踏步線數量與間距、折斷線後的踏步用 HIDDEN 虛線、
-     折斷線(鋸齒多義線)、方向箭頭、「上/下」文字;各掛正確圖層。
+  1. 資料模型:方向/踏步數/平台放不下的檢查;局部→世界座標(四個方向)。
+  2. draw_u_stair:兩梯段的踏步線、折斷線前後的實線/虛線、梯井線、平台邊、
+     方向箭頭與「UP N」文字;各掛正確圖層。
   3. 接進 FloorPlanSpec:spec.stairs 能畫、不再報 NotImplementedError。
 """
 from __future__ import annotations
 
 import pytest
 
-from src.drafting.stair import Stair, UStair, draw_stair, draw_u_stair
+from src.drafting.stair import UStair, draw_u_stair
 from src.standards.loader import apply_standard, load_standard, new_document
 
 
@@ -22,148 +27,19 @@ def doc_and_layers():
     return doc, layers
 
 
-def _demo_stair(**overrides) -> Stair:
-    base = dict(origin=(0, 0), width=1200, length=2700,
-                direction="north", steps=10, tread=260)
-    base.update(overrides)
-    return Stair(**base)
-
-
 # ---------------------------------------------------------------------------
-# 1) 資料模型
+# 0) 梯型只剩一種
 # ---------------------------------------------------------------------------
-def test_flight_length() -> None:
-    assert _demo_stair().flight_length == 2600
+def test_the_straight_stair_is_gone() -> None:
+    """★ 使用者 2026-09-04:「樓梯只要做折返梯就好,其他樓梯幫我移除」。
 
+    釘的是**沒有第二種梯型可用**,不是「產線剛好沒用到」—— 只要 `Stair` 還在,
+    下一個為了擠出走道而卡住的人就會再把它接回去(那正是它 2026-08-27 誕生的
+    原因)。要新增梯型請另開類別,不要復活這個。"""
+    import src.drafting.stair as mod
 
-def test_flight_too_long_raises() -> None:
-    with pytest.raises(ValueError):
-        _demo_stair(steps=11)   # 11×260=2860 > 2700
-
-
-def test_invalid_direction_raises() -> None:
-    with pytest.raises(ValueError):
-        _demo_stair(direction="up")
-
-
-def test_too_few_steps_raises() -> None:
-    with pytest.raises(ValueError):
-        _demo_stair(steps=1)
-
-
-@pytest.mark.parametrize("direction, expect", [
-    ("north", (100, 500)),     # 起步端在南:s 沿 +Y
-    ("south", (100, 2200)),    # 起步端在北:s 沿 -Y(length=2700)
-    ("east", (500, 100)),      # 起步端在西:s 沿 +X
-    ("west", (2200, 100)),     # 起步端在東:s 沿 -X
-])
-def test_to_world_directions(direction, expect) -> None:
-    stair = _demo_stair(direction=direction)
-    assert stair.to_world(100, 500) == pytest.approx(expect)
-
-
-# ---------------------------------------------------------------------------
-# 2) 畫圖
-# ---------------------------------------------------------------------------
-def test_draw_stair_riser_count_and_layers(doc_and_layers) -> None:
-    doc, layers = doc_and_layers
-    msp = doc.modelspace()
-    draw_stair(msp, _demo_stair(), layers)
-
-    lines = [e for e in msp.query("LINE")]
-    # 踏步線 10 + 箭桿 1 + 箭頭兩撇 2 + 中央扶手兩線 2 = 15。
-    assert len(lines) == 15
-    for ln in lines:
-        assert ln.dxf.layer == layers["HANDRAIL"]
-
-
-def test_draw_stair_hidden_beyond_break(doc_and_layers) -> None:
-    """折斷線(60% 處 = s 1560)之後的踏步要用 HIDDEN 虛線。"""
-    doc, layers = doc_and_layers
-    msp = doc.modelspace()
-    draw_stair(msp, _demo_stair(), layers)
-
-    # 踏步線 = 水平線(direction north)且長度 = 梯寬 1200。
-    risers = [e for e in msp.query("LINE")
-              if abs(e.dxf.start.y - e.dxf.end.y) < 1e-6
-              and abs(abs(e.dxf.end.x - e.dxf.start.x) - 1200) < 1e-6]
-    assert len(risers) == 10
-    solid = [r for r in risers if r.dxf.linetype != "HIDDEN"]
-    hidden = [r for r in risers if r.dxf.linetype == "HIDDEN"]
-    # i=1..6(s=260..1560)實線;i=7..10(s=1820..2600)虛線。
-    assert len(solid) == 6
-    assert len(hidden) == 4
-    assert max(r.dxf.start.y for r in solid) == pytest.approx(1560)
-    assert min(r.dxf.start.y for r in hidden) == pytest.approx(1820)
-
-
-def test_draw_stair_riser_spacing(doc_and_layers) -> None:
-    doc, layers = doc_and_layers
-    msp = doc.modelspace()
-    draw_stair(msp, _demo_stair(), layers)
-
-    ys = sorted({round(e.dxf.start.y) for e in msp.query("LINE")
-                 if abs(e.dxf.start.y - e.dxf.end.y) < 1e-6
-                 and abs(abs(e.dxf.end.x - e.dxf.start.x) - 1200) < 1e-6})
-    assert ys == [260 * i for i in range(1, 11)]
-
-
-def test_draw_stair_break_line_polyline(doc_and_layers) -> None:
-    doc, layers = doc_and_layers
-    msp = doc.modelspace()
-    draw_stair(msp, _demo_stair(), layers)
-
-    polys = list(msp.query("LWPOLYLINE"))
-    # 折斷線(6 點)+ 中央扶手立柱 4 個小方塊(各 4 點)。
-    break_lines = [p for p in polys if len(p) == 6]
-    posts = [p for p in polys if len(p) == 4]
-    assert len(break_lines) == 1                  # 折斷線
-    assert break_lines[0].dxf.layer == layers["HANDRAIL"]
-    assert len(posts) == 4                        # 兩扶手線 × 上下端 = 4 立柱
-    for p in posts:
-        assert p.dxf.layer == layers["HANDRAIL"]
-
-
-def test_draw_stair_center_handrail(doc_and_layers) -> None:
-    """中央扶手:兩條縱向平行線(對稱於中心 t=600),長度 = 第一階到梯段頂。"""
-    doc, layers = doc_and_layers
-    msp = doc.modelspace()
-    draw_stair(msp, _demo_stair(), layers)   # width=1200 → 中心 x=600;flight=2600
-
-    # 扶手線 = 縱向(北向:x 固定、y 變動),x 在中心 600 ± 60。
-    rails = [e for e in msp.query("LINE")
-             if abs(e.dxf.start.x - e.dxf.end.x) < 1e-6
-             and abs(e.dxf.start.x - 600) == pytest.approx(60)]
-    assert len(rails) == 2
-    for r in rails:
-        assert r.dxf.layer == layers["HANDRAIL"]
-        lo, hi = sorted((r.dxf.start.y, r.dxf.end.y))
-        assert lo == pytest.approx(260)          # 第一階(tread)
-        assert hi == pytest.approx(2600)         # 梯段頂(flight_length)
-
-
-def test_draw_stair_label_text(doc_and_layers) -> None:
-    doc, layers = doc_and_layers
-    msp = doc.modelspace()
-    draw_stair(msp, _demo_stair(label="下"), layers)
-
-    texts = list(msp.query("TEXT"))
-    assert len(texts) == 1
-    # 資料層仍是「下」,圖上照參考圖(丙級術科)的寫法畫成 DN。
-    assert texts[0].dxf.text == "DN"
-    assert texts[0].dxf.layer == layers["A-TEXT"]
-
-
-def test_draw_stair_east_direction_risers_vertical(doc_and_layers) -> None:
-    """東向樓梯:踏步線應為垂直線(垂直於行進方向)。"""
-    doc, layers = doc_and_layers
-    msp = doc.modelspace()
-    draw_stair(msp, _demo_stair(direction="east"), layers)
-
-    risers = [e for e in msp.query("LINE")
-              if abs(e.dxf.start.x - e.dxf.end.x) < 1e-6
-              and abs(abs(e.dxf.end.y - e.dxf.start.y) - 1200) < 1e-6]
-    assert len(risers) == 10
+    assert not hasattr(mod, "Stair")
+    assert not hasattr(mod, "draw_stair")
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +51,30 @@ def _demo_ustair(**overrides) -> UStair:
                 direction="north", steps_per_flight=9, tread=260, well_gap=100)
     base.update(overrides)
     return UStair(**base)
+
+
+def test_invalid_direction_raises() -> None:
+    with pytest.raises(ValueError):
+        _demo_ustair(direction="up")
+
+
+def test_too_few_steps_raises() -> None:
+    with pytest.raises(ValueError):
+        _demo_ustair(steps_per_flight=1)
+
+
+@pytest.mark.parametrize("direction, expect", [
+    ("north", (100, 500)),     # 起步端在南:s 沿 +Y
+    ("south", (100, 2700)),    # 起步端在北:s 沿 -Y(length=3200)
+    ("east", (500, 100)),      # 起步端在西:s 沿 +X
+    ("west", (2700, 100)),     # 起步端在東:s 沿 -X
+])
+def test_to_world_directions(direction, expect) -> None:
+    """局部座標(t 橫向、s 沿行進方向)→ 世界座標,四個方向都要對。
+
+    ⚠️ 這條原本釘在單跑直梯上,`_to_world` 是兩種梯型共用的 —— 直梯拿掉之後
+    改釘在折返梯上,少了它這支函式就沒有人守。"""
+    assert _demo_ustair(direction=direction).to_world(100, 500) == pytest.approx(expect)
 
 
 def test_ustair_derived_dimensions() -> None:

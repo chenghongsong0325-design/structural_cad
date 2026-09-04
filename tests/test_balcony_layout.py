@@ -67,7 +67,7 @@ def test_balconies_stack_between_floors():
 
 
 # ── 尺寸規範 ────────────────────────────────────────────────────────────────
-@pytest.mark.parametrize("bw,bd", [(3500.0, 10000.0), (5000.0, 11000.0),
+@pytest.mark.parametrize("bw,bd", [(4000.0, 10000.0), (5000.0, 11000.0),
                                    (7000.0, 12000.0), (6000.0, 14000.0)])
 def test_size_follows_the_rule(bw, bd):
     """★★ 進深 1.2~2.0m、寬度 ≥ 服務房間外牆的一半、且不壓到地界線。"""
@@ -171,7 +171,7 @@ def test_balcony_door_counts_toward_daylight():
     assert sum(len(s.balconies) for _l, s in floors) >= 2
 
 
-@pytest.mark.parametrize("bw", [3500.0, 5000.0, 7000.0, 8000.0])
+@pytest.mark.parametrize("bw", [4000.0, 5000.0, 7000.0, 8000.0])
 @pytest.mark.parametrize("bd", [10000.0, 12000.0, 15000.0, 18000.0])
 @pytest.mark.slow
 def test_narrow_domain_still_passes_both_gates(bw, bd):

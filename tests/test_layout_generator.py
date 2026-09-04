@@ -749,27 +749,28 @@ def test_dining_keeps_room_for_the_passage_to_the_living():
             floors=3, differentiated=True))
 
 
-# ── 樓梯:門一開要站得住人(單跑直梯的盲點)────────────────────────────────
-def test_stair_boxes_sees_a_straight_flight():
-    """★★ 取「踏step 佔的範圍」時,單跑直梯(Stair)也要看得見。
+# ── 樓梯:門一開要站得住人 ────────────────────────────────────────────────
+def test_stair_boxes_counts_the_turn_landing_too():
+    """★★ 取「踏step 佔的範圍」時,折返平台**也算障礙**(它在半層高)。
 
-    ⚠️ 踩過的坑:`_stair_boxes` 只讀 `flight_run` —— 那是**折返梯**(UStair)才有的
-    欄位。兩帶式/集合住宅用的是單跑直梯,沒有這個欄位 → AttributeError → 整座
-    樓梯被當成不存在 → 「門不得開在階梯上」「梯段不得一側沒牆」這兩條硬規則
-    **從來沒對那兩條產線生效過**。"""
+    ⚠️ 這條原本測的是另一件事:單跑直梯(`Stair`)沒有 `flight_run`,
+    `_stair_boxes` 只讀那個欄位 → 整座樓梯被當成不存在。使用者 2026-09-04
+    把直梯整批拿掉之後,那個盲點連同梯型一起消失,判準改成釘住現在的真相:
+    **折返梯整段(梯跑+折返平台)都是障礙**,不是只有踏step 那一截 ——
+    折返平台在半層高,門開在那裡等於開進一個站不住人的凹洞。"""
     from types import SimpleNamespace
 
     from src.design.layout.narrow_house import _stair_boxes
-    from src.drafting.stair import Stair
+    from src.drafting.stair import UStair
 
-    st = Stair(origin=(1000.0, 2000.0), width=2500.0, length=4000.0,
-               direction="north", steps=15, tread=250.0)
-    assert not hasattr(st, "flight_run"), "直梯本來就沒有 flight_run(這正是坑)"
+    st = UStair(origin=(1000.0, 2000.0), width=2500.0, length=4000.0,
+                direction="north", steps_per_flight=8, tread=250.0)
+    assert st.flight_run == 2000.0 and st.landing_depth == 2000.0
     boxes = _stair_boxes(SimpleNamespace(stairs=[st]))
-    assert len(boxes) == 1, "單跑直梯被當成不存在了"
+    assert len(boxes) == 1
     x0, y0, x1, y1 = boxes[0].bounds
     assert (x0, y0) == (1000.0, 2000.0)
-    assert y1 - y0 == pytest.approx(15 * 250.0)      # 踏step 從 origin 起算
+    assert y1 - y0 == pytest.approx(4000.0), "折返平台被漏掉了"
 
 
 @pytest.mark.parametrize("w,d,n,floors", [(19, 13, 3, 3), (15, 12, 3, 2),
