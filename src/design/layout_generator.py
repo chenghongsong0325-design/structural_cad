@@ -2054,10 +2054,20 @@ def _living_south_windows(f: SimpleNamespace, rng: random.Random,
     1F 傳 xf(玄關以西才是客廳南牆)。"""
     ops: list = []
     if ov is not None:
-        ow, oww = _slot(_jitter(rng, (ov.x0 + ov.x1) / 2, ov.x0 + 150, ov.x1 - 150),
-                        [1800, 1500, 1200, 900], ov.x0 + 150, ov.x1 - 150,
-                        f.blocked, f"{ov.name}南窗")
-        ops.append(Opening(ow - f.bx0, oww, "window"))
+        # ⚠️ 溢位房的窗**躲不開柱時不要讓整棟生不出來**(2026-09-04)。以前這裡
+        #    直接 raise,實測 12×11m/13×13m 的 2 房就是這樣整份設計失敗 ——
+        #    而那間房是**儲藏室**,§40 根本不要求它採光。客廳那一段早就有退讓
+        #    (雙窗躲不開 → 退單窗),這一段漏了。
+        #    退讓階梯多加一級 `WINDOW_LAST_MIN`(窄高窗,narrow_house 同一個值),
+        #    真的放不下就**不開這扇窗**,合不合格交給 code_check 回報。
+        try:
+            ow, oww = _slot(
+                _jitter(rng, (ov.x0 + ov.x1) / 2, ov.x0 + 150, ov.x1 - 150),
+                [1800, 1500, 1200, 900, 600], ov.x0 + 150, ov.x1 - 150,
+                f.blocked, f"{ov.name}南窗")
+            ops.append(Opening(ow - f.bx0, oww, "window"))
+        except ValueError:
+            pass
     lo = f.bx0 if ov is None else ov.x1
     hi = f.bx1 if live_hi is None else live_hi
     span = hi - lo

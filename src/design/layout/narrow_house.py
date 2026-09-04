@@ -1567,8 +1567,37 @@ def _fix_openings(spec, bx0, by0, bx1, level, party_walls: bool = True,
             _add_front_door(spec, bx0, by0, bx1, entry_frac)
 
 
+#: 大門**不該**直接開進去的房間 —— 一進門就是廁所/臥室是台灣室內設計的經典 NG
+#: (書上〈9 種 NG 格局〉的同一族:機能與隱私都不對)。
+ENTRY_BAD_KINDS = {"bathroom", "toilet", "bedroom", "master_bedroom", "storage"}
+
+
+def _entry_room_ok(spec, wall, pos: float) -> bool:
+    """這個位置開大門,門後面那間房適合當玄關嗎。
+
+    ⚠️ 以前 `_add_front_door` 只問「撞不撞洞口、離不離牆角夠遠」,**從來沒問過
+    門後面是哪間房** —— 淺基地的浴廁就排在前段西端,而預設的 `entry_frac=0.22`
+    正好偏西,於是 7 個尺寸有 **7 個**大門直接開進廁所(2026-09-04 量的)。
+    """
+    from src.design.semantic.room_semantic import canonical_room
+    px, py = wall.point_at(pos)
+    for room in spec.rooms:
+        poly = Polygon(room.points)
+        if poly.exterior.distance(Point(px, py)) > DOOR_TOUCH_TOL:
+            continue
+        if canonical_room(room.kind) in ENTRY_BAD_KINDS:
+            return False
+    return True
+
+
 def _add_front_door(spec, bx0, by0, bx1, entry_frac=0.22):
-    """在南向(臨路)外牆上加一扇大門,避開既有洞口。entry_frac=偏好位置比例。"""
+    """在南向(臨路)外牆上加一扇大門,避開既有洞口。entry_frac=偏好位置比例。
+
+    ⚠️ **兩段式**(與門的 `_door_front_walkable` 同一招):先只收「門後面不是
+    廁所/臥室」的位置跑完整條淨距退讓階梯,整面牆都沒有才退而求其次 ——
+    **排序不是過濾**,一扇開在廁所前的大門仍然勝過一棟沒有大門的房子
+    (`no_entry` 是硬錯誤)。
+    """
     for wi, w in enumerate(spec.walls):
         (sx, sy), (ex, ey) = w.start, w.end
         if abs(sy - by0) > 50 or abs(ey - by0) > 50 or abs(sx - ex) < 1:
@@ -1582,19 +1611,22 @@ def _add_front_door(spec, bx0, by0, bx1, entry_frac=0.22):
         cands = [length * entry_frac, length * 0.22,
                  length * 0.78, length * 0.5]
         cands += [i * step for i in range(1, n)]
-        for clear in DOOR_CLEAR_STEPS:              # 先求舒適淨距,不行再放寬
-            for pos in cands:
-                a, b = pos - ENTRY_WIDTH / 2, pos + ENTRY_WIDTH / 2
-                if a < 0 or b > length:
-                    continue
-                if not all(b < t0 or a > t1 for t0, t1 in taken):   # 撞既有洞口
-                    continue
-                if not _door_pos_ok(spec, w, pos, ENTRY_WIDTH, clear):
-                    continue                        # 卡在房間角落
-                w.openings.append(Opening(pos, ENTRY_WIDTH, "door"))
-                spec.doors.append(DoorPlacement(
-                    wi, len(w.openings) - 1, Door(hinge="left", swing="in")))
-                return
+        for good_room_only in (True, False):        # ①先挑門後面不是廁所/臥室的
+            for clear in DOOR_CLEAR_STEPS:          # 先求舒適淨距,不行再放寬
+                for pos in cands:
+                    a, b = pos - ENTRY_WIDTH / 2, pos + ENTRY_WIDTH / 2
+                    if a < 0 or b > length:
+                        continue
+                    if not all(b < t0 or a > t1 for t0, t1 in taken):  # 撞洞口
+                        continue
+                    if not _door_pos_ok(spec, w, pos, ENTRY_WIDTH, clear):
+                        continue                    # 卡在房間角落
+                    if good_room_only and not _entry_room_ok(spec, w, pos):
+                        continue                    # 一進門就是廁所/臥室
+                    w.openings.append(Opening(pos, ENTRY_WIDTH, "door"))
+                    spec.doors.append(DoorPlacement(
+                        wi, len(w.openings) - 1, Door(hinge="left", swing="in")))
+                    return
         return                                      # 這面牆塞不下就算了(罕見)
 
 

@@ -121,7 +121,7 @@ def _stair(bx0, bx1, y0, y1, label):
 
 
 def _floor_rooms(level, top, bx0, by0, bx1, by1, no_split=False,
-                 bath_west=None):
+                 bath_west=None, bath_cap=True):
     """一層的房間矩形 + 樓梯。北=梯帶(樓梯[+浴廁]),南=居室帶。
 
     no_split:樓上不分兩間臥室(由 _build_floor 量過發現第二間的門開不到動線上時
@@ -166,15 +166,54 @@ def _floor_rooms(level, top, bx0, by0, bx1, by1, no_split=False,
         bath_w = min(max(BATH_MIN_W, (W - MIN_LIVING_W) / 2.0), BATH_MAX_W)
         west = (W - bath_w >= MIN_LIVING_W + MIN_KITCHEN_W
                 if bath_west is None else bool(bath_west))
+        # ⚠️ 浴廁**貼南(前緣)**、而且深度要有上限:居室帶一深(進深大的案子有
+        #    4.6m),浴廁跟著長到 9~11㎡ —— 書上全套浴室只要 220 寬,那是**浪費**
+        #    (NG02:過大的空間會壓縮其他空間)。窄透天早就有 `BATH_MAX_D`,
+        #    這條產線漏了。多出來的北側那塊**還給隔壁居室**(不是丟給樓梯間 ——
+        #    走道already夠大,NG03 說純走道不該比房間還大)。
+        bath_d = min(yb - by0, BATH_MAX_D) if bath_cap else yb - by0
         if west:                                            # 浴廁在西
             xf = bx0 + bath_w
-            rooms.append(("bathroom", bath_name, _rect(bx0, by0, xf, by1 - band_d)))
-            rooms += _front_rooms(level, xf, by0, bx1, yb, xs, no_split)
+            rooms.append(("bathroom", bath_name,
+                          _rect(bx0, by0, xf, by0 + bath_d)))
+            front = _front_rooms(level, xf, by0, bx1, yb, xs, no_split)
+            rooms += _absorb_bath_spare(front, bx0, xf, by0 + bath_d, yb,
+                                        west=True)
             return rooms, stair
         xf = bx1 - bath_w                                   # 窄 → 浴廁在東
-        rooms.append(("bathroom", bath_name, _rect(xf, by0, bx1, by1 - band_d)))
+        rooms.append(("bathroom", bath_name,
+                      _rect(xf, by0, bx1, by0 + bath_d)))
+        front = _front_rooms(level, bx0, by0, xf, yb, xs, no_split)
+        rooms += _absorb_bath_spare(front, xf, bx1, by0 + bath_d, yb,
+                                    west=False)
+        return rooms, stair
     rooms += _front_rooms(level, bx0, by0, xf, yb, xs, no_split)
     return rooms, stair
+
+
+def _absorb_bath_spare(front, sx0, sx1, sy0, sy1, *, west: bool):
+    """浴廁縮短之後,北側多出來的那塊併進**緊鄰它**的那間居室(變 L 形)。
+
+    ⚠️ 不留成空格:居室帶裡沒人認領的地板會讓那一層的室內斷成兩塊
+    (`floor_split`),而且圖上就是一個沒有用途的洞。
+    ⚠️ 併給**貼著它**的那一間 —— 浴廁在西就是最西那間、在東就是最東那間;
+    併錯間會生出一個穿過別人家的凹角。
+    """
+    if sy1 - sy0 <= 1.0 or not front:
+        return front
+    i = 0 if west else len(front) - 1
+    kind, name, pts = front[i]
+    x0 = min(p[0] for p in pts)
+    x1 = max(p[0] for p in pts)
+    y0 = min(p[1] for p in pts)
+    y1 = max(p[1] for p in pts)
+    if west:                       # 凹角在西側:沿著北緣往西長出去
+        poly = [(x0, y0), (x1, y0), (x1, y1), (sx0, y1), (sx0, sy0), (x0, sy0)]
+    else:                          # 凹角在東側
+        poly = [(x0, y0), (x1, y0), (x1, sy0), (sx1, sy0), (sx1, y1), (x0, y1)]
+    out = list(front)
+    out[i] = (kind, name, poly)
+    return out
 
 
 def _front_rooms(level, x0, y0, x1, y1, hall_x1, no_split=False):
@@ -223,7 +262,7 @@ def _daylight_ok(spec) -> bool:
 
 
 def _build_floor(level, top, W, D, floor_label, furnish=True, cap=None,
-                 no_split=False, bath_west=None):
+                 no_split=False, bath_west=None, bath_cap=True):
     """組一層 spec(房間 → 牆/門/窗 + 樓梯 + 開口收尾 + 家具)。
 
     進深超過上限時**建築封頂、多的留成後院**(前緣貼建築線、院子在後)——淺骨架
@@ -235,7 +274,7 @@ def _build_floor(level, top, W, D, floor_label, furnish=True, cap=None,
     site_w, site_d = W + 2 * SETBACK, D + 2 * SETBACK
 
     rooms, stair = _floor_rooms(level, top, bx0, by0, bx1, by1, no_split,
-                                bath_west=bath_west)
+                                bath_west=bath_west, bath_cap=bath_cap)
     spec = rooms_to_spec(rooms, (bx0, by0, bx1, by1), site_w, site_d,
                          setback=SETBACK)
     spec.stairs = [stair]                           # 先掛樓梯:開口收尾才避得開梯段
@@ -253,11 +292,12 @@ def _build_floor(level, top, W, D, floor_label, furnish=True, cap=None,
                             for i in check_door_rules(spec, None, level, floor_label)):
         # 第二間臥室的門開不到樓梯間(門前那段牆被梯段佔住)→ 退回一大間。
         return _build_floor(level, top, W, D, floor_label, furnish, cap,
-                            no_split=True, bath_west=bath_west)
-    if not _daylight_ok(spec) and build_d - 250.0 >= _band_depth(W) + 2500.0:
-        return _build_floor(level, top, W, D, floor_label, furnish,
-                            cap=build_d - 250.0,     # 收一點進深、多留後院
-                            no_split=no_split, bath_west=bath_west)
+                            no_split=True, bath_west=bath_west,
+                            bath_cap=bath_cap)
+    # ⚠️ 採光收進深的退讓**不在這裡**做 —— 那是**整棟**的決定,見 `_fit_depth`。
+    #    各層各退各的會讓上下樓外牆對不齊:實測 1F(客廳+廚房,窗要開得比較多)
+    #    退到 4500、樓上不必退停在 6500,2F 的臥室就有 2m 懸在 1F 屋外。
+    #    (與 `_fit_service` / `_fit_margin` / `_fit_bath_side` 同一條規矩。)
     spec.floor_label = floor_label
     _set_structural_grid(spec, bx0, by0, W, build_d)   # 柱放軸網交點,與窄透天同一套
     repair_doors(spec, bx0, by0, bx1, level)     # 柱是實心的,門扇掃到柱就打不開(見窄透天同段)
@@ -291,7 +331,10 @@ def generate_shallow_house(building_w_mm: float, building_d_mm: float, *,
     """淺進深透天單層 → FloorPlanSpec(建築尺寸;基地由退縮反推)。"""
     W, D = float(building_w_mm), float(building_d_mm)
     _check_dims(W, D)
-    return _build_floor(1, 1, W, D, "1F", furnish)
+    # 單層也走同一條退讓(只有一層,「整棟」就是它自己)。
+    return _fit_depth(lambda cap: [("1F", _build_floor(1, 1, W, D, "1F",
+                                                       furnish, cap=cap))],
+                      W, D)[0][1]
 
 
 def generate_shallow_building(building_w_mm: float, building_d_mm: float, *,
@@ -303,12 +346,47 @@ def generate_shallow_building(building_w_mm: float, building_d_mm: float, *,
     _check_dims(W, D)
     floors = max(1, int(floors))
 
-    def _all(bath_west):
-        return [(f"{lv}F", _build_floor(lv, floors, W, D, f"{lv}F", furnish,
-                                        bath_west=bath_west))
-                for lv in range(1, floors + 1)]
+    def _all(bath_west, bath_cap=True):
+        def _at(cap):
+            return [(f"{lv}F", _build_floor(lv, floors, W, D, f"{lv}F", furnish,
+                                            cap=cap, bath_west=bath_west,
+                                            bath_cap=bath_cap))
+                    for lv in range(1, floors + 1)]
+        return _fit_depth(_at, W, D)
 
     return _fit_bath_side(_all)
+
+
+def _fit_depth(build, W, D):
+    """採光收進深 —— **整棟一起收**,不是各層各自收(2026-09-04)。
+
+    ⚠️ 這是本檔那條老規矩的又一次登場(`_fit_service` 壓浴廁、`_fit_margin` 留
+    柱位、`_fit_patio` 開天井、`_fit_bath_side` 浴廁換邊都是整棟決定)。以前這段
+    寫在 `_build_floor` 裡、每層自己判:1F 有客廳+廚房、窗要開得比較多,收到
+    4500 才過;樓上只有臥室、不必收,停在 6500 —— **2F 的臥室就有 2m 懸在 1F 的
+    屋頂外面**。實測 25 個尺寸有 **12 個**這樣(窄透天 0 個,它一直是整棟收的)。
+
+    收到底仍不合格時回**第一版**(不惡化現況);與各層自己收比,差別只在
+    「全部一起收」,所以不會有原本生得出來的案子變成生不出來。
+    """
+    from src.design.layout.code_check import check_code_building
+
+    cap = min(D, _band_depth(W) + FRONT_MAX_D)
+    lo = _band_depth(W) + 2500.0
+    first = None
+    while True:
+        floors = build(cap)
+        first = first if first is not None else floors
+        # ⚠️ 判準要問**真正的關卡**,不要自己另一把尺(本檔「同一件事兩把尺」)。
+        #    `_daylight_ok` 只數窗,而 §40 算的是「採光用窗**或開口**」——
+        #    落地門也算(陽台那次踩過同一個坑)。拿比關卡嚴的尺去驅動退讓,
+        #    結果是**每一級都不過、退到底照樣回第一版**,等於整條退讓沒作用。
+        if not [i for i in check_code_building(floors).violations
+                if i.code == "daylight_area"]:
+            return floors
+        if cap - 250.0 < lo:
+            return first
+        cap -= 250.0
 
 
 def _fit_bath_side(build):
@@ -327,14 +405,20 @@ def _fit_bath_side(build):
     from src.design.layout.plan_check import check_building
 
     first = None
-    for side in (None, True, False):                 # None = 依面寬的預設猜測
-        try:
-            floors = build(side)
-        except ValueError:
-            continue
-        if not check_building(floors).errors:
-            return floors
-        first = first if first is not None else floors
+    # ⚠️ 浴廁深度封頂(2026-09-04)也放進這條退讓:**封了如果出硬錯誤就不封**。
+    #    封頂會讓隔壁居室變 L 形,而 L 形的北緣會多貼一段樓梯間 —— 門就可能被
+    #    開在梯段背後走不到的地方(實測 7.6×10.2m:樓梯間 `circulation_blocked`,
+    #    而封頂前那個尺寸是乾淨的)。**加分項不得讓原本好好的東西壞掉**,本檔
+    #    這條已經數不清第幾次了(`_fit_service` / `_fit_margin` / `_fit_patio`)。
+    for cap_bath in (True, False):
+        for side in (None, True, False):             # None = 依面寬的預設猜測
+            try:
+                floors = build(side, cap_bath)
+            except ValueError:
+                continue
+            if not check_building(floors).errors:
+                return floors
+            first = first if first is not None else floors
     if first is None:
         raise ValueError("淺基地骨架:浴廁兩側都排不下")
     return first

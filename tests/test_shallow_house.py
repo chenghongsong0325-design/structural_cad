@@ -166,3 +166,77 @@ def test_no_room_is_stranded_behind_the_stairs(bw, bd):
     for _lb, spec in generate_shallow_building(bw, bd, floors=3):
         _home, lost = _walk_islands(spec)
         assert lost == [], (bw, bd, _lb, lost)
+
+
+# ── 2026-09-04:使用者「全部尺寸的住宅都幫我用這些規則去排」量出來的三條 ──────
+@pytest.mark.parametrize("bw", [7000.0, 8000.0, 9000.0])
+@pytest.mark.parametrize("bd", [6000.0, 8000.0])
+def test_every_floor_has_the_same_footprint(bw, bd):
+    """★★ 各層的外牆要對齊 —— 樓上不能有房間懸在樓下的屋頂外面。
+
+    ⚠️ 這條在 2026-09-04 之前是**紅的**(25 個尺寸有 12 個)。根因是採光收進深的
+    退讓寫在 `_build_floor` 裡、**每層自己判**:1F 有客廳+廚房、窗要開得比較多,
+    收到 4500 才過;樓上只有臥室、不必收,停在 6500 —— 2F 的臥室就有 2m 懸空。
+    退讓一律要在**整棟**那一層做(`_fit_depth`),與 `_fit_service` / `_fit_margin`
+    / `_fit_bath_side` 同一條規矩。
+    """
+    from shapely.geometry import Polygon
+
+    from src.design.layout.plan_check import VOID_KINDS
+    boxes = []
+    for _lb, spec in generate_shallow_building(bw, bd, floors=3):
+        ps = [Polygon(r.points) for r in spec.rooms if r.kind not in VOID_KINDS]
+        boxes.append((round(min(p.bounds[0] for p in ps)),
+                      round(min(p.bounds[1] for p in ps)),
+                      round(max(p.bounds[2] for p in ps)),
+                      round(max(p.bounds[3] for p in ps))))
+    assert len(set(boxes)) == 1, f"各層外框不一樣:{boxes}"
+
+
+@pytest.mark.parametrize("bw,bd", [(5000.0, 5000.0), (7000.0, 6000.0),
+                                   (8000.0, 7000.0), (9000.0, 9000.0)])
+def test_front_door_never_opens_into_a_bathroom(bw, bd):
+    """★★ 大門不能一開就是廁所(台灣室內設計的經典 NG)。
+
+    ⚠️ 這條在 2026-09-04 之前是**紅的**,而且 7 個尺寸全中 —— `_add_front_door`
+    只問「撞不撞洞口、離不離牆角夠遠」,**從來沒問過門後面是哪間房**,而預設的
+    `entry_frac=0.22` 偏西、淺基地的浴廁正好排在前段西端。
+    """
+    from shapely.geometry import Point, Polygon
+
+    from src.design.layout.plan_check import building_env
+    spec = generate_shallow_building(bw, bd, floors=3)[0][1]
+    env = building_env(spec)
+    for w in spec.walls:
+        for op in w.openings:
+            if op.kind != "door" or op.width < 900:
+                continue
+            p = w.point_at(op.position)
+            if not (abs(p[1] - env[1]) < 200 or abs(p[1] - env[3]) < 200
+                    or abs(p[0] - env[0]) < 200 or abs(p[0] - env[2]) < 200):
+                continue                            # 不是外牆上的門
+            for r in spec.rooms:
+                if Polygon(r.points).exterior.distance(Point(*p)) < 60:
+                    assert r.kind not in ("bathroom", "toilet", "bedroom"), \
+                        f"{bw}x{bd} 大門開進 {r.name}({r.kind})"
+
+
+@pytest.mark.parametrize("bw,bd", [(7000.0, 8000.0), (9000.0, 9000.0),
+                                   (8000.0, 7000.0)])
+def test_bathroom_depth_is_capped(bw, bd):
+    """★ 浴室深度要有上限 —— 居室帶一深,浴室不該跟著長到 9~11㎡。
+
+    書上〈空間最適尺寸〉Space 6 的全套浴室只要 220 寬;窄透天早就有 `BATH_MAX_D`,
+    這條產線漏了(實測 2F/3F 的浴室 10.3㎡,`room_oversize` 每個尺寸 2~3 件)。
+    多出來的面積**還給隔壁居室**,不是丟給樓梯間(NG03:純走道不該比房間還大)。
+    """
+    from shapely.geometry import Polygon
+
+    from src.design.layout.narrow_house import BATH_MAX_D
+    for _lb, spec in generate_shallow_building(bw, bd, floors=3):
+        for r in spec.rooms:
+            if r.kind != "bathroom":
+                continue
+            b = Polygon(r.points).bounds
+            assert min(b[2] - b[0], b[3] - b[1]) <= BATH_MAX_D + 1.0
+            assert Polygon(r.points).area / 1e6 <= 7.0, f"{r.name} 太大"

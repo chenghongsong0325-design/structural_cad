@@ -927,3 +927,20 @@ def test_dining_table_sits_in_the_dining_room(bw, bd):
         assert here, f"{bw}x{bd} 餐桌不在任何房間裡"
         assert any(n in ("餐廳", "餐廚", "客餐廳") for n in here), \
             f"{bw}x{bd} 餐桌被擺進 {here}"
+
+
+def test_overflow_window_dodging_a_column_never_kills_the_whole_design():
+    """★★ 溢位房的窗躲不開柱時,**不要讓整棟生不出來**。
+
+    ⚠️ 這條在 2026-09-04 之前是紅的:`_slot` 躲不開柱就 raise,實測
+    12×11m / 13×13m 的 2 房整份設計失敗(訊息「儲藏室南窗 在 0.5~1.7m 內找不到
+    不壓柱的位置」)—— 而那間房是**儲藏室**,§40 根本不要求它採光。
+    客廳那一段早就有退讓(雙窗躲不開 → 退單窗),這一段漏了。
+    """
+    from src.design.building_generator import BuildingBrief, generate_building_auto
+    for bw, bd in [(12_000, 11_000), (13_000, 13_000)]:
+        b = generate_building_auto(BuildingBrief(
+            typical=HouseBrief(site_width=bw, site_depth=bd, bedrooms=2,
+                               setback=0, seed=0, dimension_basis="building"),
+            floors=3, differentiated=True))
+        assert len(b.floors) == 3, f"{bw}x{bd} 生不出來"
