@@ -164,16 +164,34 @@ def _build_table2(blk) -> None:
             close=True, dxfattribs={"layer": "0"})
 
 
-def _build_sofa3(blk) -> None:
-    """三人沙發 2000×850(背貼牆):背 + 坐墊 + 兩扶手。"""
-    blk.add_lwpolyline([(-1000, 0), (1000, 0), (1000, 200), (-1000, 200)],
+def _sofa_block(blk, w: float) -> None:
+    """沙發(背貼牆):背 + 坐墊 + 兩扶手。寬度由呼叫端給,扶手固定 150。"""
+    hw = w / 2.0
+    sw = hw - 150.0                                    # 坐墊半寬(扣掉兩側扶手)
+    blk.add_lwpolyline([(-hw, 0), (hw, 0), (hw, 200), (-hw, 200)],
                        close=True, dxfattribs={"layer": "0"})          # 背
-    blk.add_lwpolyline([(-850, 200), (850, 200), (850, 750), (-850, 750)],
+    blk.add_lwpolyline([(-sw, 200), (sw, 200), (sw, 750), (-sw, 750)],
                        close=True, dxfattribs={"layer": "0"})          # 坐墊
     for sx in (-1, 1):
         blk.add_lwpolyline(
-            [(sx * 850, 0), (sx * 1000, 0), (sx * 1000, 850), (sx * 850, 850)],
+            [(sx * sw, 0), (sx * hw, 0), (sx * hw, 850), (sx * sw, 850)],
             close=True, dxfattribs={"layer": "0"})                     # 扶手
+
+
+def _build_sofa3(blk) -> None:
+    """三人沙發 2000×850(背貼牆)—— 書上〈空間最適尺寸〉Space 1 的 180~240 寬。"""
+    _sofa_block(blk, 2000.0)
+
+
+def _build_sofa2(blk) -> None:
+    """二人沙發 1500×850(背貼牆)—— 客廳擺不下三人沙發時的退讓。
+
+    書上的算法是「需要的座面總長 = 60cm × 人數」:二人 = 座面 1200 + 兩側
+    扶手 150×2 = **1500**。深度與三人座同(書上 80~100)。
+    ⚠️ 為什麼不直接退到 `armchair`(900×850):單人沙發是**配角**,客廳的主景
+    仍該是一張坐得下家人的沙發 —— 淺基地那批 9~11㎡ 的客廳實測放得下 1500。
+    """
+    _sofa_block(blk, 1500.0)
 
 
 def _build_wardrobe(blk) -> None:
@@ -299,6 +317,7 @@ FIXTURE_BUILDERS = {
     "table4": _build_table4,
     "table2": _build_table2,
     "sofa3": _build_sofa3,
+    "sofa2": _build_sofa2,
     "wardrobe": _build_wardrobe,
     "shoe_cabinet": _build_shoe_cabinet,
     "closet_rail": _build_closet_rail,
@@ -339,6 +358,7 @@ FIXTURE_SIZES = {
     "table4": (1350, 1610),
     "table2": (2100, 750),       # 二人靠牆餐桌:桌 1200 + 兩端椅子;窄餐廳用
     "sofa3": (2000, 850),
+    "sofa2": (1500, 850),   # 二人沙發:書上「座面總長 60×人數」+兩扶手;窄客廳用
     "wardrobe": (1500, 600),
     "shoe_cabinet": (1200, 350),
     "closet_rail": (1000, 600),  # 更衣室的吊衣桿(衣櫃 1500 放不下時用)

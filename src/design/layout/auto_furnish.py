@@ -41,7 +41,11 @@ FURNITURE_PROGRAM: dict[str, list] = {
     # ⚠️ 床頭櫃不在這張表裡:它的位置是**被床決定的**(床頭兩側各一),
     #    交給擺位器會讓兩個並排擠在同一面牆上。見 `_add_nightstands`。
     "bedroom": [("bed_double", "bed_single"), "wardrobe"],
-    "living": ["sofa3", "tv_cabinet", "coffee_table", "armchair"],
+    # ⚠️ 沙發也要有小一號的:淺基地那批 9~11㎡ 的客廳擺不下 2000 寬的三人沙發,
+    #    而擺不下是**靜默的** —— 實測 5 個尺寸的 1F 客廳全部只有電視櫃+茶几,
+    #    一張沙發都沒有。書上(Space 1)的算法是「座面總長 = 60cm × 人數」,
+    #    二人 = 1500。與 `bed_double→bed_single`、`basin→basin_small` 同一條路。
+    "living": [("sofa3", "sofa2"), "tv_cabinet", "coffee_table", "armchair"],
     # ⚠️ 餐桌也要有小一號的:`table4` 的原點是桌心,而擺位器對那種家具只在
     #    房間**正中央**試 9 個點 —— 走道型餐廳(4.5m 面寬街屋的 1.8×4.3m)
     #    正中央就是通道,9 個點全被打回 = 一間沒有餐桌的餐廳。`table2` 是
@@ -82,6 +86,7 @@ DOOR_DODGES_KINDS = {"storage"}
 
 BATHING = ("bathtub", "shower")          # 洗澡設備,由大到小
 BEDS = ("bed_double", "bed_single")      # 床,由大到小
+SOFAS = ("sofa3", "sofa2")               # 客廳的主沙發,由大到小(單人沙發是配角)
 CLOSET_FIXTURES = ("wardrobe", "closet_rail")   # 更衣室該有的東西
 # 浴室小於這個樓地板面積(㎡)就**直接畫淋浴間,不試浴缸**。
 # ⚠️ 這不是「放不放得下」的問題:1600×750 的浴缸塞得進 3.3㎡ 的浴廁,但塞進去
@@ -277,14 +282,25 @@ def _add_counter(spec, room, max_len: float | None = None) -> bool:
     inner = _inner_room(spec, room)                  # 貼牆內面,不嵌進牆體
     poly = Polygon(inner.points)
     engine = FurnitureCollisionEngine(spec)
+    fallback = None
     for counter in _counter_candidates(inner):
         if max_len is not None and counter.length > max_len:
             continue
         if not poly.buffer(1.0).contains(Polygon(counter_footprint(counter))):
             continue
         if engine.check(counter).valid:          # 不撞門迴轉/牆/既有家具
+            # ⚠️ 「碰撞合法」不等於「這間房還走得通」:動線修復器等一下會再跑
+            #    一次,擺在擋路的位置只是讓它再移一次(實測淺基地 7×8 的廚房
+            #    補了兩次、被移掉兩次,淨值 0)。候選是**由長到短**排好的,
+            #    所以往下找第一個不擋路的,就是「放得下的最長那條」。
             spec.fixtures.append(counter)
-            return True
+            if _room_walkable(spec, room):
+                return True
+            spec.fixtures.remove(counter)
+            fallback = fallback or counter
+    if fallback is not None:
+        spec.fixtures.append(fallback)     # 都擋路:留一條仍勝過沒有廚具
+        return True
     return False
 
 
@@ -361,17 +377,84 @@ def _has_any(spec, room, names) -> bool:
                for f in spec.fixtures)
 
 
-def _restore_one(spec, room, names, weights=None, dodge_doors=False) -> bool:
-    """在 room 裡補一件 names(由小到大試),補到就回 True。"""
+def _room_walkable(spec, room) -> bool:
+    """這間房現在走不走得通(判準與動線修復器同一支,避免兩把尺)。"""
+    from src.design.layout.room_circulation import analyze_room
+    try:
+        return analyze_room(spec, room).ok
+    except Exception:
+        return True
+
+
+def _walkable_placement(spec, room, inner, opt, name, weights):
+    """照分數由高到低找**第一個放了仍走得通**的擺位;都不行回 None。
+
+    ⚠️ 這是「補了等於沒補」的解:`settle_after_declutter` 補完會再跑一次動線
+    修復器,而修復器只認動線 —— 補在擋路的位置就會被它原封不動地再移掉一次。
+    實測淺基地 6×7 的臥室:床補回去 True、下一行又被移掉,來回兩次淨值 0。
+    """
+    from shapely.geometry import Polygon
+
+    room_poly = Polygon(inner.points)
+    wmap = (weights or PlacementWeights()).as_map()
+    wsum = sum(wmap.values()) or 1.0
+    scored = []
+    for placement in opt.candidates(name, inner):
+        cand = opt._score(placement, inner, room_poly, None)
+        if not cand.valid:
+            continue
+        cand.total = sum(cand.scores[k] * wmap[k] for k in wmap) / wsum
+        scored.append(cand)
+    for cand in sorted(scored, key=lambda c: -c.total):
+        fx = cand.placement()
+        spec.fixtures.append(fx)
+        if _room_walkable(spec, room):
+            return fx
+        spec.fixtures.remove(fx)
+    return None
+
+
+#: 書上〈空間最適尺寸〉Space 5 的雙人臥房下限(mm)。比這個小的臥室,床一擺就
+#: 沒有走道 —— 真實圖上這種房間的門本來就是拉門(所以才准讓門去閃床)。
+BOOK_BEDROOM_MIN = (2800.0, 3500.0)
+
+
+def _below_book_bedroom_min(room) -> bool:
+    """這間臥室小於書上的雙人房下限嗎(短邊 <2800 或長邊 <3500)。"""
+    from shapely.geometry import Polygon
+    x0, y0, x1, y1 = Polygon(room.points).bounds
+    short, long = sorted((x1 - x0, y1 - y0))
+    return short < BOOK_BEDROOM_MIN[0] or long < BOOK_BEDROOM_MIN[1]
+
+
+def _restore_one(spec, room, names, weights=None, dodge_doors=False,
+                 require_walkable=False) -> bool:
+    """在 room 裡補一件 names(由小到大試),補到就回 True。
+
+    ⚠️ 補回來的位置**要走得通**:動線修復器等一下還會再跑一次,補在擋路的地方
+    只是讓它再移一次(見 `_walkable_placement`)。分數最高的那個位置擋路時,
+    照分數往下找第一個不擋路的;整批都擋路才退回分數最高的那個 ——
+    **排序不是過濾**,一張擺得不好的床仍然勝過一間沒有床的臥室。
+    """
     inner = _inner_room(spec, room)
     for name in names:
         opt = FurniturePlacementOptimizer(spec)
         if dodge_doors:
             opt.engine.doors = []
         res = opt.place(name, inner, weights=weights)
-        if res.found:
-            spec.fixtures.append(res.best.placement())
+        if not res.found:
+            continue
+        fx = res.best.placement()
+        spec.fixtures.append(fx)
+        if _room_walkable(spec, room):
             return True
+        spec.fixtures.remove(fx)
+        if _walkable_placement(spec, room, inner, opt, name, weights):
+            return True
+        if require_walkable:            # 呼叫端還有別的退讓可試 → 別硬塞
+            continue
+        spec.fixtures.append(fx)        # 都擋路:留一件仍勝過空房間
+        return True
     return False
 
 
@@ -403,8 +486,25 @@ def restore_essentials(spec, weights=None) -> int:
                 added += bool(_place_bathing(spec, room, weights,
                                              names=("shower",)))
         elif kind == "bedroom" and not _has_any(spec, room, BEDS):
-            added += bool(_restore_one(spec, room, ("bed_single", "bed_double"),
-                                       weights))
+            # ⚠️ **兩輪**:先讓床閃門(正常擺),真的擺不下才讓門去閃床
+            #    (與馬桶/更衣室同一招)。淺基地 5~7m 的臥室只有 9~11㎡,
+            #    一扇內開門的弧就吃掉大半個房間 —— 只跑第一輪的話,實測
+            #    4 間臥室**一張床都補不回來**,那是不完整的圖。
+            ok = _restore_one(spec, room, ("bed_single", "bed_double"), weights,
+                              require_walkable=True)
+            if not ok and _below_book_bedroom_min(room):
+                # ⚠️ 只有**小於書上下限**的臥室才准讓門去閃床(淺基地 5×5 的
+                #    臥室只有 2600 深,書上雙人房下限是 2800×3500)。一般尺寸的
+                #    臥室不准 —— 集合住宅的 `validate_spec` 把「家具擋住門的
+                #    迴轉」判成硬錯誤,那條產線沒有 `repair_doors` 幫忙收成拉門。
+                ok = _restore_one(spec, room, ("bed_single",), weights,
+                                  dodge_doors=True, require_walkable=True)
+            added += bool(ok)
+        elif kind == "living" and not _has_any(spec, room, SOFAS):
+            # 一間沒有沙發的客廳跟沒有床的臥室一樣是不完整的圖 —— 書上
+            # (Space 1)客廳的深度就是由「電視櫃+走道+茶几+走道+沙發」算出來的,
+            # 沙發是那條算式的主角。補小一號的(三人 → 二人)。
+            added += bool(_restore_one(spec, room, ("sofa2", "sofa3"), weights))
         elif "kitchen" in _merged_kinds(room, kind) and not _has_counter(spec, room):
             # ⚠️ 沒有流理台的廚房不是廚房(`test_every_kitchen_has_a_counter`)。
             #    動線修復器不知道這件事:6m 面寬的 1F 廚房後來多了一扇對走道的門

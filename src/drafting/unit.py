@@ -255,7 +255,10 @@ def one_room_unit() -> UnitSpec:
     windows = [WindowPlacement(1, 1)]
     fixtures = [
         FixturePlacement("toilet", (60, 1200), 270),     # 貼西牆,朝 +X
-        FixturePlacement("basin", (900, 1940), 180),     # 貼浴廁北牆,朝 -Y
+        # ⚠️ 這個樣板的浴廁是**手調座標**的:洗手台照書上放大到 600×600 之後
+        #    (2026-09-03)會疊到馬桶(實測 validate_spec 報 toilet×basin 重疊)。
+        #    這種 1.5×2m 的單元浴廁正是 `basin_small` 的用途 —— 窄浴室退小一號。
+        FixturePlacement("basin_small", (900, 1940), 180),   # 貼浴廁北牆,朝 -Y
         FixturePlacement("shoe_cabinet", (3940, 650), 90),   # 玄關,貼東(隔戶)牆朝西
         FixturePlacement("bed_double", (2900, 5925), 180),   # 床頭貼北牆
         FixturePlacement("wardrobe", (60, 3000), 270),   # 貼西牆
@@ -332,7 +335,7 @@ def one_bed_unit() -> UnitSpec:
         # 馬桶往南挪(1400→900):原位置正在門(北牆 x=700)的正前方,馬桶頂到牆面
         # 只剩 550mm 淨寬,人進不去(circulation_blocked)。挪完門前有 1m 可站。
         FixturePlacement("toilet", (60, 900), 270),      # 浴廁,貼西牆朝東
-        FixturePlacement("basin", (1450, 2140), 180),    # 浴廁,貼北牆朝南(讓開門口)
+        FixturePlacement("basin_small", (1450, 2140), 180),  # 浴廁,貼北牆朝南(讓開門口;窄浴室用小一號)
         FixturePlacement("shoe_cabinet", (1860, 600), 270),  # 玄關,貼浴廁東牆朝東
         FixturePlacement("sofa3", (75, 4200), 270),      # 客廳沙發,背貼西牆朝東
         FixturePlacement("bed_double", (4400, 5925), 180),   # 臥室,床頭貼北牆

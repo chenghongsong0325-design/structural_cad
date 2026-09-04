@@ -63,7 +63,7 @@ VIOLATION_THRESHOLD = 50.0
 
 # 圖塊名 → 關聯規則用的 canonical 類別。未列者用原名(fallback)。
 FIXTURE_TYPE = {
-    "sofa3": "sofa", "armchair": "armchair",
+    "sofa3": "sofa", "sofa2": "sofa", "armchair": "armchair",
     "tv_cabinet": "tv",
     "bed_single": "bed", "bed_double": "bed", "nightstand": "nightstand",
     "table4": "dining_table", "coffee_table": "coffee_table",

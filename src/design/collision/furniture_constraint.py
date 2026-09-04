@@ -107,6 +107,7 @@ FURNITURE_CONSTRAINTS: dict[str, FurnitureConstraint] = {
     "nightstand": FurnitureConstraint("nightstand", ANY_WALL, 300.0),
     # 客廳:沙發/電視櫃背靠牆
     "sofa3": FurnitureConstraint("sofa3", ANY_WALL, 900.0),         # 茶几+走道
+    "sofa2": FurnitureConstraint("sofa2", ANY_WALL, 900.0),         # 同上,窄客廳用
     "armchair": FurnitureConstraint("armchair", ANY_WALL, 600.0),
     "tv_cabinet": FurnitureConstraint("tv_cabinet", ANY_WALL, 500.0),
     # 玄關/書房/廚房:櫃背靠牆

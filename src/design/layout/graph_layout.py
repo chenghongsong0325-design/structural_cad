@@ -945,6 +945,7 @@ def _declutter_for_circulation(spec, max_removals: int = 20,
     from shapely.geometry import Polygon
 
     from src.design.collision.geometry import fixture_obstacles
+    from src.design.collision.priority import priority_of
     from src.design.layout.room_circulation import analyze_room
     from src.design.semantic.room_semantic import canonical_room
 
@@ -962,7 +963,16 @@ def _declutter_for_circulation(spec, max_removals: int = 20,
                      if o.poly.intersection(rpoly).area > 0.0]
             if not cands:
                 continue                             # 沒家具還不通 = 房間本身太小
-            victim = max(cands, key=lambda o: o.poly.area)
+            # ⚠️ 受害者要**先問優先度**,再比大小。`collision/priority.py` 的模組
+            #    說明本來就寫著「高優先的(床/馬桶/沙發/流理台)永遠保留,只犧牲
+            #    裝飾」—— 但這支從來沒問過它,只挑「最大件」。床 1000×2000(2㎡)
+            #    永遠比衣櫃 1500×600(0.9㎡)大,所以**床永遠先被丟**,留下一間
+            #    有衣櫃沒有床的臥室(淺基地 5~7m 實測 4 間都是這樣)。
+            #    ⚠️ 不是「不准丟床」:真的擠不出通道時仍要丟得動,否則
+            #    `circulation_blocked` 就變成解不掉的硬錯誤。只改**順序** ——
+            #    先丟裝飾,一輪一輪重驗,通了就不會輪到床。
+            victim = min(cands, key=lambda o: (priority_of(o.tag),
+                                               -o.poly.area))
             # 先試「挪一下」再談移除:餐桌常常只是偏了 10~20cm,導致一側的
             # 通道剩 50cm(差 10cm 就走不過去)。挪得動就別丟——真實圖也是這樣。
             if _nudge_into_room(spec, room, victim.ref):

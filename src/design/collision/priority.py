@@ -14,7 +14,7 @@ PRIORITY = {
     # 3 必要
     "bed_single": 3, "bed_double": 3,
     "toilet": 3, "basin": 3,
-    "sofa3": 3, "counter": 3, "fridge": 3,
+    "sofa3": 3, "sofa2": 3, "counter": 3, "fridge": 3,
     # 2 主要
     "table4": 2, "desk": 2, "wardrobe": 2,
     # 1 裝飾(可丟)

@@ -54,7 +54,7 @@ HUMAN_TYPE = {
     "bed_single": "bed", "bed_double": "bed",
     "wardrobe": "wardrobe",
     "desk": "desk",
-    "sofa3": "sofa", "armchair": "sofa",
+    "sofa3": "sofa", "sofa2": "sofa", "armchair": "sofa",
     "table4": "dining_table",
     "toilet": "toilet",
     "bathtub": "shower",
