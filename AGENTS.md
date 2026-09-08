@@ -28,7 +28,10 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 
-python -m pytest -q                    # 全套測試，目前 ~986 passed，必須全綠
+python -m pytest tests/test_narrow_house.py -q   # 平常:只跑受影響的測試檔
+python -m pytest -q                              # 全套(70 檔 / ~1190 個測試函式)
+python scripts/preview_plan.py --width 4.5 --depth 14 --floors 3   # 出圖給人看
+python scripts/scan_plans.py --n 40 --width 4,8 --depth 10.5,18    # 隨機掃描驗收
 python -m src.design.benchmark         # 34 案巡檢 → output/benchmark/report.html
 uvicorn src.web.app:app --reload       # 網頁版 http://localhost:8000
 ```
@@ -36,7 +39,49 @@ uvicorn src.web.app:app --reload       # 網頁版 http://localhost:8000
 - 網頁版與 AI 設計師模式需要環境變數 `GEMINI_API_KEY`。
 - ⚠️ Gemini 免費額度 **每日 20 次**，AI 模式一次請求吃 2~3 次呼叫（約 7 次/日就用完）。
   除錯時盡量用測試裡的假 client，不要真的一直打 API。
+  **沒有金鑰時規則版產線、測試、掃描、出圖全部照跑**，只有 AI 那條路走不動。
 - 產出都在 `output/`（已 gitignore），整個刪掉不影響程式。
+
+### 測試怎麼跑
+
+`pytest.ini` 預設帶 `-n auto -q`（pytest-xdist 平行，**是必要相依不是選用**）。
+
+- **常態只跑受影響的測試檔 + 隨機掃描**；`tests/test_narrow_house.py` 含 `slow`
+  的完整一輪要 20~30 分鐘，每次改動都全跑是浪費。
+- **沒跑全套就不要說「全綠」** —— 要宣稱全綠就真的跑 `python -m pytest -q`。
+- 動骨架 / 動 `plan_check` 規則時要跑全套(不能只跑 `-m "not slow"`)。
+- `-n0` 是除錯必備：平行模式會把 print / traceback 打散。
+  ⚠️ **不要寫 `-p no:xdist`** —— plugin 關掉後 `addopts` 裡的 `-n auto` 會變成
+  無法辨識的參數，整支跑不起來。用 `-n0`。
+- ⚠️ `pytest -q | tail` 回的是 `tail` 的結束碼。要看 pytest 自己的結束碼，
+  導到檔案再讀。
+- **測試不能為了通過而放寬既有斷言。** 情境不存在了就改釘「還活著的那部分」，
+  不是刪掉、也不是放寬。
+
+### 骨架路由（`generate_building_auto` 依建築面寬自動選）
+
+`src/design/building_generator.py` 是分流點。改任何一個骨架前先確認案子落到哪條：
+
+| 建築尺寸 | 骨架 | 檔案 |
+|---|---|---|
+| 寬 4~8m、深 ≥9.5m（>6m 寬要 ≥10.5m），深上限依面寬 13.5~16.5m | 窄透天：前後串聯 + 中段核 + 單樓梯 | `layout/narrow_house.py` |
+| 寬 5~9m、深放不下折返梯 | 淺基地：樓梯轉 90 度 | `layout/shallow_house.py` |
+| 寬 ≥10m | 兩帶式（規則版主線） | `layout_generator.py` |
+| 寬 5~30m（AI 產線，不走上面的分流） | 關係圖 → BSP 落實 | `layout/graph_layout.py` |
+
+尺寸下限的**唯一出處**是各骨架檔案頂端的常數，不要在別處寫死或憑記憶引用。
+
+⚠️ **表裡的尺寸全是「建築物」尺寸。** 使用者講的是基地還是建築，由
+`HouseBrief.dimension_basis` 決定：`"building"` 直接用；`"site"`（預設）面寬 ≤8m
+走**連棟街屋**（共壁不退側院、進深由建蔽率決定，見 `design/zoning.py`），再寬則
+四面退縮。新寫的測試/腳本若給的是建築尺寸，**一定要明寫
+`dimension_basis="building"`**（只寫 `setback=0` 不算數）。
+
+### 平台
+
+Windows 主控台預設 cp950，程式印 ✅/❌ 會整支炸掉。腳本自己會 `reconfigure` 成
+UTF-8，但在命令列跑其他東西遇到 `UnicodeEncodeError` 時，前面加
+`PYTHONIOENCODING=utf-8`。
 
 ---
 
@@ -2011,5 +2056,8 @@ zone3 七條測試一起紅。改成 `_slide_passage_door_off_columns`:寬度保
 | [docs/LAYOUT_ENGINE.md](docs/LAYOUT_ENGINE.md) | 格局引擎：分析堆疊、各層 API、評分公式 |
 | [docs/ARCHITECTURE_V0.7.md](docs/ARCHITECTURE_V0.7.md) | 架構快照：分層、誰可以寫 spec、已知限制 |
 | [docs/DEVELOPMENT_GUIDE.md](docs/DEVELOPMENT_GUIDE.md) | 開發原則（九步流程、工程紀律） |
+| [docs/workflows/scan.md](docs/workflows/scan.md) | **隨機掃描**：各產線的掃描區間、怎麼判讀、兩個設定坑 |
+| [docs/workflows/preview.md](docs/workflows/preview.md) | **出圖看過**：挑哪個尺寸、看圖要確認哪幾項 |
+| [docs/workflows/newrule.md](docs/workflows/newrule.md) | **加硬規則**：判 error/warning、寫進 plan_check、四條產線驗收 |
 | [ROADMAP.md](ROADMAP.md) | 階段 A~E 的原始路線圖（**只到 E1，之後的進度看 CHANGELOG**） |
 | [CHANGELOG.md](CHANGELOG.md) | 版本變更紀錄 |

@@ -176,7 +176,10 @@ CASES: list[Case] = [
 # ---------------------------------------------------------------------------
 # 出圖:一份 ezdxf 文件 → PNG(matplotlib 算圖,白底黑線)
 # ---------------------------------------------------------------------------
-def render_png(doc, path: Path, dpi: int = 100) -> None:
+def render_png(doc, path: Path, dpi: int = 100, lineweight: float = 20,
+               size: float = 8) -> None:
+    """DXF → PNG。lineweight/size 預設是 benchmark 縮圖調出來的值;要看細節
+    (門窗編號、家具、標註文字)時調小 lineweight、調大 size,牆才不會糊成一團。"""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -188,10 +191,10 @@ def render_png(doc, path: Path, dpi: int = 100) -> None:
     )
     from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
 
-    cfg = Configuration(lineweight_scaling=20,
+    cfg = Configuration(lineweight_scaling=lineweight,
                         background_policy=BackgroundPolicy.WHITE,
                         color_policy=ColorPolicy.BLACK)
-    fig = plt.figure(figsize=(8, 8))
+    fig = plt.figure(figsize=(size, size))
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_axis_off()
     Frontend(RenderContext(doc), MatplotlibBackend(ax), config=cfg).draw_layout(
