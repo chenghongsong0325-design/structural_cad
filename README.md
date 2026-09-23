@@ -1,16 +1,20 @@
 # structural_cad — 自動住宅平面圖生成
 
-用 Python + [ezdxf](https://ezdxf.mozman.at/) 把**一句中文需求**變成**可施工的
-DXF 平面圖**:規則式格局生成 → 家具碰撞修復 → 檢核 → 出圖,並附一整套
+用 Python + [ezdxf](https://ezdxf.mozman.at/) 把**一句中文需求**變成**可核對的
+住宅配置初稿（DXF 平面圖）**:規則式格局生成 → 家具碰撞修復 → 檢核 → 出圖,並附一整套
 **格局分析與品質量化**工具。
 
 ```
-「透天三層,基地 19×13 米,三房,地下一層車庫」
+「透天三層,建築物 4.5×14 米,四房」
         ↓
   平面圖 / 剖面 / 立面 + 圖框標題欄 + 門窗家具 → DXF / PDF
 ```
 
-**目前版本:v0.7**(617 tests · Benchmark 34/34 · 20 pass / 14 warn / 0 fail)
+**基礎版本:v0.7**；以下 617 tests / Benchmark 34/34 為該版本歷史紀錄，非目前完整測試結論。
+
+**2026-09-22 補強：** 必要需求逐項量測、驗證未完成停止出圖、RAG 案例條件篩選與人工核對欄位。見 [需求核對與 RAG 補強](docs/REQUIREMENTS.md)。本工具產出住宅配置初稿，不代表施工設計或建照核准。
+
+**2026-09-23：** 新增房間／動線互動分析、逐房檢查證據與衝突定位，以及窄透天既有區塊的指定臥室數分配。操作與範圍見 [空間分析與房數配置](docs/SPATIAL_REASONING.md)。
 
 ---
 
@@ -46,6 +50,17 @@ uvicorn src.web.app:app --reload
 
 每層樓一個頁籤(含剖面/立面),可縮放平移、下載 DXF。
 產出存在 `output/web/`,整個刪掉也不影響程式。
+
+### 本機建築知識檢索（RAG）
+
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements-rag.txt
+.venv\Scripts\python.exe -m src.knowledge prepare
+```
+
+準備好模型後重啟網頁服務。需求解析和 AI 設計會檢索 `knowledge/`，
+結果頁「設計參考資料」顯示引用來源。模型與索引存於 `output/rag/`；
+刪除後需重新 `prepare`。詳見 [RAG 安裝與資料格式](docs/RAG.md)。
 
 ---
 
@@ -128,6 +143,15 @@ Benchmark 會輸出 `output/benchmark/report.html`(自包含,含縮圖),
 ---
 
 ## 文件
+
+RAG 可在網頁「匯入參考資料」加入 PDF、DWG、DXF 或圖片，也可執行
+`.venv\Scripts\python.exe -m src.knowledge import "檔案或資料夾"`。
+先安裝 `requirements-import.txt`；DWG 另執行 `python -m src.knowledge prepare-dwg`。
+OCR 與 CAD 匯入擷取文字及標註，不會自動還原房間幾何。完整設定見 [docs/RAG.md](docs/RAG.md)。
+
+沒有檔案時，可在同一區輸入主題，按「自動找資料並加入 RAG」。安裝
+`requirements-web.txt` 後也可執行 `python -m src.knowledge research "透天住宅 採光 平面圖"`。
+系統讀取公開網頁／文字 PDF 正文，保留原始網址，再建立本機索引；網路內容仍須核對。
 
 | 文件 | 內容 |
 |---|---|

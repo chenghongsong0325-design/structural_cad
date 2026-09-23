@@ -92,7 +92,7 @@ def critique_building(floors, env) -> list[str]:
 
 def design_building(brief: str, building_w: float, building_d: float, *,
                     iterations: int = 3, client: Optional[object] = None,
-                    floor_area_m2: Optional[float] = None, verbose: bool = True):
+                    floor_area_m2: Optional[float] = None, verbose: bool = True, requirements: list | None = None):
     """雙向收斂:設計→落實→挑毛病→重設計,留 fitness 最高的那版。
 
     回 (best, history)。best = {iter, fitness, mean_score, graph, floors, problems}。
@@ -105,7 +105,14 @@ def design_building(brief: str, building_w: float, building_d: float, *,
         floor_area_m2 = building_w * building_d / 1e6
     env = (SETBACK, SETBACK, SETBACK + building_w, SETBACK + building_d)
 
-    graph = propose_room_graph(brief, client=client, floor_area_m2=floor_area_m2)
+    from src.design.requirements import contract_note
+    from src.design.validation import assess_candidate
+    from src.knowledge.case_metadata import case_context, current_query
+    requirements = requirements or []
+    case_query = {**current_query(), "dimension_basis": "building",
+                  "width_m": building_w / 1000, "depth_m": building_d / 1000}
+    with case_context(case_query):
+        graph = propose_room_graph(brief + contract_note(requirements), client=client, floor_area_m2=floor_area_m2)
     best = None
     history: list[dict] = []
     for it in range(iterations):
@@ -119,12 +126,17 @@ def design_building(brief: str, building_w: float, building_d: float, *,
         scores = [score_report(sp)["overall_score"] for _, sp, _, _ in floors]
         mean_score = sum(scores) / len(scores)
         problems = critique_building(floors, env)
+        assessment = assess_candidate([(lb, sp) for lb, sp, _, _ in floors], requirements, env=env) if requirements else None
+        if assessment:
+            problems = list(dict.fromkeys(problems + assessment["problems"]))
+        feasible = assessment["feasible"] if assessment else True
         fitness = mean_score - FITNESS_PROBLEM_COST * len(problems)
         history.append({"iter": it, "mean_score": mean_score,
-                        "n_problems": len(problems), "fitness": fitness})
-        if best is None or fitness > best["fitness"]:
+                        "n_problems": len(problems), "fitness": fitness, "feasible": feasible,
+                        "requirement_check": assessment["requirement_check"] if assessment else None})
+        if best is None or (feasible, fitness) > (best["feasible"], best["fitness"]):
             best = {"iter": it, "fitness": fitness, "mean_score": mean_score,
-                    "graph": graph, "floors": floors, "problems": problems}
+                    "graph": graph, "floors": floors, "problems": problems, "feasible": feasible}
         if verbose:
             print(f"  迭代 {it}: 平均分 {mean_score:.0f}  問題 {len(problems)} 個  "
                   f"fitness {fitness:.0f}")
@@ -133,8 +145,9 @@ def design_building(brief: str, building_w: float, building_d: float, *,
         if not problems or it == iterations - 1:         # 沒毛病了就收工
             break
         try:
-            graph = refine_room_graph(graph, problems, client=client,
-                                      floor_area_m2=floor_area_m2)
+            with case_context(case_query):
+                graph = refine_room_graph(graph, problems + [contract_note(requirements)], client=client,
+                                          floor_area_m2=floor_area_m2)
         except Exception:                                # 重設計失敗(額度/網路)
             break                                        # → 用目前最佳,不讓整棟白做
     return best, history

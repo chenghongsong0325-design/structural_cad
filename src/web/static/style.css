@@ -549,6 +549,12 @@ body.has-result .empty { display: none; }
 }
 .zoom:hover { background: rgba(255,255,255,.14); color: #fff; }
 
+.rag-panel { margin-top: 12px; font-size: 12px; line-height: 1.65; }
+.rag-panel summary { cursor: pointer; font-weight: 600; }
+.rag-panel article { border-top: 1px solid var(--rule); padding: 10px 0; }
+.rag-panel p { white-space: pre-wrap; margin: 6px 0; }
+.rag-panel small { overflow-wrap: anywhere; color: var(--muted, #666); }
+
 /* ── 窄螢幕 ──────────────────────────────────────────────────────── */
 @media (max-width: 1080px) {
   .app { grid-template-columns: 1fr; height: auto; overflow: visible; }
@@ -562,3 +568,73 @@ body.has-result .empty { display: none; }
   .error, .history { margin-left: 16px; margin-right: 16px; }
   .metrics { grid-template-columns: 1fr; }
 }
+:root { --import-border: #dcdedb; }
+.rag-import p, .rag-import label { font-size: 12px; line-height: 1.65; }
+.rag-import input[type="file"] { display: block; max-width: 100%; margin: 10px 0; font-size: 12px; }
+.rag-import .import-note { color: #686b70; }
+#import-status { font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+#import-results details { border-top: 1px solid var(--import-border); padding: 10px 0; margin-top: 8px; }
+#import-results summary { overflow-wrap: anywhere; }
+#import-results pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; font-size: 12px; line-height: 1.6; }
+.web-research { border-top: 1px solid var(--import-border); margin-top: 18px; padding-top: 14px; }
+.web-research h3 { font-size: 14px; margin: 0 0 10px; }
+#research-query { box-sizing: border-box; width: 100%; margin: 8px 0; padding: 9px; font: inherit; font-size: 12px; }
+.research-examples { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; }
+#research-status { font-size: 12px; line-height: 1.65; margin-top: 8px; overflow-wrap: anywhere; }
+#research-results details { border-top: 1px solid var(--import-border); padding: 10px 0; margin-top: 8px; }
+#research-results summary { overflow-wrap: anywhere; }
+#research-results a { display: inline-block; font-size: 12px; margin-top: 8px; }
+#research-results pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; font-size: 12px; line-height: 1.6; }
+
+/* Evidence and case applicability forms */
+#requirements-panel h3 { font-size: 15px; margin: 0 0 12px; }
+.requirement-item { padding: 10px 12px; margin: 8px 0; border-left: 3px solid #b88747; background: #f7f5ef; border-radius: 5px; overflow-wrap: anywhere; }
+.requirement-item.met { border-color: #458272; }
+.requirement-item p { margin: 5px 0; }
+.requirement-item small, #rag-content small, #case-source { display: block; margin-top: 6px; color: #686660; }
+.case-editor { margin-top: 20px; border-top: 1px solid #dedbd4; padding-top: 14px; }
+.case-editor label, .case-editor legend { display: block; font-size: 12px; margin: 10px 0 5px; }
+.case-editor input, .case-editor select, .case-editor textarea { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #d7d3ca; border-radius: 5px; background: #fff; color: #292923; }
+.case-editor fieldset { padding: 0; border: 0; margin: 0; min-width: 0; }
+.case-range { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.case-range label { margin-top: 0; }
+#case-save { margin-top: 14px; }
+#case-status { margin-top: 12px; font-size: 12px; overflow-wrap: anywhere; }
+.spatial-inspector { display:flex; flex:1; min-height:0; flex-direction:column; padding:16px 20px 8px; overflow:hidden; background:#f7fafc; color:#172c3d; }
+.spatial-toolbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.spatial-toolbar select { width:auto; padding:6px 12px; }
+.spatial-toolbar label { display:flex; align-items:center; gap:6px; font-size:13px; }
+.spatial-toolbar input { width:auto; }
+#spatial-status { margin:10px 0 4px; font-size:14px; }
+#spatial-status.diagnostic { color:#ad361e; font-weight:600; }
+#spatial-allocation { margin:4px 0 8px; font-size:13px; color:#176c65; }
+.spatial-layout { display:grid; grid-template-columns:minmax(280px,1fr) 320px; gap:16px; min-height:0; flex:1; }
+.spatial-graph { min-height:0; display:flex; flex-direction:column; align-items:center; overflow:auto; background:#edf3f5; border:1px solid #d1dfe5; border-radius:12px; padding:10px; }
+.spatial-graph svg { flex:1; min-height:260px; width:100%; }
+.spatial-region { fill:#fff; stroke:#adbfc9; cursor:pointer; }
+.spatial-region:hover,.spatial-region:focus { fill:#dff5f1; outline:none; stroke:#168879; }
+.spatial-region.selected { fill:#fff0c4; stroke:#ce8100; }
+.spatial-region.unreachable { fill:#ffe3dc; }
+.spatial-edge { stroke:#2373ac; fill:none; pointer-events:none; }
+.spatial-edge.open { stroke:#1b8f92; stroke-dasharray:100 70; }
+.spatial-edge.adjacent { stroke:#98a2ae; stroke-dasharray:45 90; opacity:.7; }
+.spatial-edge.route { stroke:#d08400; }
+.spatial-label { text-anchor:middle; fill:#172c3d; paint-order:stroke; stroke:#fff; stroke-width:30; pointer-events:none; }
+.spatial-label.sub { fill:#577080; }
+.spatial-node { fill:#2373ac; pointer-events:none; }
+.spatial-anchor { fill:#0c866d; pointer-events:none; }
+.spatial-details { overflow:auto; min-height:0; padding:0 8px 12px 0; font-size:13px; line-height:1.65; }
+.spatial-details h3 { margin:4px 0 10px; font-size:16px; }
+.spatial-details h4 { margin:16px 0 5px; font-size:13px; }
+.spatial-details p { margin:6px 0; }
+.spatial-details .muted { color:#617180; }
+.spatial-conflict { padding:12px 0; border-top:1px solid #d4dfe4; }
+.spatial-conflict small { display:block; color:#647383; }
+.spatial-conflict button { margin:8px 0 0; }
+.spatial-room-issue { padding-left:9px; border-left:3px solid #e6ac68; }
+.spatial-legend,.spatial-method { font-size:12px; line-height:1.5; color:#536777; }
+.spatial-legend { margin:8px 0 0; }
+.spatial-method { margin:8px 0 0; }
+#spatial-conflicts { margin-top:22px; }
+@media(max-width:1100px) { .spatial-layout { grid-template-columns:minmax(230px,1fr) 255px; } .stage-hint { display:none; } }
+@media(max-width:800px) { .spatial-inspector { overflow:auto; min-height:600px; } .spatial-layout { display:block; } .spatial-graph svg { height:450px; flex:none; } .spatial-details { overflow:visible; margin-top:16px; } }

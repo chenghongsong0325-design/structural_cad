@@ -1,0 +1,2 @@
+# 本機中文語意向量；生成器本身仍可只安裝 requirements.txt。
+sentence-transformers>=5.1,<6

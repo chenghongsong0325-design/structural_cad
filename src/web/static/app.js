@@ -4,6 +4,118 @@
 
 const $ = (id) => document.getElementById(id);
 
+document.querySelectorAll(".research-topic").forEach((button) => {
+  button.addEventListener("click", () => { $("research-query").value = button.textContent; });
+});
+$("research-btn").addEventListener("click", researchWeb);
+$("research-query").addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !$("research-btn").disabled) researchWeb();
+});
+
+async function researchWeb() {
+  const query = $("research-query").value.trim();
+  if (query.length < 2) { $("research-status").textContent = "請輸入想找的主題。"; return; }
+  const button = $("research-btn");
+  button.disabled = true;
+  $("research-results").replaceChildren();
+  $("research-status").textContent = "搜尋公開來源、讀取正文並建立索引中…可能需要一至兩分鐘。";
+  try {
+    const response = await fetch("/api/rag/research", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({query, limit: 3, code: $("code").value}),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || `伺服器錯誤 (${response.status})`);
+    $("research-status").textContent = data.reason || "處理完成";
+    if (data.index && data.index.reason) $("research-status").textContent += `。${data.index.reason}`;
+    for (const item of (data.items || [])) {
+      const card = document.createElement("details");
+      const title = document.createElement("summary");
+      const labels = {imported:"已加入", duplicate:"已在知識庫", skipped:"已跳過"};
+      title.textContent = `${item.title} · ${labels[item.status] || item.status}`;
+      card.appendChild(title);
+      const link = document.createElement("a");
+      try {
+        const url = new URL(item.url);
+        if (!["https:", "http:"].includes(url.protocol)) throw new Error("Invalid source URL");
+        link.href = url.href;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = "查看原始來源";
+        card.appendChild(link);
+      } catch (_) { /* Untrusted URLs never become executable links. */ }
+      const add = (value) => { const p = document.createElement("p"); p.textContent = value; card.appendChild(p); };
+      if (item.reason) add(item.reason);
+      if (item.report) {
+        add(`${item.report.chunks} 段文字${data.index.status === "ready" ? "已可檢索" : "已保存，索引尚未就緒"}。`);
+        (item.report.warnings || []).forEach(add);
+        for (const evidence of (item.report.evidence || [])) {
+          const pre = document.createElement("pre");
+          pre.textContent = `${evidence.location}\n${evidence.text}`;
+          card.appendChild(pre);
+        }
+      }
+      $("research-results").appendChild(card);
+    }
+  } catch (error) {
+    $("research-status").textContent = `搜尋未完成：${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// Send each file as a bounded raw upload; a failed file does not hide later results.
+$("import-btn").addEventListener("click", async () => {
+  const input = $("import-files");
+  const files = Array.from(input.files || []);
+  if (!files.length) { $("import-status").textContent = "請先選擇檔案。"; return; }
+  const button = $("import-btn");
+  button.disabled = input.disabled = true;
+  $("import-results").replaceChildren();
+  let searchable = 0;
+  try {
+    for (const [i, file] of files.entries()) {
+      $("import-status").textContent = `正在處理 ${i + 1}/${files.length}：${file.name}。OCR 或首次索引可能需要較多時間…`;
+      const card = document.createElement("details");
+      const title = document.createElement("summary");
+      title.textContent = file.name;
+      card.appendChild(title);
+      $("import-results").appendChild(card);
+      const add = (value) => { const p = document.createElement("p"); p.textContent = value; card.appendChild(p); };
+      try {
+        if (file.size > 50 * 1024 * 1024) throw new Error("超過 50 MB，請分割後匯入。");
+        const resp = await fetch(`/api/rag/import?filename=${encodeURIComponent(file.name)}`, {
+          method: "POST", headers: { "Content-Type": "application/octet-stream", "X-Access-Code": $("code").value }, body: file,
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || `伺服器錯誤 (${resp.status})`);
+        const report = data.file;
+        const labels = { imported: "已匯入", partial: "部分匯入", duplicate: "相同內容已存在", empty: "未取得文字", failed: "匯入失敗" };
+        title.textContent = `${file.name} · ${labels[report.status] || report.status}`;
+        if (report.reason) add(report.reason);
+        if (report.chunks && data.index.status === "ready") {
+          searchable++;
+          add(`${report.chunks} 段資料已可檢索。來源：${report.filename}`);
+        } else if (data.index.reason) add(data.index.reason);
+        (report.warnings || []).forEach(add);
+        for (const item of (report.evidence || [])) {
+          const preview = document.createElement("pre");
+          preview.textContent = `${item.location} · ${item.method}\n${item.text}`;
+          card.appendChild(preview);
+        }
+        if (["failed", "empty", "partial"].includes(report.status)) card.open = true;
+      } catch (err) {
+        title.textContent = `${file.name} · 匯入失敗`;
+        add(err.message);
+        card.open = true;
+      }
+    }
+    $("import-status").textContent = `處理完成：${searchable}/${files.length} 個檔案已可檢索。展開結果可核對文字與來源。`;
+  } finally {
+    button.disabled = input.disabled = false;
+  }
+});
+
 let sheets = [];        // 目前顯示的圖紙 [{label, kind, svg, dxf}]
 let current = -1;       // 目前顯示第幾張
 let view = { x: 0, y: 0, k: 1 };   // 平移/縮放狀態(切頁籤時重設)
@@ -166,7 +278,7 @@ function stopProgress() {
 // 共用請求流程:送出 → 成功就渲染結果。回傳是否成功。
 async function requestPlan(body, btn, textForRedesign) {
   btn.disabled = true;
-  $("status").textContent = "設計中…(約 10~60 秒)";
+  $("status").textContent = "設計中…首次執行可能需要較多時間";
   startProgress();
   hideError();
   try {
@@ -176,7 +288,13 @@ async function requestPlan(body, btn, textForRedesign) {
       body: JSON.stringify(body),
     });
     const data = await resp.json();
-    if (!resp.ok) throw new Error(data.detail || `伺服器錯誤 (${resp.status})`);
+    if (!resp.ok) {
+      const detail = data.detail;
+      renderRequirements(detail?.requirement_check, detail?.validation);
+      window.renderSpatialInspector(detail?.spatial_report, detail?.conflicts || [], true);
+      const message = typeof detail === "string" ? detail : detail?.message || `伺服器錯誤 (${resp.status})`;
+      throw new Error(message + (sheets.length ? "（畫布保留的是前次成功方案。）" : ""));
+    }
     lastText = textForRedesign;
     applyResult(data);
     return true;
@@ -202,7 +320,11 @@ function applyResult(data) {
   $("summary").textContent = (data.demo ? "【示範模式・離線回放】" : "") + data.summary;
   $("design-note").textContent = data.design_note
     ? "本案設計:" + data.design_note : "";
+  renderRequirements(data.requirement_check, data.validation);
+  window.renderSpatialInspector(data.spatial_report, data.conflicts || [], false);
   renderAiPanel(data);
+  renderDecisionTrace(data);
+  renderRagPanel(data.rag, data.demo);
   renderMetrics(data.metrics || null);
   renderSuggestions(data.suggestions || []);
   $("zip").href = data.zip;
@@ -216,6 +338,47 @@ function applyResult(data) {
   $("about").open = false;      // 有方案了 → 能力說明收起來,側欄留給結果
   $("history").classList.add("hidden");
   loadRecent();                 // 剛存的這一筆要出現在「最近」
+}
+
+function renderRagPanel(rag, demo) {
+  const panel = $("rag-panel");
+  const box = $("rag-content");
+  box.replaceChildren();
+  panel.classList.toggle("hidden", !rag);
+  if (!rag) return;
+  const note = document.createElement("p");
+  note.textContent = rag.status === "unavailable"
+    ? "部分知識檢索未就緒；該階段已沿用原有生成流程。"
+    : rag.status === "disabled" ? "本次未啟用知識檢索。"
+    : rag.status === "no_match" ? "本次沒有取得符合條件的參考段落。"
+    : demo ? "以下為檢索到的參考；本次模型回覆為離線回放。"
+    : "以下段落已提供給 AI 參考；不代表方案已符合其中所有條件。";
+  box.appendChild(note);
+  const seen = new Set();
+  for (const event of rag.events || []) {
+    if (event.excluded?.length) {
+      const excluded = document.createElement("p");
+      excluded.textContent = "條件不符已排除：" + event.excluded.map(e => `${e.title}（${e.reason}）`).join("、");
+      box.appendChild(excluded);
+    }
+    for (const source of event.sources || []) {
+      const key = event.stage + ":" + source.id;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const item = document.createElement("article");
+      const title = document.createElement("b");
+      const stage = { parse: "需求解析", townhouse: "透天選配", graph: "空間關係" }[event.stage] || "設計";
+      title.textContent = `${stage}｜${source.title} — ${source.section}`;
+      const text = document.createElement("p");
+      text.textContent = source.text;
+      const ref = document.createElement("small");
+      ref.textContent = `來源：${source.source} · ${source.path}:${source.line}`;
+      const applicability = document.createElement("small");
+      applicability.textContent = `${source.case?.review_status === "reviewed" ? "已人工核對" : "待人工核對"} · ${source.applicability || "適用條件未記載"}`;
+      item.append(title, text, ref, applicability);
+      box.appendChild(item);
+    }
+  }
 }
 
 function showError(msg) {
@@ -278,7 +441,7 @@ function renderAiPanel(data) {
 
 // ── 圖面正確性檢查:每房有門/室內連通/有大門/家具不穿牆/動線通 ──────────
 function renderPlanCheck(c) {
-  if (!c) return "";
+  if (!c) return `<div class="ai-problems">此方案缺少檢核紀錄，尚未驗證。</div>`;
   const items = (c.issues || []).filter((i) => i.severity === "error");
   if (c.ok) {
     return `<div class="ai-problems ok"><b>圖面檢查通過</b>　每間房都有門、室內走得通、` +
@@ -292,11 +455,11 @@ function renderPlanCheck(c) {
 
 // ── 法規檢查(建築技術規則):樓梯尺寸/居室採光…──────────────────────────
 function renderCodeCheck(c) {
-  if (!c) return "";
+  if (!c) return `<div class="ai-problems">此方案缺少檢核紀錄，尚未驗證。</div>`;
   const items = (c.issues || []).filter((i) => i.severity === "violation");
   if (c.ok) {
-    return `<div class="ai-problems ok"><b>法規檢查通過</b>　樓梯級高級深/梯段寬/平臺深` +
-           `(施工編§33)、居室採光開口 ≥1/8(§40)` +
+    return `<div class="ai-problems ok"><b>已實作的尺寸規則通過</b>　樓梯級高級深/梯段寬/平臺深` +
+           `(目前簡化規則)、採光與通風開口比例；不等同建照或施工審查` +
            (c.n_warnings ? `(另有 ${c.n_warnings} 項慣例建議)` : "") + `</div>`;
   }
   return `<div class="ai-problems"><b>法規檢查未過(${items.length}):</b>` +
@@ -490,3 +653,146 @@ $("canvas").addEventListener("pointermove", (e) => {
 });
 $("canvas").addEventListener("pointerup", () => { drag = null; });
 $("canvas").addEventListener("dblclick", resetView);
+
+// Requirement evidence is rendered as text, including user/LLM supplied fields.
+function renderRequirements(report, validation) {
+  const box = $("requirements-panel");
+  box.replaceChildren();
+  box.classList.toggle("hidden", !report && !validation);
+  if (!report && !validation) return;
+  const heading = document.createElement("h3");
+  heading.textContent = report ? `需求核對：必要條件 ${report.required_met}/${report.required_total} 項滿足` : "驗證狀態";
+  box.appendChild(heading);
+  if (validation) {
+    const status = document.createElement("p");
+    status.textContent = { passed: "已完成現有圖面與尺寸檢查。", failed: "圖面檢查未通過，本次未出圖。", unverified: "驗證未完成，本次未出圖。" }[validation.status] || "尚未驗證。";
+    box.appendChild(status);
+  }
+  for (const item of report?.items || []) {
+    const row = document.createElement("article");
+    row.className = `requirement-item ${item.status}`;
+    const title = document.createElement("b");
+    const status = { met: "滿足", unmet: "未滿足", unverified: "未驗證" }[item.status];
+    title.textContent = `${item.priority === "required" ? "必要" : "偏好"} · ${item.label} · ${status}`;
+    const value = document.createElement("p");
+    value.textContent = item.detail;
+    const source = document.createElement("small");
+    source.textContent = `依據：${item.source}`;
+    row.append(title, value, source);
+    if (item.evidence?.length) {
+      const evidence = document.createElement("small");
+      evidence.textContent = "圖面：" + item.evidence.map(e => `${e.floor}/${e.room}${e.room_index == null ? "" : `（房間 ${e.room_index + 1}）`}`).join("、");
+      row.appendChild(evidence);
+    }
+    box.appendChild(row);
+  }
+}
+
+function renderDecisionTrace(data) {
+  const history = data.ai_trajectory || [];
+  if (!history.length && !data.engine_fallback) return;
+  const details = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.textContent = "配置選擇與調整紀錄";
+  details.appendChild(summary);
+  const labels = { floors: "樓層數", bedrooms: "臥室數", garage: "車庫", patio: "天井",
+    core_style: "中段配置", mirror: "左右鏡射", open_kitchen: "開放餐廚", entry_frac: "大門位置比例" };
+  const value = v => v == null ? "未指定" : typeof v === "boolean" ? (v ? "有" : "無") : String(v);
+  for (const entry of history) {
+    const paragraph = document.createElement("p");
+    paragraph.textContent = `候選 ${entry.iter + 1}：${entry.feasible ? "通過必要條件與現有檢查" : "仍有必要條件或檢查待處理"}`;
+    details.appendChild(paragraph);
+    for (const change of entry.adjustments || []) {
+      const row = document.createElement("p");
+      row.textContent = `${labels[change.field] || change.field}：${value(change.proposed)} → ${value(change.used)}。${change.reason}`;
+      details.appendChild(row);
+    }
+  }
+  if (data.engine_fallback) {
+    const note = document.createElement("p");
+    note.textContent = data.engine_fallback.reason;
+    details.appendChild(note);
+  }
+  $("ai-panel").appendChild(details);
+  $("ai-panel").classList.remove("hidden");
+}
+
+let caseDocuments = [];
+const CASE_RANGES = ["width_m", "depth_m", "floors", "bedrooms", "car_spaces"];
+
+$("case-load").addEventListener("click", loadCaseDocuments);
+$("case-document").addEventListener("change", fillCaseForm);
+$("case-save").addEventListener("click", saveCaseMetadata);
+
+async function loadCaseDocuments() {
+  $("case-status").textContent = "讀取參考資料…";
+  try {
+    const response = await fetch("/api/rag/documents", { headers: { "X-Access-Code": $("code").value } });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "讀取失敗");
+    caseDocuments = data.documents;
+    const select = $("case-document");
+    select.replaceChildren();
+    for (const doc of caseDocuments) {
+      const option = document.createElement("option");
+      option.value = doc.id;
+      option.textContent = `${doc.case.review_status === "reviewed" ? "已核對" : "待核對"}｜${doc.title}`;
+      select.appendChild(option);
+    }
+    $("case-form").classList.toggle("hidden", !caseDocuments.length);
+    fillCaseForm();
+    $("case-status").textContent = `共 ${caseDocuments.length} 份。請依原始資料填寫；不知道的條件留空。`;
+  } catch (err) { $("case-status").textContent = err.message; }
+}
+
+function fillCaseForm() {
+  const doc = caseDocuments.find(d => d.id === $("case-document").value);
+  if (!doc) return;
+  const meta = doc.case;
+  $("case-source").textContent = `來源：${doc.source}`;
+  for (const field of ["category", "dimension_basis", "review_status", "reviewer", "review_note", "limitations"]) {
+    $("case-" + field).value = meta[field] || "";
+  }
+  for (const field of CASE_RANGES) {
+    $("case-" + field + "-min").value = meta[field]?.min ?? "";
+    $("case-" + field + "-max").value = meta[field]?.max ?? "";
+  }
+  $("case-party_walls").value = meta.party_walls == null ? "" : String(meta.party_walls);
+  $("case-window_sides").value = meta.window_sides?.join(",") ?? "";
+}
+
+async function saveCaseMetadata() {
+  const doc = caseDocuments.find(d => d.id === $("case-document").value);
+  if (!doc) return;
+  const meta = {};
+  try {
+    for (const field of ["category", "dimension_basis", "review_status", "reviewer", "review_note", "limitations"]) {
+      meta[field] = $("case-" + field).value.trim();
+    }
+    for (const field of CASE_RANGES) {
+      const min = $("case-" + field + "-min").value, max = $("case-" + field + "-max").value;
+      if ((min === "") !== (max === "")) throw new Error("每個條件請同時填下限與上限；固定值填相同數字。");
+      meta[field] = min === "" ? null : { min: Number(min), max: Number(max) };
+    }
+    const walls = $("case-party_walls").value;
+    meta.party_walls = walls === "" ? null : walls === "true";
+    const sides = $("case-window_sides").value.trim().toUpperCase();
+    meta.window_sides = sides ? sides.split(/[,，\s]+/) : null;
+    if (meta.review_status === "reviewed" && (!meta.reviewer || !meta.review_note)) {
+      throw new Error("標示已核對前，請填核對者與核對依據。");
+    }
+    $("case-save").disabled = true;
+    $("case-status").textContent = "儲存並更新索引…";
+    const response = await fetch(`/api/rag/documents/${encodeURIComponent(doc.id)}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: $("code").value, case: meta }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "條件格式不正確，請檢查範圍及開窗側。");
+    doc.case = data.case;
+    $("case-status").textContent = data.index.status === "ready" ? "已儲存，檢索會使用這些條件。" : "已儲存條件；索引未就緒，請稍後重試。";
+    const option = [...$("case-document").options].find(o => o.value === doc.id);
+    option.textContent = `${meta.review_status === "reviewed" ? "已核對" : "待核對"}｜${doc.title}`;
+  } catch (err) { $("case-status").textContent = err.message; }
+  finally { $("case-save").disabled = false; }
+}

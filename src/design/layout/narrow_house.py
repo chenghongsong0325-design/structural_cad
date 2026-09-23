@@ -3390,7 +3390,7 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
                  margin=0.0, depth_cap=None,
                  allow_min_service=True, lot=None, depth_limit=None,
                  want_patio=False, garage=False, closet=True,
-                 core_style="default", allow_skinny_spare=False):
+                 core_style="default", allow_skinny_spare=False, bedroom_quota=None):
     """組一層 spec(房間 → 牆/門/窗 + 樓梯 + 開口收尾 + 家具)。
 
     D 超過該面寬的上限時,**建築封頂**、多出來的地留成前後院(置中)——與兩帶式
@@ -3442,6 +3442,8 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
                                 allow_min_service, patio=use_patio,
                                 garage=garage, closet=closet,
                                 core_style=core_style, core_out=core_out)
+    from src.design.bedroom_program import apply_floor_program
+    rooms = apply_floor_program(rooms, bedroom_quota, level)
     spec = rooms_to_spec(rooms, (bx0, by0, bx1, by1), site_w, site_d,
                          setback=edge)
     # 這層**實際**用到的是哪一款核。要的那款排不下時會靜靜地退(ref→mid→
@@ -3499,7 +3501,7 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
                             allow_min_service=allow_min_service,
                             lot=lot, depth_limit=depth_limit,
                             want_patio=want_patio, garage=garage,
-                            closet=closet, core_style=core_style)
+                            closet=closet, core_style=core_style, bedroom_quota=bedroom_quota)
     if core_style in ("ref", "mid", "zone3"):
         # 這幾版的重點就是「廁所的門開在走道上」,這裡明講(見該函式)。
         # ⚠️ 三區版也要:樓上的浴室整條貼著走道,但它北邊就是後段那間臥室 ——
@@ -3518,7 +3520,7 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
                             lot=lot, depth_limit=depth_limit,
                             want_patio=want_patio, garage=garage,
                             closet=closet, core_style=core_style,
-                            allow_skinny_spare=allow_skinny_spare)
+                            allow_skinny_spare=allow_skinny_spare, bedroom_quota=bedroom_quota)
     spec.floor_label = floor_label
     _set_structural_grid(spec, bx0, by0, Wb, build_d)
     # ⚠️ 洞口躲柱:排洞口時柱還不存在(`_column_blocks` 那時看到的是空的),
@@ -3566,7 +3568,7 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
                                 lot=lot, depth_limit=depth_limit,
                                 want_patio=want_patio, garage=garage,
                                 closet=False, core_style=core_style,
-                                allow_skinny_spare=allow_skinny_spare)
+                                allow_skinny_spare=allow_skinny_spare, bedroom_quota=bedroom_quota)
     if variant.mirror:                              # 整層東西鏡射(樓梯核換邊)
         from src.design.layout_generator import _mirror_spec
         core = getattr(spec, "_nh_core", None)
@@ -3610,11 +3612,15 @@ def generate_narrow_building(building_w_mm: float, building_d_mm: float, *,
                              furnish: bool = True, variant=None,
                              seed=None, lot=None, patio: bool | None = None,
                              garage: bool = False,
-                             core_style: str | None = None):
+                             core_style: str | None = None,
+                             bedroom_target: int | None = None):
     """窄面寬透天多層 → [(樓層標示, FloorPlanSpec)]。
 
     每層共用同一垂直核(樓梯間+浴廁),樓梯上下對齊,並配家具(Phase 6 擺位)。
     building_w/d 是**建築物**尺寸;頂層樓梯標「下」,其餘標「上」。
+
+    bedroom_target:明確指定全棟臥室數；分配既有上層區塊後重建門窗家具。
+    None 保留歷史模板行為；bedrooms 是歷史相容參數，精確房數請用 bedroom_target。
 
     patio:中段核裡要不要挖天井。
 
@@ -3696,6 +3702,8 @@ def generate_narrow_building(building_w_mm: float, building_d_mm: float, *,
         # (raise),還有退路可走(鐵則:留柱位不得讓原本生得出來的案子生不出來)。
         return keep + [m for m in ladder if m not in keep]
 
+    room_targets = None  # None preserves the original low-level template API.
+
     def _all(want_patio, core_style=core_style):
         def _one(bath_north, skinny):
             return _fit_service(lambda ams: _fit_depth(lambda cap: _fit_margin(
@@ -3708,7 +3716,8 @@ def generate_narrow_building(building_w_mm: float, building_d_mm: float, *,
                                   want_patio=want_patio,
                                   garage=garage, core_style=core_style,
                                   force_bath_north=bath_north,
-                                  allow_skinny_spare=skinny))
+                                  allow_skinny_spare=skinny,
+                                  bedroom_quota=room_targets.get(f"{lv}F") if room_targets else None))
                     for lv in range(1, floors + 1)],
                 prefer=_got_core(core_style),
                 margins=_margin_steps(core_style, want_patio))))
@@ -3725,8 +3734,23 @@ def generate_narrow_building(building_w_mm: float, building_d_mm: float, *,
             return _fit_patio_auto(lambda wp: _all(wp, style))
         return _all(False, style)
 
-    return (_fit_core_style(_one_style, core_style) if auto_core
-            else _one_style(core_style))
+    def build():
+        return (_fit_core_style(_one_style, core_style) if auto_core else _one_style(core_style))
+
+    result = build()
+    if bedroom_target is not None:
+        from src.design.bedroom_program import allocate_bedrooms, BEDROOMS, BedroomCapacityError
+        allocation = allocate_bedrooms(result, bedroom_target)
+        room_targets = {f['floor']: f['assigned'] for f in allocation.floors}
+        # Apply room uses before openings and furnishings are constructed.
+        result = build()
+        actual = sum(r.kind in BEDROOMS for _, spec in result for r in spec.rooms)
+        if actual != bedroom_target:
+            raise BedroomCapacityError(bedroom_target, {
+                label: sum(r.kind in BEDROOMS for r in sp.rooms) for label, sp in result})
+        for label, spec in result:
+            spec._bedroom_allocation = allocation.to_dict()
+    return result
 
 
 def generate_narrow_house(building_w_mm: float, building_d_mm: float, *,

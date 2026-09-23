@@ -39,12 +39,24 @@ from src.design.layout.narrow_house import (  # noqa: E402
     generate_narrow_building, min_depth_for,
 )
 from src.design.layout.room_graph import MODEL  # noqa: E402
+from src.knowledge.rag import RAG_POLICY, augment_prompt
+from src.design.requirements import contract_note, option_locks
+from src.design.validation import assess_candidate
+from src.knowledge.case_metadata import current_query
 
 #: 收斂迴圈的 fitness:平均分 − 這個係數 × 問題數(與 design_loop 同一把尺)。
 FITNESS_PROBLEM_COST = 2.0
 #: 大門在南牆上的位置比例,只給這三個(與 `narrow_house._ENTRY_FRACS` 同一組)。
 ENTRY_FRACS = (0.22, 0.5, 0.78)
 CORE_STYLES = ("default", "mid", "ref")
+
+
+def _case_filters(width, depth):
+    # This skeleton has east/west party walls. Query dimensions are the available
+    # building envelope; the geometry engine may leave part of its depth unused.
+    return {**current_query(), "dimension_basis": "building",
+            "width_m": width / 1000, "depth_m": depth / 1000,
+            "party_walls": True, "window_sides": ["N", "S"]}
 
 TOWNHOUSE_OPTIONS_SCHEMA = {
     "type": "object",
@@ -144,9 +156,10 @@ def propose_options(brief_text: str, *, width: float, depth: float,
         client = make_client()          # 多把金鑰輪替(見 api_keys 模組說明)
     response = client.models.generate_content(
         model=MODEL,
-        contents=brief_text + _dims_note(width, depth),
+        contents=augment_prompt(brief_text + _dims_note(width, depth), "townhouse",
+                                filters=_case_filters(width, depth)),
         config={
-            "system_instruction": DESIGNER_PROMPT,
+            "system_instruction": DESIGNER_PROMPT + RAG_POLICY,
             "response_mime_type": "application/json",
             "response_schema": TOWNHOUSE_OPTIONS_SCHEMA,
             "temperature": temperature,
@@ -157,7 +170,7 @@ def propose_options(brief_text: str, *, width: float, depth: float,
 
 def refine_options(prev: dict, problems: list, *, width: float, depth: float,
                    client: Optional[object] = None,
-                   temperature: float = 0.6) -> dict:
+                   temperature: float = 0.6, requirements: list | None = None) -> dict:
     """上一版選項 + 問題清單 → 改良後的選項(收斂迴圈的「重選」那步)。"""
     if client is None:
         from src.design.api_keys import make_client
@@ -165,12 +178,13 @@ def refine_options(prev: dict, problems: list, *, width: float, depth: float,
     contents = ("上一版選項(JSON):\n" + json.dumps(prev, ensure_ascii=False)
                 + "\n\n畫出來之後發現的問題:\n"
                 + "\n".join(f"- {p}" for p in problems)
-                + _dims_note(width, depth))
+                + _dims_note(width, depth) + contract_note(requirements or []))
     response = client.models.generate_content(
         model=MODEL,
-        contents=contents,
+        contents=augment_prompt(contents, "townhouse", query="\n".join(str(p) for p in problems) or contents,
+                                filters=_case_filters(width, depth)),
         config={
-            "system_instruction": REFINE_PROMPT,
+            "system_instruction": REFINE_PROMPT + RAG_POLICY,
             "response_mime_type": "application/json",
             "response_schema": TOWNHOUSE_OPTIONS_SCHEMA,
             "temperature": temperature,
@@ -187,7 +201,7 @@ def _nearest(value: float, choices) -> float:
 
 
 def normalize_options(opts: dict, *, width: float, depth: float) -> dict:
-    """把 LLM 給的選項夾成**一定合法**的一組。
+    """把 LLM 選項限制在骨架的支援範圍；實際圖面仍須檢核。
 
     ⚠️ LLM 會給 10 層樓、3.5m 面寬配車庫、方案 A 配天井這種東西。schema 擋得住
     型別,擋不住「物理上不可能」——那要拿骨架自己的常數去夾(單一出處在
@@ -217,28 +231,39 @@ def normalize_options(opts: dict, *, width: float, depth: float) -> dict:
 
 
 def build_from_options(width: float, depth: float, opts: dict, *,
-                       seed: int = 7, furnish: bool = True):
+                       seed: int = 7, furnish: bool = True, required: dict | None = None):
     """照選項蓋 → [(樓層標示, FloorPlanSpec)];蓋不出來就**一級一級退**。
 
-    退讓順序 = 由「加分項」往「必要項」退:車庫 → 天井 → 核的款式(回預設核)。
-    ⚠️ 這條鐵則在 AGENTS.md 已經第七次登場:**加分項不得讓原本生得出來的案子
-       生不出來**。LLM 選了一個放不下的組合時,要靜靜地退,不是把錯誤丟給使用者。
+    退讓順序:未鎖定的車庫 → 未鎖定的天井 → 相容的核心款式。
+    required 指定的條件不得刪除；正規化若改變必要值，直接回報不支援。
+    不帶 required 的低階呼叫保留原有退讓行為；網頁必須傳入需求契約。
 
     ⚠️ 「蓋不出來」不只是 raise:有些組合**蓋得出來但圖不合格**(實測 3.6m 面寬
        配方案 B,某些變體會生出「餐廚沒有門」)。判準因此是 `plan_check` 過不過,
        不是有沒有丟例外 —— 只看例外的話,退讓階梯對這種案子完全不會啟動。
-       全部都不合格時回**第一個蓋得出來的**,讓呼叫端的關卡去回報(不要 raise:
-       那會讓使用者連一張可以看的圖都拿不到)。
+       全部都不合格時回第一個蓋得出來的候選，讓呼叫端量測並回報問題。
+       網頁最終關卡仍阻擋不合格候選，不會將它當成成功結果出圖。
     """
     from src.design.layout.plan_check import check_building
 
-    o = normalize_options(opts, width=width, depth=depth)
+    required = required or {}
+    requested = {**opts, **required}
+    if required.get("patio"):
+        requested["core_style"] = "ref"
+    o = normalize_options(requested, width=width, depth=depth)
+    conflicts = [key for key, value in required.items() if o.get(key) != value]
+    if conflicts:
+        labels = {"garage": "車庫", "patio": "天井", "floors": "樓層數", "bedrooms": "臥室數"}
+        note = (f"；本骨架配車庫須至少兩層、可用進深至少 {min_depth_for(width, True)/1000:.2f} 米"
+                if "garage" in conflicts else "")
+        raise ValueError("必要條件超出此骨架可容納範圍，未取消需求：" +
+                         "、".join(labels.get(k, k) for k in conflicts) + note)
     tries = [o]
-    if o["garage"]:
+    if o["garage"] and "garage" not in required:
         tries.append({**tries[-1], "garage": False})
-    if o["patio"]:
+    if o["patio"] and "patio" not in required:
         tries.append({**tries[-1], "patio": False})
-    if o["core_style"] != "default":
+    if o["core_style"] != "default" and not required.get("patio"):
         tries.append({**tries[-1], "core_style": "default"})
     last: Exception | None = None
     fallback = None
@@ -250,7 +275,8 @@ def build_from_options(width: float, depth: float, opts: dict, *,
             floors = generate_narrow_building(
                 width, depth, floors=t["floors"], bedrooms=t["bedrooms"],
                 furnish=furnish, variant=variant, patio=t["patio"],
-                garage=t["garage"], core_style=t["core_style"])
+                garage=t["garage"], core_style=t["core_style"],
+                bedroom_target=required.get("bedrooms"))
         except ValueError as exc:
             last = exc
             continue
@@ -273,7 +299,7 @@ def applicable(width: float, depth: float) -> bool:
 # ---------------------------------------------------------------------------
 def design_townhouse(brief: str, width: float, depth: float, *,
                      iterations: int = 2, client: Optional[object] = None,
-                     seed: int = 7, verbose: bool = True):
+                     seed: int = 7, verbose: bool = True, requirements: list | None = None):
     """選項版的雙向收斂 → (best, history)。
 
     best = {iter, fitness, mean_score, options, floors, problems}。
@@ -290,11 +316,12 @@ def design_townhouse(brief: str, width: float, depth: float, *,
             f"{MAX_WIDTH / 1000:.1f} 米、深 ≥{min_depth_for(width) / 1000:.1f} 米);"
             f"你的建築約 {width / 1000:.1f}×{depth / 1000:.1f} 米。")
 
-    opts = propose_options(brief, width=width, depth=depth, client=client)
+    requirements = requirements or []
+    opts = propose_options(brief + contract_note(requirements), width=width, depth=depth, client=client)
     best, history = None, []
     for it in range(iterations):
         try:
-            floors, used = build_from_options(width, depth, opts, seed=seed)
+            floors, used = build_from_options(width, depth, opts, seed=seed, required=option_locks(requirements))
         except ValueError:
             if best is not None:
                 break                          # 已有較早的最佳 → 用它
@@ -303,13 +330,21 @@ def design_townhouse(brief: str, width: float, depth: float, *,
         mean_score = sum(scores) / len(scores)
         env = building_env(floors[0][1])
         problems = critique_building([(lb, sp, 0, 0) for lb, sp in floors], env)
+        assessment = assess_candidate(floors, requirements) if requirements else None
+        if assessment:
+            problems = list(dict.fromkeys(problems + assessment["problems"]))
+        feasible = assessment["feasible"] if assessment else True
         fitness = mean_score - FITNESS_PROBLEM_COST * len(problems)
         history.append({"iter": it, "mean_score": mean_score,
                         "n_problems": len(problems), "fitness": fitness,
-                        "options": used})
-        if best is None or fitness > best["fitness"]:
+                        "options": used, "proposed_options": opts, "feasible": feasible,
+                        "requirement_check": assessment["requirement_check"] if assessment else None,
+                        "adjustments": [{"field": k, "proposed": opts.get(k), "used": v,
+                                         "reason": "必要條件固定或骨架正規化／退讓"}
+                                        for k, v in used.items() if k != "rationale" and opts.get(k) != v]})
+        if best is None or (feasible, fitness) > (best["feasible"], best["fitness"]):
             best = {"iter": it, "fitness": fitness, "mean_score": mean_score,
-                    "options": used, "floors": floors, "problems": problems}
+                    "options": used, "floors": floors, "problems": problems, "feasible": feasible}
         if verbose:
             print(f"  迭代 {it}: 方案 {used['core_style']}  平均分 {mean_score:.0f}"
                   f"  問題 {len(problems)} 個  fitness {fitness:.0f}")
@@ -319,7 +354,7 @@ def design_townhouse(brief: str, width: float, depth: float, *,
             break
         try:
             opts = refine_options(used, problems, width=width, depth=depth,
-                                  client=client)
+                                  client=client, requirements=requirements)
         except Exception:                      # 重選失敗(額度/網路)→ 用目前最佳
             break
     return best, history

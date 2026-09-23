@@ -130,13 +130,23 @@ BRIEF_SCHEMA = {
             "description": "是否要孝親房/長輩房/父母房(單戶限定,一樓臥室,"
                            "多代同堂用)。有提到=true;沒提就 null",
         },
+        "garage": {"type": "boolean", "nullable": True,
+                   "description": "要求車庫=true，明講不要=false，未提=null"},
+        "patio": {"type": "boolean", "nullable": True,
+                  "description": "要求天井=true，明講不要=false，未提=null"},
+        "requirement_details": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "field": {"type": "string", "description": "本 schema 的條件欄位名稱"},
+                "quote": {"type": "string", "description": "逐字引用使用者指定該條件的原句"},
+                "priority": {"type": "string", "enum": ["required", "preferred"]}},
+            "required": ["field", "quote", "priority"]}},
         "car_spaces": {
             "type": "integer", "nullable": True,
             "description": "汽車停車位數(單戶限定):「雙車位/停兩台車」=2、"
                            "「一個車位」=1。機車位不算。沒提就 null",
         },
     },
-    "required": ["brief_type", "site_width_m", "site_depth_m", "dimension_basis",
+    "required": ["garage", "patio", "requirement_details", "brief_type", "site_width_m", "site_depth_m", "dimension_basis",
                  "bedrooms", "units_per_row", "corridor_width_m", "floor_label",
                  "master_corner", "kitchen_side", "floors_above", "basements",
                  "want_study", "want_elder_room", "car_spaces"],
@@ -163,6 +173,12 @@ SYSTEM_PROMPT = """\
   car_spaces=1(機車位不算車位)。這些是額外指定,臥室數不受影響
   (「三房加書房」= bedrooms=3、want_study=true)。
 - 沒提到的欄位一律 null,不要瞎猜數值。
+- requirement_details 記錄每個明確要求的欄位、逐字原句及 required/preferred。
+  明確說「最好、可取消、非必要」才是 preferred；一般要求一律 required。
+  修改時這個陣列只記錄本次指令明確提到的條件，不能替其他欄位編造原句。
+- 要車庫且未指定車位數時 car_spaces=1；明講不要車庫則 garage=false、car_spaces=0。
+  garage 與 patio 未提時 null。不要把車庫自動解讀為地下室。
+- 明講取消的數量欄位填 0，布林欄位填 false，保留這項禁止條件。
 """
 
 # 多輪修改(E4):輸入是「目前需求 JSON + 修改指令」,以目前需求為底、只改
@@ -214,6 +230,10 @@ def _brief_from_data(data: dict) -> Brief:
             kwargs["want_elder_room"] = True
         if data.get("car_spaces") is not None:
             kwargs["car_spaces"] = int(data["car_spaces"])
+        if data.get("patio") is not None:
+            kwargs["patio"] = bool(data["patio"])
+        if data.get("garage") is True and data.get("car_spaces") is None:
+            kwargs["car_spaces"] = 1
         return HouseBrief(**kwargs)
 
     if btype == "corridor":
@@ -252,8 +272,10 @@ def _building_from_data(data: dict, seed: int = 0) -> "BuildingBrief":
     # 標準層),而該骨架下 1F 是公共層、臥室在樓上——故「要車位」隱含「多樓層
     # 透天+地下室」。使用者沒指定樓層/地下室時自動補齊(≥2 樓地上 + ≥1 地下)。
     if isinstance(typical, HouseBrief) and typical.car_spaces > 0:
-        basements = max(basements, 1)
-        floors = max(floors, 2)
+        if data.get("basements") is None and data.get("garage") is not True:
+            basements = max(basements, 1)
+        if data.get("floors_above") is None:
+            floors = max(floors, 2)
     differentiated = isinstance(typical, HouseBrief) and (
         floors > 1 or basements > 0)
     return BuildingBrief(typical=typical, floors=floors, basements=basements,
@@ -345,6 +367,9 @@ def _is_transient(exc: Exception) -> bool:
 
 def _call_llm(text: str, client: object, system: str = SYSTEM_PROMPT) -> dict:
     """呼叫 Gemini 解析需求;伺服器暫時過載會自動重試(遞增等待)。"""
+    from src.knowledge.rag import RAG_POLICY, augment_prompt
+    text = augment_prompt(text, "parse")
+    system += RAG_POLICY
     last: Optional[Exception] = None
     for attempt in range(len(_RETRY_DELAYS) + 1):
         try:

@@ -1,0 +1,5 @@
+# 本機 PDF／圖片 OCR；DWG 執行 python -m src.knowledge prepare-dwg 安裝獨立工具。
+PyMuPDF>=1.26,<2
+Pillow>=11,<13
+rapidocr==3.9.2
+onnxruntime>=1.24,<2

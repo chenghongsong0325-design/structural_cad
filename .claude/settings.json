@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest *)",
+      "Bash(python.exe -m pytest *)",
+      "Bash(python -X utf8 -m pytest *)",
+      "Bash(.venv/Scripts/python.exe -m pytest *)",
+      "Bash(PYTHONIOENCODING=utf-8 python -m pytest *)",
+      "Bash(PYTHONIOENCODING=utf-8 python.exe -m pytest *)",
+      "Bash(PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe -m pytest *)",
+      "PowerShell(python -m pytest *)",
+      "PowerShell(.venv\\\\Scripts\\\\python.exe -m pytest *)",
+      "Bash(python scripts/scan_plans.py *)",
+      "Bash(PYTHONIOENCODING=utf-8 python scripts/scan_plans.py *)",
+      "Bash(.venv/Scripts/python.exe scripts/scan_plans.py *)"
+    ]
+  }
+}

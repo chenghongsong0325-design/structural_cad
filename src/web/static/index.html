@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>自動建築平面圖生成器</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2316181c'/><g stroke='%23f7f6f3' stroke-width='2' fill='none'><rect x='8' y='8' width='16' height='16'/><path d='M8 18h7M15 18v6'/></g></svg>">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=20260922-spatial">
 </head>
 <body>
 
@@ -20,7 +20,7 @@
       </div>
       <div class="brand-text">
         <h1>自動建築平面圖生成器</h1>
-        <p>一句中文需求 → 可施工的 DXF</p>
+        <p>住宅配置初稿 · 需求與圖面逐項核對</p>
       </div>
     </header>
 
@@ -28,15 +28,15 @@
 
       <section class="block">
         <textarea id="text" rows="3"
-          placeholder="描述你想蓋的房子&#10;例:透天三層,基地19×13米,三房,地下一層車庫"></textarea>
+          placeholder="描述你想蓋的房子&#10;例:透天三層,建築物4.5×14米,四房"></textarea>
 
         <!-- 範例句依「案子類型」分組:順便展示這套系統收得下哪幾種案子。
              chip 上是短標籤,真正送出的整句在 data-text。 -->
         <div class="examples" id="examples">
           <div class="ex-group">
             <span class="ex-label">窄面寬透天</span>
-            <button class="chip" data-text="透天三層,建築物4.5×14米,三房">4.5×14 三房(連棟街屋)</button>
-            <button class="chip" data-text="透天三層,建築物7×15.5米,三房">7×15.5 三房</button>
+            <button class="chip" data-text="透天三層,建築物4.5×14米,四房">4.5×14 四房(連棟街屋)</button>
+            <button class="chip" data-text="透天三層,建築物7×15.5米,至少三房">7×15.5 至少三房</button>
             <button class="chip" data-text="透天三層,建築物4.5×14米,三房,一樓一個車位">4.5×14 + 1F 車庫</button>
           </div>
           <div class="ex-group">
@@ -44,11 +44,12 @@
             <button class="chip" data-text="透天兩層,建築物7×7米,兩房">7×7 兩房</button>
           </div>
           <div class="ex-group">
-            <span class="ex-label">集合住宅</span>
-            <button class="chip" data-text="集合住宅每排6戶,走廊2米寬,五層樓,地下一層">6 戶 × 5 層 + 地下</button>
+            <span class="ex-label">集合住宅（戶數與走廊需求核對待完成）</span>
+            <button class="chip" disabled title="目前每排戶數與走廊寬尚未完成圖面核對，請先使用透天範例。">6 戶 × 5 層 + 地下</button>
           </div>
         </div>
 
+        <p class="import-note">明確指定的條件視為必要。可退讓項目請寫「最好」或「可取消」；房數預設按指定數量核對，也可寫「至少三房」。</p>
         <div class="actions">
           <input id="code" type="password" placeholder="通行碼" class="hidden">
           <button id="generate" class="btn solid block">生成平面圖</button>
@@ -68,7 +69,64 @@
       </section>
 
       <div id="error" class="error hidden"></div>
+      <section id="requirements-panel" class="block hidden" aria-live="polite"></section>
       <div id="history" class="history hidden"></div>
+
+      <section class="block rag-import">
+        <details id="import-panel">
+          <summary>匯入參考資料</summary>
+          <p>加入 PDF、DWG、DXF 或圖片，系統會擷取文字與標註，建立可檢索的設計參考。</p>
+          <label for="import-files">選擇檔案（可多選，每個上限 50 MB）</label>
+          <input id="import-files" type="file" multiple accept=".pdf,.dwg,.dxf,.png,.jpg,.jpeg,.tif,.tiff,.webp,.bmp">
+          <button id="import-btn" class="btn quiet">匯入並建立索引</button>
+          <p class="import-note">掃描檔會使用 OCR，請核對辨識文字。這項功能不會自動還原房間幾何；命中的參考文字會隨需求傳給 AI。</p>
+          <div id="import-status" role="status" aria-live="polite"></div>
+          <div id="import-results"></div>
+
+          <details class="case-editor">
+            <summary>核對參考資料與適用條件</summary>
+            <p>先排除已知條件不符的資料，再依語意相似度排序。未填條件代表未知；人工核對也不代表本案法規審查通過。</p>
+            <button id="case-load" type="button" class="btn quiet">載入資料清單</button>
+            <div id="case-form" class="hidden">
+              <label for="case-document">參考資料</label><select id="case-document"></select>
+              <small id="case-source"></small>
+              <label for="case-category">資料類別</label>
+              <select id="case-category"><option value="reference">一般參考</option><option value="case">配置案例</option><option value="regulation">法規資料</option></select>
+              <label for="case-dimension_basis">寬深代表</label>
+              <select id="case-dimension_basis"><option value="building">建築尺寸</option><option value="site">基地尺寸</option></select>
+              <fieldset><legend>面寬（米）</legend><div class="case-range"><label>下限<input id="case-width_m-min" type="number" min="0" step="any"></label><label>上限<input id="case-width_m-max" type="number" min="0" step="any"></label></div></fieldset>
+              <fieldset><legend>進深（米）</legend><div class="case-range"><label>下限<input id="case-depth_m-min" type="number" min="0" step="any"></label><label>上限<input id="case-depth_m-max" type="number" min="0" step="any"></label></div></fieldset>
+              <fieldset><legend>地上樓層</legend><div class="case-range"><label>下限<input id="case-floors-min" type="number" min="0" step="any"></label><label>上限<input id="case-floors-max" type="number" min="0" step="any"></label></div></fieldset>
+              <fieldset><legend>臥室數</legend><div class="case-range"><label>下限<input id="case-bedrooms-min" type="number" min="0" step="any"></label><label>上限<input id="case-bedrooms-max" type="number" min="0" step="any"></label></div></fieldset>
+              <fieldset><legend>汽車位</legend><div class="case-range"><label>下限<input id="case-car_spaces-min" type="number" min="0" step="any"></label><label>上限<input id="case-car_spaces-max" type="number" min="0" step="any"></label></div></fieldset>
+              <label for="case-party_walls">是否共壁</label>
+              <select id="case-party_walls"><option value="">未知</option><option value="true">是</option><option value="false">否</option></select>
+              <label for="case-window_sides">案例使用的開窗側（N 北、S 南、E 東、W 西）</label>
+              <input id="case-window_sides" placeholder="例：N,S；未知留空">
+              <label for="case-limitations">適用限制</label><textarea id="case-limitations" rows="2" maxlength="800"></textarea>
+              <label for="case-review_status">核對狀態</label>
+              <select id="case-review_status"><option value="unreviewed">待人工核對</option><option value="reviewed">已人工核對</option></select>
+              <label for="case-reviewer">核對者</label><input id="case-reviewer" maxlength="80">
+              <label for="case-review_note">核對依據（例如圖號、頁碼、原文段落）</label><textarea id="case-review_note" rows="2" maxlength="600"></textarea>
+              <button id="case-save" type="button" class="btn quiet">儲存條件並更新索引</button>
+            </div>
+            <div id="case-status" role="status" aria-live="polite"></div>
+          </details>
+          <div class="web-research">
+            <h3>沒有檔案？讓系統上網找</h3>
+            <label for="research-query">想找哪方面的參考資料？</label>
+            <input id="research-query" type="text" maxlength="160" placeholder="例：透天住宅採光、車庫與玄關動線">
+            <div class="research-examples">
+              <button class="chip research-topic" type="button">透天住宅 採光 平面圖</button>
+              <button class="chip research-topic" type="button">住宅 車庫 玄關 動線</button>
+            </div>
+            <button id="research-btn" class="btn quiet" type="button">自動找資料並加入 RAG</button>
+            <p class="import-note">一次最多加入 3 個不同網站的公開網頁或文字 PDF，保留來源網址。只會送出這裡的搜尋主題，不會傳送你的本機檔案；網路資料仍需核對。</p>
+            <div id="research-status" role="status" aria-live="polite"></div>
+            <div id="research-results"></div>
+          </div>
+        </details>
+      </section>
 
       <!-- 最近生成過的方案(有紀錄才會出現),點了直接載回來 -->
       <section class="block hidden" id="recent-block">
@@ -120,6 +178,10 @@
         <section class="block">
           <h2 class="block-title">檢查</h2>
           <div id="ai-panel" class="ai-panel hidden"></div>
+          <details id="rag-panel" class="rag-panel hidden">
+            <summary>設計參考資料</summary>
+            <div id="rag-content"></div>
+          </details>
         </section>
 
         <section class="block">
@@ -154,7 +216,23 @@
     <div class="stage-bar">
       <div class="tabs" id="tabs"></div>
       <span class="stage-hint">滾輪縮放 · 拖曳平移 · 雙擊還原</span>
+      <button id="spatial-toggle" class="btn quiet" disabled aria-expanded="false" aria-controls="spatial-inspector">房間與動線分析</button>
     </div>
+
+    <section id="spatial-inspector" class="spatial-inspector hidden" aria-label="空間推理與衝突分析">
+      <div class="spatial-toolbar">
+        <label for="spatial-floor">樓層</label><select id="spatial-floor"></select>
+        <label><input type="checkbox" id="spatial-adjacent">顯示僅相鄰的關係</label>
+        <button id="spatial-export" class="btn quiet">下載分析紀錄</button>
+      </div>
+      <p id="spatial-status" role="status"></p>
+      <p id="spatial-allocation"></p>
+      <div class="spatial-layout">
+        <div id="spatial-graph" class="spatial-graph"></div>
+        <div class="spatial-details"><div id="spatial-room"></div><div id="spatial-conflicts"></div></div>
+      </div>
+      <p id="spatial-method" class="spatial-method"></p>
+    </section>
 
     <div class="viewer" id="viewer">
       <div class="canvas" id="canvas"></div>
@@ -179,6 +257,7 @@
 
 </div>
 
-<script src="app.js"></script>
+<script src="spatial.js?v=20260922-spatial"></script>
+<script src="app.js?v=20260922-spatial"></script>
 </body>
 </html>

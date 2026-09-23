@@ -97,6 +97,7 @@ class BuildingBrief:
     start_level: int = 1
     basements: int = 0
     differentiated: bool = False
+    bedroom_target: int | None = None  # Exact total for supported narrow-house programming.
 
 
 @dataclass
@@ -253,7 +254,7 @@ def generate_building_auto(brief: BuildingBrief) -> BuildingSpec:
                 floors=max(1, brief.floors),
                 bedrooms=brief.typical.bedrooms, seed=brief.typical.seed,
                 lot=lot, patio=brief.typical.patio, garage=want_garage,
-                core_style=brief.typical.core_style)
+                core_style=brief.typical.core_style, bedroom_target=brief.bedroom_target)
             return _narrow_to_building(floors, brief.floor_height)
         from src.design.layout.narrow_house import min_depth_for
         from src.design.layout.shallow_house import (
@@ -275,7 +276,7 @@ def generate_building_auto(brief: BuildingBrief) -> BuildingSpec:
                 bw, bd, floors=max(1, brief.floors),
                 bedrooms=brief.typical.bedrooms, seed=brief.typical.seed,
                 patio=brief.typical.patio, garage=want_garage,
-                core_style=brief.typical.core_style)
+                core_style=brief.typical.core_style, bedroom_target=brief.bedroom_target)
             return _narrow_to_building(floors, brief.floor_height)
     return generate_building(brief)
 

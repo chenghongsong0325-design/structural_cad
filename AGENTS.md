@@ -40,7 +40,7 @@ uvicorn src.web.app:app --reload       # 網頁版 http://localhost:8000
 - ⚠️ Gemini 免費額度 **每日 20 次**，AI 模式一次請求吃 2~3 次呼叫（約 7 次/日就用完）。
   除錯時盡量用測試裡的假 client，不要真的一直打 API。
   **沒有金鑰時規則版產線、測試、掃描、出圖全部照跑**，只有 AI 那條路走不動。
-- 產出都在 `output/`（已 gitignore），整個刪掉不影響程式。
+- 圖面產出在 `output/`（已 gitignore）。`output/rag/` 現在也保存模型、工具及使用者匯入資料；刪除或清理前必須先辨識並保留這些資料，不能把整個 `output/` 當成可丟棄暫存檔。
 
 ### 測試怎麼跑
 
@@ -2050,6 +2050,28 @@ zone3 七條測試一起紅。改成 `_slide_passage_door_off_columns`:寬度保
 
 ## 延伸文件
 
+### 本機 RAG（2026-09-18）
+
+`src/knowledge/` 已接需求解析、透天選配與關係圖提案／修正。只索引 `knowledge/`
+整理過的 Markdown，以及 `output/rag/imports/` 已完成匯入的文字；不把本開發紀錄當成知識庫。模型本機推論、SQLite 索引，引用
+保存在生成結果 `rag`。幾何與法規檢核仍由原有引擎負責。安裝、格式及限制見
+[docs/RAG.md](docs/RAG.md)。測試預設 `RAG_ENABLED=0`，專用 RAG 測試自行注入向量器，
+不得在一般測試中自動下載模型或呼叫付費 API。
+
+`src/knowledge/importers.py` 提供 PDF／DWG／DXF／圖片匯入，CLI `import` 與網頁共用。
+原始來源保持不變、分段保留頁碼／配置／圖層；OCR 不等於幾何辨識。匯入資料只能進
+townhouse／graph，不能進 parse。DWG 預設使用 `prepare-dwg` 安裝的固定版本 LibreDWG，
+也可明確設定 AutoCAD Core Console；不可停用 AutoCAD 的安全設定或自動下載執行檔。
+匯入是暫存完成後原子發布；擷取狀態與索引狀態必須分開顯示。測試見 `tests/test_importers.py`。
+
+`src/knowledge/web_research.py`（2026-09-19）提供主題搜尋 → 公開網頁／文字 PDF 正文 →
+RAG，入口為 `research` CLI 與 `/api/rag/research`。搜尋摘要不作證據，不用 LLM 補文；
+只在明確搜尋請求時連網，不在生成內偷送整份需求。URL、擷取日期與原文證據保存於
+`output/rag/imports/web-<hash>/`，只進 townhouse／graph；仍須人工核對。讀取端
+`public_web.py` 固定連到驗證後的公開 IP，保留 TLS 主機名驗證，重新導向也須檢查。
+不要改成會讀內網／本機的無限制 requests.get，也不要停用 TLS。測試注入假搜尋與連線，
+見 `tests/test_web_research.py`；`RAG_WEB_ENABLED=0` 可關閉網路搜尋。
+
 | 文件 | 內容 |
 |---|---|
 | [README.md](README.md) | 快速開始、專案結構、分析工具用法 |
@@ -2061,3 +2083,34 @@ zone3 七條測試一起紅。改成 `_slide_passage_door_off_columns`:寬度保
 | [docs/workflows/newrule.md](docs/workflows/newrule.md) | **加硬規則**：判 error/warning、寫進 plan_check、四條產線驗收 |
 | [ROADMAP.md](ROADMAP.md) | 階段 A~E 的原始路線圖（**只到 E1，之後的進度看 CHANGELOG**） |
 | [CHANGELOG.md](CHANGELOG.md) | 版本變更紀錄 |
+
+
+## 需求契約與驗證補強（2026-09-22）
+
+此節補充前文的選配退讓策略：使用者明確必要的條件不可作為加分項刪除。
+`src/design/requirements.py` 保存 required/preferred、eq/min/max、原句並核對實際圖面；
+網頁必須傳入此契約，不能用輸入選項充當實際房數。低階不帶 requirements 的歷史 API
+保留原有行為，不等同網頁已核對的結果。未實作的需求量測標 unverified，必要項目不可放行。
+
+`src/design/validation.py` 是最終驗證入口。缺報告、例外、報告格式不一致均未驗證；
+不得恢復成捕捉例外後當成功。候選先以可行性排序，再比較 fitness。成功出圖前還須通過
+需求與 plan/code 報告，warnings 保留；不得宣稱通過等於完整法規或施工核准。
+新方案的 layout_score 來自實際 BuildingSpec，不能拿 brief 重畫後代表 AI 方案分數。
+
+RAG 的 `case_metadata.py` 管理適用條件，先排除已知不相容資料再做向量排名。
+未知範圍保持未知；reviewed 需要核對者和依據，不能由搜尋成功或模型推測自動標記。
+文件更新必須保留來源與正文，透過已知文件 id 定位、原子寫入及索引刷新。
+詳見 `docs/REQUIREMENTS.md`；測試 `test_requirements.py`、`test_case_metadata.py`。
+
+
+## 空間分析與房數配置（2026-09-23）
+
+`spatial_report.py` 是唯讀分析，重用 connectivity 與 room_circulation 的幾何規則。
+房間採樓層索引／房間索引 ID；原始報告同名房間不能私自定位到第一間。
+圖上的 BFS 路徑僅代表逐層拓撲，不能稱為實際步行距離或完整逃生驗證。
+
+`bedroom_program.py` 只在既有上層區塊內配置必要精確房數，必須在門窗家具之前套用，
+容量不足保留原需求。`generate_narrow_building(..., bedroom_target=N)` 是新入口，
+不帶該參數維持歷史行為。幾何退讓後仍須檢查實際房數與全部硬規則。
+變更此流程須跑完整測試及 `scripts/scan_bedroom_program.py`，不得把容量拒絕列為成功。
+操作、限制與實測見 `docs/SPATIAL_REASONING.md` 和 `docs/SPATIAL_VERIFICATION.md`。

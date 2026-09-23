@@ -30,6 +30,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from src.knowledge.rag import RAG_POLICY, augment_prompt
+
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 # 房間種類:對齊產生器已認得的 kind(living/dining/kitchen/bedroom/bathroom/
@@ -157,9 +159,9 @@ def refine_room_graph(prev_graph: dict, problems: list, *,
         contents += f"\n\n(每一層樓地板面積約 {floor_area_m2:.0f} ㎡。)"
     response = client.models.generate_content(
         model=MODEL,
-        contents=contents,
+        contents=augment_prompt(contents, "graph", query="\n".join(str(p) for p in problems) or contents),
         config={
-            "system_instruction": REFINE_PROMPT,
+            "system_instruction": REFINE_PROMPT + RAG_POLICY,
             "response_mime_type": "application/json",
             "response_schema": ROOM_GRAPH_SCHEMA,
             "temperature": temperature,
@@ -189,9 +191,9 @@ def propose_room_graph(brief_text: str, client: Optional[object] = None,
                      f"請據此提出剛好塞滿這個面積的房間數與機能,別讓單一房間過大。)")
     response = client.models.generate_content(
         model=MODEL,
-        contents=contents,
+        contents=augment_prompt(contents, "graph"),
         config={
-            "system_instruction": DESIGNER_PROMPT,
+            "system_instruction": DESIGNER_PROMPT + RAG_POLICY,
             "response_mime_type": "application/json",
             "response_schema": ROOM_GRAPH_SCHEMA,
             "temperature": temperature,

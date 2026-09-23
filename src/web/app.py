@@ -39,14 +39,16 @@ import re
 import sys
 import uuid
 import zipfile
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Literal, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
@@ -63,6 +65,9 @@ from src.design.layout_generator import (
     max_house_bedrooms,
 )
 from src.design.layout.global_score import score_report
+from src.knowledge.rag import (
+    enabled as rag_enabled, get_retriever, retrieval_session, retrieve, trace_report,
+)
 from src.design.metrics import building_metrics
 from src.design.nl_parser import (
     building_brief_from_data,
@@ -104,6 +109,28 @@ class ScoreRequest(BaseModel):
     code: str = ""
 
 
+from src.knowledge.case_metadata import CaseMetadata, CaseQuery
+
+
+class CaseUpdateRequest(BaseModel):
+    code: str = ""
+    case: CaseMetadata
+
+
+class RagSearchRequest(BaseModel):
+    filters: CaseQuery | None = None
+    query: str = Field(min_length=1, max_length=2000)
+    stage: Literal["parse", "townhouse", "graph"] = "townhouse"
+    top_k: int = Field(default=3, ge=1, le=5)
+    code: str = ""
+
+
+class WebResearchRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=160)
+    limit: int = Field(default=3, ge=1, le=5)
+    code: str = ""
+
+
 def _has_api_key() -> bool:
     # 金鑰不只來自那兩個環境變數(還有 GEMINI_API_KEYS 與 api_keys.json),
     # 一律問 api_keys 模組,別在這裡自己讀 os.environ。
@@ -136,7 +163,9 @@ def _summary(brief, building: BuildingSpec) -> str:
     """
     t = brief.typical
     if isinstance(t, HouseBrief):
-        kind = (f"單戶住宅 {t.bedrooms} 房,基地 "
+        bedrooms = sum(r.kind in {"bedroom", "master_bedroom"} and "孝親" not in r.name
+                       for fl in building.floors for r in fl.spec.rooms)
+        kind = (f"單戶住宅 {bedrooms} 房,基地 "
                 f"{t.site_width / 1000:.0f}×{t.site_depth / 1000:.0f} 米")
     else:
         kind = (f"集合住宅 每排 {t.units_per_row} 戶,"
@@ -184,6 +213,10 @@ def _suggestions(brief, building: BuildingSpec) -> list[dict]:
     t = brief.typical
     if not isinstance(t, HouseBrief):
         return []
+    if any(hasattr(f.spec, "_nh_core") for f in building.floors):
+        # The generic upgrade formula assumes the two-band program. Narrow
+        # skeletons cannot add a basement or vary their room count that way.
+        return []
     above = sum(1 for f in building.floors if f.level > 0)
     below = sum(1 for f in building.floors if f.level < 0)
     site = (f"基地{t.site_width / 1000:g}×{t.site_depth / 1000:g}米")
@@ -216,7 +249,7 @@ def _suggestions(brief, building: BuildingSpec) -> list[dict]:
     return out
 
 
-def _ai_generate(brief_text: str, brief, client):
+def _ai_generate(brief_text: str, brief, client, requirements=None):
     """AI 設計師模式:跑混合式收斂管線 → (BuildingSpec, 額外回應欄位)。
 
     **連棟透天走「選配版」**(`townhouse_options`):骨架是我們的透天骨架,LLM 只
@@ -260,13 +293,13 @@ def _ai_generate(brief_text: str, brief, client):
     if topts.applicable(bw, bd):                # 連棟透天 → 在我們的骨架上選選項
         best, history = topts.design_townhouse(brief_text, bw, bd,
                                                iterations=2, client=client,
-                                               verbose=False)
+                                               verbose=False, requirements=requirements)
         fl = list(best["floors"])
         env = None                              # 外框由 spec 自己推(建築會封頂)
         style = best["options"]["core_style"]
     else:                                       # 骨架放不下 → 原本的關係圖版
         best, history = design_building(brief_text, bw, bd, iterations=2,
-                                        client=client)
+                                        client=client, requirements=requirements)
         fl = [(lb, sp) for lb, sp, _s, _t in best["floors"]]
         from src.design.layout.design_loop import SETBACK as _SB
         env = (_SB, _SB, _SB + bw, _SB + bd)
@@ -275,10 +308,8 @@ def _ai_generate(brief_text: str, brief, client):
 
     # 圖面正確性檢查(硬規則):產線已在每層落實時把關,這裡再驗一次整棟並回報,
     # 讓使用者/我們看得到「這張圖過了哪些檢查」。
-    from src.design.layout.code_check import check_code_building
-    from src.design.layout.plan_check import check_building
-    check = check_building(fl, env)
-    code = check_code_building(fl, env)          # 法規尺寸(樓梯/採光…)
+    from src.design.validation import validate_building
+    checks = validate_building(building, env=env)
     from src.design.layout.balcony import balcony_report
     from src.design.layout.door_rules import door_table
     doors = door_table(fl)                       # 門連通表(房間→門→通往哪裡)
@@ -293,8 +324,7 @@ def _ai_generate(brief_text: str, brief, client):
         "ai_fitness": round(best["fitness"], 1),
         "ai_core_style": style,                 # 選配版挑了哪一款核("graph"=關係圖版)
         "ai_options": best.get("options"),      # 選配版:LLM 實際採用的那組選項
-        "plan_check": check.to_dict(),          # 圖面檢查:ok / 錯誤數 / 警告數 / 明細
-        "code_check": code.to_dict(),           # 法規檢查:建築技術規則尺寸
+        **checks,          # 圖面檢查:ok / 錯誤數 / 警告數 / 明細
         "balconies": balcony_report(fl).to_dict(),   # 陽台清單(AI 版目前不配)
     }
     return building, extra
@@ -366,11 +396,25 @@ def _supported_sizes(setback: float = 2000.0) -> str:
 def _reject_if_broken(extra: dict, brief) -> None:
     """圖面檢查沒過就**不出圖**——寧可講清楚,也不要給一張走不通的平面圖。
 
-    這裡只擋 error(換個切法就能解的硬錯誤);warning 是設計取捨,照樣出圖。"""
+    缺漏的驗證、必要需求不符、圖面 error 與尺寸 violation 都阻擋出圖。
+    warning 保留給使用者核對，不當成完整法規審查通過。"""
+    from src.design.validation import validation_status
+    state = validation_status(extra)
+    extra["validation"] = {**extra.get("validation", {}), **state}
+    if state["status"] == "unverified":
+        raise HTTPException(503, {"message": "圖面驗證未完成，已停止出圖。請重試；若持續發生請檢查驗證服務。",
+                                  "validation": extra["validation"],
+                                  "requirement_check": extra.get("requirement_check"),
+                                  "spatial_report": extra.get("spatial_report"), "conflicts": extra.get("conflicts", [])})
+    requirement_check = extra.get("requirement_check")
+    if requirement_check and not requirement_check["ok"]:
+        raise HTTPException(422, {"message": "目前方案未滿足必要需求，已停止出圖。需求沒有被取消，請調整條件或更換方案。",
+                                  "requirement_check": requirement_check, "validation": state,
+                                  "spatial_report": extra.get("spatial_report"), "conflicts": extra.get("conflicts", [])})
     rep = extra.get("plan_check") or {}
     code = extra.get("code_check") or {}
     errors = [i for i in rep.get("issues", []) if i.get("severity") == "error"]
-    # 法規違規(§33/§40/§43)同樣不出圖:那是「不合法」,比畫錯更嚴重。
+    # 已實作的尺寸規則未通過也擋出圖；不宣稱涵蓋完整法規審查。
     errors += [i for i in code.get("issues", [])
                if i.get("severity") == "violation"]
     if not errors:
@@ -390,57 +434,76 @@ def _reject_if_broken(extra: dict, brief) -> None:
     more = ("\n  ・(還有其他問題,先修上面這幾項)"
             if len(errors) > len(lines) else "")
     setback = getattr(getattr(brief, "typical", None), "setback", 2000.0)
-    raise HTTPException(
-        422,
-        "這個尺寸目前生不出合格圖,所以不出圖(出了也是不能用的平面圖)。\n"
-        "檢查沒過的地方:\n" + "\n".join(lines) + more + "\n\n"
-        + _supported_sizes(setback))
+    raise HTTPException(422, {
+        "message": "目前方案未通過已實作的圖面／尺寸檢查，已停止出圖。\n"
+                   "檢查沒過的地方:\n" + "\n".join(lines) + more + "\n\n" + _supported_sizes(setback),
+        "validation": state, "requirement_check": requirement_check,
+        "plan_check": rep, "code_check": code, "spatial_report": extra.get("spatial_report"),
+        "conflicts": extra.get("conflicts", [])})
 
 
-def _generate_auto(brief_text: str, brief, client, force_ai: bool = False):
+def _generate_auto(brief_text: str, brief, client, force_ai: bool = False, requirements=None):
     """**單一入口**:自動挑引擎生圖 → (BuildingSpec, 額外回應欄位)。
 
     規則:合用就走 AI 設計師(LLM 設計房間關係 → 搜尋落實 → 收斂),它畫得比較好;
     不合用(寬基地/集合住宅)或 AI 這條出任何狀況(額度用完、斷網、落實失敗)就
-    **自動退回規則產生器**——使用者不必知道有幾種引擎,也不會因為 AI 掛掉就沒圖。
+    自動以相同需求嘗試規則產生器；只有通過最終關卡的候選才會出圖。
 
     force_ai=True:明確要求 AI(不合用時照樣報錯,方便測試/除錯)。
 
     ⚠️ 兩條路徑最後都會過 _reject_if_broken:圖面檢查有硬錯誤就**不出圖**,
        改回 422 + 白話說明 + 目前生得出來的尺寸範圍。
     """
+    from src.design.requirements import check_requirements
+    from src.design.validation import validate_building
+    requirements = requirements or []
+    def attach_requirements(building, extra):
+        try:
+            extra["requirement_check"] = check_requirements(building, requirements).to_dict()
+        except Exception as exc:
+            raise HTTPException(503, {"message": "需求驗證未完成，已停止出圖。",
+                "validation": {"status": "unverified", "failures": [
+                    {"check": "requirement_check", "error_type": type(exc).__name__}]}}) from exc
+        from src.design.spatial_report import build_spatial_report
+        try:
+            extra["spatial_report"] = build_spatial_report(building, extra, extra["requirement_check"]).to_dict()
+            extra["conflicts"] = extra["spatial_report"]["conflicts"]
+        except Exception as exc:
+            extra["spatial_report"] = {"status": "unverified", "error_type": type(exc).__name__,
+                "message": "空間分析未完成，不能把缺少資料當成連通或檢核通過。"}
+    fallback = None
     if force_ai:
-        building, extra = _ai_generate(brief_text, brief, client)
+        building, extra = _ai_generate(brief_text, brief, client, requirements)
+        attach_requirements(building, extra)
         _reject_if_broken(extra, brief)
         return building, extra
 
     if _ai_applicable(brief):
         try:
-            building, extra = _ai_generate(brief_text, brief, client)
+            building, extra = _ai_generate(brief_text, brief, client, requirements)
+            attach_requirements(building, extra)
             _reject_if_broken(extra, brief)          # AI 的圖也要過關卡
             return building, extra
-        except Exception:
+        except Exception as exc:
+            fallback = {"from": "ai", "reason": "AI 候選未通過或服務未完成，改以相同需求嘗試規則配置", "type": type(exc).__name__}
             # 不合格 / 額度用完 / 斷網 / 落實失敗 → 都退回規則版再試一次。
             # (規則版的圖最後同樣會過 _reject_if_broken,不會因此漏出壞圖。)
             pass
 
     building = generate_building_auto(brief)
-    extra = {"engine": "rule"}
-    try:                                            # 規則版也送圖面檢查(同一套標準)
-        from src.design.layout.code_check import check_code_building
-        from src.design.layout.plan_check import check_building
-        floors = [(f.label, f.spec) for f in building.floors]
-        # 外框由各層 spec 自己推(env=None):深基地會**封頂建築、留前後院**,
-        # 用「基地−退縮」當外框會把大門/窗誤判成不在外牆上。
-        extra["plan_check"] = check_building(floors).to_dict()
-        extra["code_check"] = check_code_building(
-            floors, None, brief.floor_height).to_dict()
+    extra = {"engine": "rule", **validate_building(building)}
+    attach_requirements(building, extra)
+    if fallback:
+        extra["engine_fallback"] = fallback
+    # Supplementary reports are independent from mandatory verification.
+    try:
         from src.design.layout.balcony import balcony_report
         from src.design.layout.door_rules import door_table
-        extra["door_table"] = door_table(floors).to_dict()   # 房間→門→通往哪裡
-        extra["balconies"] = balcony_report(floors).to_dict()   # 二樓以上的前後陽台
-    except Exception:                               # 檢查本身壞掉不該擋出圖
-        pass
+        floors = [(f.label, f.spec) for f in building.floors]
+        extra["door_table"] = door_table(floors).to_dict()
+        extra["balconies"] = balcony_report(floors).to_dict()
+    except Exception:
+        extra["supplementary_reports"] = "unavailable"
     _reject_if_broken(extra, brief)                 # 有硬錯誤 → 422,不出壞圖
     return building, extra
 
@@ -467,6 +530,91 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
 
     @app.post("/api/generate")
     def generate(req: GenerateRequest) -> dict:
+        # ContextVar is scoped to this sync request, including errors and concurrent jobs.
+        with retrieval_session():
+            return generate_with_context(req)
+
+    @app.post("/api/rag/search")
+    def rag_search(req: RagSearchRequest) -> dict:
+        access_code = os.environ.get("ACCESS_CODE")
+        if access_code and req.code != access_code:
+            raise HTTPException(403, "通行碼錯誤")
+        return retrieve(req.query, req.stage, req.top_k,
+                        filters=req.filters.model_dump(exclude_none=True) if req.filters else None).to_dict()
+
+    @app.get("/api/rag/documents")
+    def rag_documents(request: Request):
+        if os.environ.get("ACCESS_CODE") and request.headers.get("X-Access-Code") != os.environ["ACCESS_CODE"]:
+            raise HTTPException(403, "通行碼錯誤")
+        from src.knowledge.rag import paths
+        from src.knowledge.case_metadata import list_documents
+        corpus, index, _ = paths()
+        return {"documents": list_documents(corpus, index.parent)}
+
+    @app.patch("/api/rag/documents/{document_id}")
+    def rag_document_update(document_id: str, req: CaseUpdateRequest):
+        if os.environ.get("ACCESS_CODE") and req.code != os.environ["ACCESS_CODE"]:
+            raise HTTPException(403, "通行碼錯誤")
+        from src.knowledge.rag import paths
+        from src.knowledge.case_metadata import update_document
+        from src.knowledge.importers import update_index
+        corpus, index, _ = paths()
+        try:
+            value = update_document(corpus, index.parent, document_id, req.case)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return {"case": value, "index": update_index()}
+
+    @app.get("/api/rag/status")
+    def rag_status() -> dict:
+        if not rag_enabled():
+            return {"status": "disabled"}
+        try:
+            return get_retriever().status()
+        except Exception:
+            return {"status": "unavailable", "reason": "請先執行 python -m src.knowledge prepare"}
+
+    @app.post("/api/rag/import")
+    async def rag_import(request: Request, filename: str) -> dict:
+        # Raw file upload is bounded while streaming (before any form parsing).
+        # Authentication is checked before reading or parsing document bytes.
+        from src.knowledge import importers
+        from src.knowledge.rag import paths
+        access_code = os.environ.get("ACCESS_CODE")
+        if access_code and request.headers.get("X-Access-Code") != access_code:
+            raise HTTPException(403, "通行碼錯誤")
+        if Path(importers.safe_name(filename)).suffix.lower() not in importers.EXTENSIONS:
+            raise HTTPException(415, "不支援的格式，請選擇 PDF、DWG、DXF 或圖片")
+        data_dir = paths()[1].parent
+        data_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".upload-", dir=data_dir) as temp:
+            upload = Path(temp) / "upload"
+            size = 0
+            with upload.open("wb") as stream:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > importers.MAX_BYTES:
+                        raise HTTPException(413, "每個檔案上限 50 MB")
+                    stream.write(chunk)
+            report = await run_in_threadpool(importers.import_file, upload, data_dir, filename=filename)
+            state = (await run_in_threadpool(importers.update_index)
+                     if report.status in {"imported", "partial", "duplicate"}
+                     else {"status": "not_updated"})
+            return {"file": report.to_dict(), "index": state}
+
+    @app.post("/api/rag/research")
+    def rag_research(req: WebResearchRequest) -> dict:
+        access_code = os.environ.get("ACCESS_CODE")
+        if access_code and req.code != access_code:
+            raise HTTPException(403, "通行碼錯誤")
+        from src.knowledge.rag import paths
+        from src.knowledge.web_research import research
+        try:
+            return research(req.query, paths()[1].parent, req.limit)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    def generate_with_context(req: GenerateRequest) -> dict:
         access_code = os.environ.get("ACCESS_CODE")
         if access_code and req.code != access_code:
             raise HTTPException(403, "通行碼錯誤")
@@ -487,7 +635,11 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
                 data = parse_modification_data(req.text, req.base, client=client)
             else:
                 data = parse_brief_data(req.text, client=client)
+            from src.design.requirements import prepare_data
+            data = prepare_data(data, req.text, req.base)
             brief = building_brief_from_data(data, seed=seed)
+            from src.design.bedroom_program import requested_bedrooms
+            brief.bedroom_target = requested_bedrooms(data["_requirements"])
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         except Exception as exc:
@@ -496,13 +648,22 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
 
         # 2) 生成格局 + 出圖——設計檢核不過(基地太小等)一樣回 422 給使用者看。
         #    **單一入口**:自動選引擎(合用就走 AI 設計師,否則規則產生器),
-        #    AI 這條失敗(額度/尺寸不合/意外)就自動退回規則版,不讓使用者看到錯誤。
+        #    AI 失敗時以相同需求嘗試規則版；保留切換紀錄，失敗原因照實回報。
         try:
-            building, ai_extra = _generate_auto(req.text, brief, client,
-                                                force_ai=req.ai_design)
+            from src.knowledge.case_metadata import case_context
+            query = {"dimension_basis": data.get("dimension_basis") or "site"}
+            for field, target in (("site_width_m", "width_m"), ("site_depth_m", "depth_m"),
+                                  ("floors_above", "floors"), ("bedrooms", "bedrooms"), ("car_spaces", "car_spaces")):
+                if data.get(field) is not None:
+                    query[target] = data[field]
+            with case_context(query):
+                building, ai_extra = _generate_auto(req.text, brief, client,
+                    force_ai=req.ai_design, requirements=data["_requirements"])
             sheets = build_sheets(building)
         except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
+            conflict = getattr(exc, "conflict", None)
+            detail = {"message": str(exc), "conflicts": [conflict]} if conflict else str(exc)
+            raise HTTPException(422, detail) from exc
         except HTTPException:
             raise
         except Exception as exc:                 # AI 模式的二次 LLM 呼叫也可能失敗
@@ -545,7 +706,13 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
                     f"{len(ai_extra['ai_problems'])} 個待改)")
         else:
             note = house_design_note(brief.typical)
+        try:
+            actual_score = score_report(building, name=job_id)
+            actual_score["job_id"] = job_id
+        except Exception:
+            actual_score = None
         result = {
+            "layout_score": actual_score,
             "job_id": job_id,
             "seed": seed,
             "summary": _summary(brief, building),
@@ -555,6 +722,7 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             "suggestions": ([] if ai_extra.get("ai_design")
                             else _suggestions(brief, building)),
             "demo": demo_enabled(),                      # 這次是不是離線回放
+            "rag": trace_report(),                       # 送入模型的引用；不宣稱模型一定採用
             "sheets": out_sheets,
             "zip": f"/api/jobs/{job_id}/all_dxf.zip",
             # 有幾張圖的 DXF 直接內嵌在這份回應裡(其餘要走 job_id 連結,
@@ -601,6 +769,12 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             raise HTTPException(404, "方案不存在(可能已清除,請重新生成)")
 
         saved = json.loads(result_path.read_text(encoding="utf-8"))
+        if "layout_score" in saved:
+            if saved["layout_score"] is None:
+                raise HTTPException(503, "本案評分未完成，不能以另一份配置代替評分")
+            return saved["layout_score"]
+        if saved.get("ai_design"):
+            raise HTTPException(422, "此舊方案未保存實際配置的評分，請重新生成")
         brief_data = saved.get("brief_data")
         if not brief_data:
             raise HTTPException(422, "此方案無法評分(缺需求資料),請重新生成")

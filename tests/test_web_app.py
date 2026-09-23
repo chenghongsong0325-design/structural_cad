@@ -43,10 +43,10 @@ class _FakeClient:
 
 
 def _payload(**over) -> dict:
-    # ⚠️ 預設用**窄面寬透天**的尺寸(基地 11×16 → 建築 7×12):
-    #    兩帶式產線(建築 ≥10m 寬)目前生出來的圖過不了 plan_check,網站會擋下不出圖
-    #    (見 _reject_if_broken)。兩帶式修好之前,端點測試一律用生得出合格圖的尺寸。
-    base = {"brief_type": "house", "site_width_m": 11, "site_depth_m": 16,
+    # Download/history tests need an actually three-bedroom single-floor plan.
+    # A narrow single-floor plan is a public floor with no bedrooms; the new
+    # requirement gate correctly refuses to label that layout as three bedrooms.
+    base = {"brief_type": "house", "site_width_m": 19, "site_depth_m": 13,
             "bedrooms": 3, "units_per_row": None, "corridor_width_m": None,
             "floor_label": None, "master_corner": None, "kitchen_side": None,
             "floors_above": None, "basements": None}
@@ -200,11 +200,11 @@ def test_single_entry_falls_back_when_ai_fails() -> None:
                 return _FakeResponse(text=json.dumps(self._p))
             raise RuntimeError("429 RESOURCE_EXHAUSTED")
 
-    payload = _payload(site_width_m=7, site_depth_m=12,
+    payload = _payload(site_width_m=7, site_depth_m=12, bedrooms=4,
                        dimension_basis="building", floors_above=3)
     app = create_app(client_factory=lambda: _BriefThenBoom(payload))
     c = TestClient(app)
-    r = c.post("/api/generate", json={"text": "透天三層,建築物7×12米,三房"})
+    r = c.post("/api/generate", json={"text": "透天三層,建築物7×12米,四房"})
     assert r.status_code == 200, r.text               # 沒有把錯誤丟給使用者
     assert r.json().get("engine") == "rule"           # 退回規則版
 
@@ -256,7 +256,7 @@ def _no_access_code(monkeypatch):
 # ---------------------------------------------------------------------------
 def test_generate_single_floor_house() -> None:
     c = _client(_payload())
-    r = c.post("/api/generate", json={"text": "基地16×14米,三房"})
+    r = c.post("/api/generate", json={"text": "基地19×13米,三房"})
     assert r.status_code == 200
     data = r.json()
     assert [s["label"] for s in data["sheets"]] == ["1F"]   # 單層無剖面/立面
@@ -272,7 +272,7 @@ def test_generate_single_floor_house() -> None:
 
 def test_generate_multifloor_house() -> None:
     """三層透天:每層一張 + 剖面 + 立面,並回設計說明與 seed。"""
-    c = _client(_payload(site_width_m=11, site_depth_m=16, floors_above=3))
+    c = _client(_payload(site_width_m=11, site_depth_m=16, floors_above=3, bedrooms=4))
     r = c.post("/api/generate", json={"text": "透天三層", "seed": 5})
     assert r.status_code == 200, r.text
     data = r.json()
@@ -290,13 +290,15 @@ def test_basement_needs_the_two_band_pipeline() -> None:
     寬基地(19×13)才生得出 B1F。"""
     c = _client(_payload(site_width_m=11, site_depth_m=16,
                          floors_above=3, basements=1))
-    labels = [s["label"] for s in
-              c.post("/api/generate", json={"text": "透天三層,地下一層"}).json()["sheets"]]
-    assert "B1F" not in labels                      # 窄透天沒有地下室
+    rejected = c.post("/api/generate", json={"text": "透天三層,地下一層"})
+    assert rejected.status_code == 422              # 不可默默忽略必要地下室
+    rows = rejected.json()["detail"]["requirement_check"]["items"]
+    basement = next(row for row in rows if row["field"] == "basements")
+    assert basement["actual"] == 0 and basement["status"] == "unmet"
 
     c2 = _client(_payload(site_width_m=19, site_depth_m=13,
-                          floors_above=3, basements=1))
-    r = c2.post("/api/generate", json={"text": "透天三層,地下一層,基地19×13米"})
+                          floors_above=2, basements=1))
+    r = c2.post("/api/generate", json={"text": "透天二層,地下一層,基地19×13米"})
     assert r.status_code == 200, r.text
     assert "B1F" in [s["label"] for s in r.json()["sheets"]]   # 兩帶式才有地下室
 
@@ -305,21 +307,21 @@ def test_suggestions_offer_site_upgrades() -> None:
     """設計建議:告訴使用者基地還放得下什麼,每則附完整需求句(可點擊
     重新生成)。19×13 無地下室 → 至少建議「加地下車庫」;文字要能直接
     當需求送(含基地尺寸)。"""
-    c = _client(_payload(site_width_m=11, site_depth_m=16, floors_above=2))
-    r = c.post("/api/generate", json={"text": "透天二層,基地11×16米,三房"})
+    c = _client(_payload(site_width_m=19, site_depth_m=13, floors_above=2))
+    r = c.post("/api/generate", json={"text": "透天二層,基地19×13米,三房"})
     assert r.status_code == 200
     sugg = r.json()["suggestions"]
     labels = [s["label"] for s in sugg]
     assert "加地下車庫" in labels
     for s in sugg:
-        assert "基地11×16米" in s["text"]     # 完整需求句,點了能直接重生成
+        assert "基地19×13米" in s["text"]     # 完整需求句,點了能直接重生成
         assert s["note"]
 
 
 def test_seed_reproducible_and_random(monkeypatch) -> None:
     """同 seed → 同方案(同設計說明);不帶 seed → 伺服器隨機抽,會給回 seed。"""
     payload = _payload(site_width_m=11, site_depth_m=16,
-                       floors_above=3, basements=1)
+                       floors_above=3, bedrooms=4)
     c = _client(payload)
     a = c.post("/api/generate", json={"text": "透天三層", "seed": 3}).json()
     b = c.post("/api/generate", json={"text": "透天三層", "seed": 3}).json()
@@ -448,11 +450,11 @@ def test_index_page_served() -> None:
 # ---------------------------------------------------------------------------
 def test_generate_returns_metrics_and_brief_data() -> None:
     """回應要帶關鍵數字(建蔽/容積/造價)與 brief_data(多輪修改的底)。"""
-    # 19×13(兩帶式)目前生不出合格圖會被擋 → 用窄透天尺寸驗多層+地下室
+    # 窄透天三層實際四房；不能再要求地下室卻驗收沒有地下室的結果。
     c = _client(_payload(site_width_m=11, site_depth_m=16,
-                         floors_above=3, basements=1))
+                         floors_above=3, bedrooms=4))
     data = c.post("/api/generate",
-                  json={"text": "透天三層,地下一層", "seed": 5}).json()
+                  json={"text": "透天三層,四房", "seed": 5}).json()
     m = data["metrics"]
     assert m["site_area_m2"] == pytest.approx(176, abs=0.5)
     assert 0 < m["coverage_pct"] <= 100
@@ -464,7 +466,7 @@ def test_generate_returns_metrics_and_brief_data() -> None:
 def test_pdf_booklet_lazy_generated() -> None:
     """PDF 圖冊:第一次 GET 才渲染(從已存 DXF),回傳真 PDF。"""
     c = _client(_payload())
-    data = c.post("/api/generate", json={"text": "基地16×14米,三房"}).json()
+    data = c.post("/api/generate", json={"text": "基地19×13米,三房"}).json()
     r = c.get(data["pdf"])
     assert r.status_code == 200
     assert r.content[:5] == b"%PDF-"
@@ -476,11 +478,11 @@ def test_history_lists_and_reloads() -> None:
     """歷史列表包含剛生成的 job;result 端點能整包載回(含 SVG)。"""
     c = _client(_payload())
     data = c.post("/api/generate",
-                  json={"text": "基地16×14米,三房"}).json()
+                  json={"text": "基地19×13米,三房"}).json()
     hist = c.get("/api/history").json()
     assert any(h["job_id"] == data["job_id"] for h in hist)
     mine = next(h for h in hist if h["job_id"] == data["job_id"])
-    assert mine["text"] == "基地16×14米,三房"
+    assert mine["text"] == "基地19×13米,三房"
 
     r = c.get(f"/api/jobs/{data['job_id']}/result")
     assert r.status_code == 200
@@ -537,7 +539,7 @@ def test_score_returns_grade_and_sub_scores() -> None:
     """先生成一個方案,再對它就地評分 → 回等第 + 12 子分數 + 各房檢查。
     ⚠️ 只評分不搬家具:回應**不含 sheets**(畫面上的圖維持原樣)。"""
     c = _client(_payload())
-    gen = c.post("/api/generate", json={"text": "基地16×14米,三房"}).json()
+    gen = c.post("/api/generate", json={"text": "基地19×13米,三房"}).json()
     r = c.post("/api/score", json={"job_id": gen["job_id"]})
     assert r.status_code == 200
     d = r.json()
@@ -552,7 +554,7 @@ def test_score_returns_grade_and_sub_scores() -> None:
 def test_score_does_not_write_optimized_files() -> None:
     """★ 就地評分不得動原方案的檔案(不產生 opt_ 圖)。"""
     c = _client(_payload())
-    gen = c.post("/api/generate", json={"text": "基地16×14米,三房"}).json()
+    gen = c.post("/api/generate", json={"text": "基地19×13米,三房"}).json()
     c.post("/api/score", json={"job_id": gen["job_id"]})
     # 原始 DXF 還在、抓得到;不存在 opt_ 前綴的檔案
     assert c.get(gen["sheets"][0]["dxf"]).status_code == 200
