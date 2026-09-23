@@ -11,6 +11,14 @@ from fastapi.testclient import TestClient
 from src.knowledge import public_web as net, rag, web_research as web
 
 
+def test_missing_search_dependency_explains_server_deployment(monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "ddgs", None)
+    with pytest.raises(net.WebFailure, match="網站伺服器.*更新部署") as error:
+        web.search_sources("住宅 採光")
+    assert "不需要在自己的電腦安裝" in str(error.value)
+
+
 @pytest.mark.parametrize("url", ["file:///secret", "ftp://example.com/x", "http://localhost/x",
                                  "http://machine.local/x", "https://user:pass@example.com", "https://example.com:8080",
                                  "https://example.com/\nsecret"])

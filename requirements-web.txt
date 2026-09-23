@@ -3,3 +3,5 @@ ddgs==9.16.0
 lxml>=5,<7
 urllib3>=2.2,<3
 certifi>=2024.2
+# 網頁搜尋也接受文字 PDF，不依賴另外安裝 OCR 套件。
+PyMuPDF>=1.26,<2

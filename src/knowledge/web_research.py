@@ -31,7 +31,7 @@ def search_sources(query: str, limit: int = MAX_CANDIDATES) -> list[dict]:
     try:
         from ddgs import DDGS
     except ImportError as exc:
-        raise WebFailure("請先安裝 requirements-web.txt") from exc
+        raise WebFailure("網站伺服器尚未安裝網路搜尋功能，請管理者更新部署；你不需要在自己的電腦安裝檔案。") from exc
     try:
         rows = DDGS(timeout=8, verify=True).text(query, region="tw-tzh", safesearch="moderate",
                                                max_results=limit, backend="bing,brave,duckduckgo")

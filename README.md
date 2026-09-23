@@ -144,6 +144,17 @@ Benchmark 會輸出 `output/benchmark/report.html`(自包含,含縮圖),
 
 ## 文件
 
+### 網路搜尋部署排錯
+
+Dockerfile 會安裝 `requirements-web.txt`，並在建置階段確認搜尋、HTML 與文字 PDF
+套件可匯入，也會包含 `knowledge/` 內建知識文件。如果舊網站顯示「請先安裝
+requirements-web.txt」，應在 Render 重新部署最新提交，不是在使用者電腦安裝。
+
+網路搜尋和向量檢索是不同步驟。預設輕量容器可搜尋並儲存正文；完整語意 RAG
+仍需 `requirements-rag.txt` 與 `python -m src.knowledge prepare` 準備模型及索引
+（詳見 `docs/RAG.md`）。未完成時介面會顯示索引未就緒，不能視為已加入檢索。
+雲端匯入資料放在 `output/rag/`；沒有持久儲存的部署不保證重啟後保留。
+
 RAG 可在網頁「匯入參考資料」加入 PDF、DWG、DXF 或圖片，也可執行
 `.venv\Scripts\python.exe -m src.knowledge import "檔案或資料夾"`。
 先安裝 `requirements-import.txt`；DWG 另執行 `python -m src.knowledge prepare-dwg`。
