@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>自動建築平面圖生成器</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2316181c'/><g stroke='%23f7f6f3' stroke-width='2' fill='none'><rect x='8' y='8' width='16' height='16'/><path d='M8 18h7M15 18v6'/></g></svg>">
-<link rel="stylesheet" href="style.css?v=20260922-spatial">
+<link rel="stylesheet" href="style.css?v=20260924-sketch">
 </head>
 <body>
 
@@ -234,8 +234,17 @@
       <p id="spatial-method" class="spatial-method"></p>
     </section>
 
+    <div id="sketch-controls" class="sketch-controls hidden" aria-label="圖面繪製動畫">
+      <span id="sketch-status" role="status" aria-live="polite">圖面已完成</span>
+      <label for="sketch-speed">繪製速度</label>
+      <select id="sketch-speed"><option value="0.5">慢速</option><option value="1" selected>一般</option><option value="2">快速</option></select>
+      <button id="sketch-replay" class="btn quiet" type="button">重播繪製</button>
+      <button id="sketch-skip" class="btn quiet hidden" type="button">直接看完成圖</button>
+    </div>
+
     <div class="viewer" id="viewer">
       <div class="canvas" id="canvas"></div>
+      <div id="sketch-progress" class="sketch-progress hidden" aria-hidden="true"><span></span></div>
 
       <div class="empty" id="empty">
         <svg viewBox="0 0 140 96" class="empty-art" aria-hidden="true">
@@ -258,6 +267,7 @@
 </div>
 
 <script src="spatial.js?v=20260922-spatial"></script>
-<script src="app.js?v=20260922-spatial"></script>
+<script src="sketch.js?v=20260924-sketch"></script>
+<script src="app.js?v=20260924-sketch"></script>
 </body>
 </html>

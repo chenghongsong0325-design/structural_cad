@@ -566,7 +566,34 @@ function buildTabs() {
   });
 }
 
+const sketchedSheets = new WeakSet();
+
+function playSheetSketch() {
+  const svg = $("canvas").querySelector(".pane > svg");
+  if (!svg || !window.PlanSketch) return;
+  window.PlanSketch.finish();
+  const label = sheets[current].label;
+  $("viewer").classList.add("is-sketching");
+  $("sketch-skip").classList.remove("hidden");
+  $("sketch-progress").classList.remove("hidden");
+  $("sketch-status").textContent = `${label} · 正在逐筆繪製…`;
+  window.PlanSketch.play(svg, {
+    speed: $("sketch-speed").value,
+    onProgress: (value) => { $("sketch-progress").firstElementChild.style.transform = `scaleX(${value})`; },
+    onFinish: () => {
+      $("viewer").classList.remove("is-sketching");
+      $("sketch-skip").classList.add("hidden");
+      $("sketch-progress").classList.add("hidden");
+      $("sketch-status").textContent = `${label} · 圖面已完成`;
+    },
+  });
+}
+$("sketch-replay").addEventListener("click", playSheetSketch);
+$("sketch-skip").addEventListener("click", () => window.PlanSketch?.finish());
+$("sketch-speed").addEventListener("change", () => { if (window.PlanSketch?.running) playSheetSketch(); });
+
 function showSheet(i) {
+  window.PlanSketch?.finish();
   current = i;
   [...$("tabs").children].forEach((b, j) =>
     b.classList.toggle("active", j === i));
@@ -582,6 +609,12 @@ function showSheet(i) {
   $("canvas").replaceChildren(pane);
   setDxfLink(sheets[i]);
   resetView();
+  $("sketch-controls").classList.remove("hidden");
+  $("sketch-status").textContent = `${sheets[i].label} · 圖面已完成`;
+  if (!sketchedSheets.has(sheets[i])) {
+    sketchedSheets.add(sheets[i]);
+    playSheetSketch();
+  }
 }
 
 // DXF 下載:優先用回應裡內嵌的檔案(dxf_b64)。

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-Hant"><meta charset="utf-8"><title>素描動畫瀏覽器驗證</title>
+<style>body{font:16px system-ui;margin:24px;background:#f7f5f0}#pane{position:relative;width:800px;height:550px}svg{width:100%;height:100%}.sketch-copy{position:absolute;inset:0}li{margin:8px}</style>
+<h1>素描動畫瀏覽器驗證</h1><p>直接使用現有生成結果，測試不呼叫 AI。</p><ol id="results"></ol><div id="pane"></div>
+<script>
+// Deterministic timing, with real browser SVG geometry and rendering.
+let reduced = false, motionChanged;
+window.matchMedia = () => ({get matches(){return reduced}, addEventListener:(_, fn)=>{motionChanged=fn}});
+const frames = new Map(); let nextFrame = 0;
+window.requestAnimationFrame = fn => { frames.set(++nextFrame, fn); return nextFrame; };
+window.cancelAnimationFrame = id => frames.delete(id);
+function advance(time) { const pending=[...frames.values()]; frames.clear(); pending.forEach(fn=>fn(time)); }
+function assert(value, message) { if(!value) throw Error(message); }
+function test(name, fn) { const li=document.createElement('li'); try{fn();li.textContent='PASS · '+name;}catch(e){li.textContent='FAIL · '+name+': '+e.message;document.title='FAIL · 素描動畫驗證';} document.querySelector('#results').append(li); }
+</script>
+<script src="/sketch.js"></script>
+<script>
+(async()=>{
+ const source=await (await fetch('/fixture.svg')).text();
+ const pane=document.querySelector('#pane'); pane.innerHTML=source;
+ const svg=pane.querySelector('svg'); const original=svg.outerHTML; let progress=0;
+ test('實際生成圖逐筆呈現，保留原始線條座標',()=>{
+   PlanSketch.play(svg,{onProgress:v=>{progress=v}}); advance(0); advance(5000);
+   assert(PlanSketch.running && progress===.5,'中段動畫狀態');
+   const copy=pane.querySelector('.sketch-copy'); assert(copy,'存在動畫圖層');
+   assert([...svg.querySelectorAll('path')].every((p,i)=>p.getAttribute('d')===copy.querySelectorAll('path')[i].getAttribute('d')),'路徑完全相同');
+   assert([...copy.querySelectorAll('path')].some(p=>p.style.opacity==='0'),'尚有未畫出的線');
+ });
+ test('播放結束後，SVG 與播放前逐字一致',()=>{advance(10000); const now=svg.outerHTML; const at=[...original].findIndex((_,i)=>original[i]!==now[i]); assert(now===original,`原圖被修改 @${at}: ${original.slice(at,at+100)} → ${now.slice(at,at+100)}`);assert(!PlanSketch.running && frames.size===0,'動畫未清除')});
+ test('重播中直接看完成圖，取消所有影格',()=>{PlanSketch.play(svg);advance(0);advance(1500);PlanSketch.finish();assert(svg.outerHTML===original && !pane.querySelector('.sketch-copy') && frames.size===0,'跳過清理')});
+ test('連續重播與切換圖紙，不殘留上一張動畫',()=>{PlanSketch.play(svg);PlanSketch.play(svg);assert(pane.querySelectorAll('.sketch-copy').length===1,'重複圖層');const next=svg.cloneNode(true);next.removeAttribute('style');pane.append(next);PlanSketch.play(next);assert(svg.outerHTML===original,'前張未還原');PlanSketch.finish();next.remove()});
+ test('速度設定確實改變繪製時間',()=>{PlanSketch.play(svg,{speed:2});advance(0);advance(4999);assert(PlanSketch.running,'過早結束');advance(5000);assert(!PlanSketch.running,'未於 5 秒結束')});
+ test('使用者減少動態效果：直接顯示完整圖',()=>{reduced=true;PlanSketch.play(svg);assert(!PlanSketch.running && svg.outerHTML===original,'未尊重偏好');reduced=false;PlanSketch.play(svg);reduced=true;motionChanged();assert(!PlanSketch.running,'動態切換偏好');reduced=false});
+ test('含填色、虛線、轉換與 pathLength 的 SVG 原樣還原',()=>{
+   const el=document.createElement('div');el.innerHTML='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" style="opacity:.8"><g transform="translate(5 8)"><path d="M0 0L50 0L50 50Z" fill="red" stroke="blue" stroke-dasharray="3 2" pathLength="100"/></g></svg>';pane.append(el);const s=el.firstChild,before=s.outerHTML;PlanSketch.play(s);advance(0);advance(4000);assert(PlanSketch.running,'幾何失敗');PlanSketch.finish();assert(s.outerHTML===before,'樣式或虛線遺失');el.remove();
+ });
+ test('圖紙移除及空 SVG 可安全結束',()=>{const s=document.createElementNS('http://www.w3.org/2000/svg','svg');pane.append(s);PlanSketch.play(s);assert(!PlanSketch.running,'空圖');s.remove();PlanSketch.play(svg);svg.remove();advance(0);assert(!PlanSketch.running && frames.size===0,'移除後殘留');pane.append(svg)});
+ if(!document.title.startsWith('FAIL')) document.title='PASS · 8 項素描動畫驗證';
+})();
+</script></html>

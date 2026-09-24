@@ -512,6 +512,16 @@ body:not(.has-result) .stage-hint { display: none; }
 .canvas:active { cursor: grabbing; }
 .canvas .pane { position: absolute; inset: 0; transform-origin: 0 0; }
 .canvas svg { width: 100%; height: 100%; display: block; }
+.canvas .sketch-copy { position: absolute; inset: 0; pointer-events: none; }
+body.has-result .viewer.is-sketching { background: #faf8f2; }
+.viewer.is-sketching .zoom { color: #4b4943; background: #eee9df; }
+.sketch-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13px; }
+.sketch-controls #sketch-status { margin-right: auto; color: var(--ink-2); }
+.sketch-controls select { width: auto; padding: 5px 8px; border: 1px solid var(--rule-firm); border-radius: 7px; background: var(--paper-2); color: var(--ink); }
+.sketch-controls .btn { padding: 5px 10px; font-size: 13px; }
+.sketch-progress { position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: #ddd5c6; pointer-events: none; }
+.sketch-progress span { display: block; height: 100%; background: #8b7758; transform: scaleX(0); transform-origin: left; }
+@media (prefers-reduced-motion: reduce) { .viewer { transition: none; } }
 
 /* 空狀態:首屏不是一片黑,而是一張淡淡的線稿 */
 .empty {
