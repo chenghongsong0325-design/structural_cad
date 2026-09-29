@@ -8,25 +8,35 @@ document.querySelectorAll(".research-topic").forEach((button) => {
   button.addEventListener("click", () => { $("research-query").value = button.textContent; });
 });
 $("research-btn").addEventListener("click", researchWeb);
+$("research-url-btn").addEventListener("click", () => researchWeb(true));
 $("research-query").addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !$("research-btn").disabled) researchWeb();
 });
 
-async function researchWeb() {
+async function researchWeb(direct = false) {
+  direct = direct === true;
   const query = $("research-query").value.trim();
   if (query.length < 2) { $("research-status").textContent = "請輸入想找的主題。"; return; }
   const button = $("research-btn");
-  button.disabled = true;
+  const sourceUrl = direct ? $("research-url").value.trim() : "";
+  if (direct && !/^https?:\/\//i.test(sourceUrl)) {
+    $("research-status").textContent = "請貼上完整的公開 HTTP／HTTPS 網址。"; return;
+  }
+  button.disabled = $("research-url-btn").disabled = true;
   $("research-results").replaceChildren();
-  $("research-status").textContent = "搜尋公開來源、讀取正文並建立索引中…可能需要一至兩分鐘。";
+  $("research-diagnostics").textContent = "";
+  $("research-status").textContent = direct ? "正在讀取指定網址的正文並建立索引…" : "搜尋公開來源、讀取正文並建立索引中…可能需要一至兩分鐘。";
   try {
     const response = await fetch("/api/rag/research", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({query, limit: 3, code: $("code").value}),
+      body: JSON.stringify({query, limit: 3, code: $("code").value, ...(direct ? {source_url: sourceUrl} : {})}),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || `伺服器錯誤 (${response.status})`);
     $("research-status").textContent = data.reason || "處理完成";
+    const searchLabels = {ok:"取得結果", empty:"無可用結果", limited:"來源限制存取", timeout:"連線逾時", connection_error:"連線或服務異常"};
+    $("research-diagnostics").textContent = (data.search_attempts || [])
+      .map(a => `${a.provider}：${searchLabels[a.status] || "未完成"}`).join("；");
     if (data.index && data.index.reason) $("research-status").textContent += `。${data.index.reason}`;
     for (const item of (data.items || [])) {
       const card = document.createElement("details");
@@ -60,7 +70,7 @@ async function researchWeb() {
   } catch (error) {
     $("research-status").textContent = `搜尋未完成：${error.message}`;
   } finally {
-    button.disabled = false;
+    button.disabled = $("research-url-btn").disabled = false;
   }
 }
 

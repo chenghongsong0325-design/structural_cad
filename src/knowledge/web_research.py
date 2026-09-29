@@ -4,9 +4,11 @@ Search snippets never become evidence. Network research runs only after an
 explicit web-research request, never automatically inside design generation.
 """
 from dataclasses import asdict
+import codecs
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -19,6 +21,8 @@ from .storage import staging_directory
 
 MAX_TEXT = 12_000
 MAX_CANDIDATES = 8
+SEARCH_BACKENDS = ("brave", "duckduckgo", "yahoo")
+LOGGER = logging.getLogger(__name__)
 BLOCKED_DOMAINS = {"facebook.com", "instagram.com", "pinterest.com", "youtube.com", "tiktok.com",
                    "x.com", "twitter.com", "accounts.google.com"}
 
@@ -27,18 +31,49 @@ def web_enabled() -> bool:
     return os.environ.get("RAG_WEB_ENABLED", "1").lower() not in {"0", "off", "false"}
 
 
-def search_sources(query: str, limit: int = MAX_CANDIDATES) -> list[dict]:
+def _search_failure_code(exc: Exception) -> str:
+    # Return fixed labels only: upstream messages can contain queries or proxy credentials.
+    message = str(exc).lower()
+    if any(value in message for value in ("429", "403", "ratelimit", "rate limit", "captcha")):
+        return "limited"
+    if "timeout" in type(exc).__name__.lower() or "timed out" in message or "timeout" in message:
+        return "timeout"
+    if "no results" in message:
+        return "empty"
+    return "connection_error"
+
+
+def search_sources(query: str, limit: int = MAX_CANDIDATES, *, attempts: list | None = None) -> list[dict]:
     try:
         from ddgs import DDGS
     except ImportError as exc:
         raise WebFailure("網站伺服器尚未安裝網路搜尋功能，請管理者更新部署；你不需要在自己的電腦安裝檔案。") from exc
-    try:
-        rows = DDGS(timeout=8, verify=True).text(query, region="tw-tzh", safesearch="moderate",
-                                               max_results=limit, backend="bing,brave,duckduckgo")
-    except Exception as exc:
-        raise WebFailure("搜尋服務暫時無法使用，請稍後重試或改用較短的主題") from exc
+    attempts = attempts if attempts is not None else []
+    # DDGS 9.16 disables Bing. Also, its multi-engine FIRST_EXCEPTION path can
+    # discard successful pending results. Isolate engines instead of combining them.
+    for backend in SEARCH_BACKENDS:
+        try:
+            rows = DDGS(timeout=8, verify=True).text(query, region="tw-tzh", safesearch="moderate",
+                                                   max_results=limit, backend=backend)
+            candidates = _search_candidates(rows, limit)
+        except Exception as exc:
+            code = _search_failure_code(exc)
+            attempts.append({"provider": backend, "status": code})
+            LOGGER.warning("Web search provider=%s status=%s", backend, code)
+            continue
+        attempts.append({"provider": backend, "status": "ok" if candidates else "empty"})
+        if candidates:
+            return candidates
+    if attempts and all(item["status"] == "empty" for item in attempts):
+        return []
+    raise WebFailure("網站目前無法從搜尋來源取得結果，已嘗試備援搜尋。你可以貼上公開資料網址直接匯入，或稍後再試。")
+
+
+def _search_candidates(rows: list[dict], limit: int) -> list[dict]:
     candidates, seen = [], set()
     for row in rows:
+        if not isinstance(row, dict):
+            continue
         try:
             url = normalize_url(row.get("href", ""))
         except WebFailure:
@@ -80,8 +115,17 @@ def _clean(value: str) -> str:
 
 def html_evidence(page: WebPage) -> tuple[str, list[Evidence], dict]:
     from lxml import html
+    # lxml does not receive HTTP headers and otherwise may interpret UTF-8 as
+    # Latin-1 (including pages with an HTML5 charset declaration). Preserve CJK.
+    header = re.search(r"charset\s*=\s*[\"']?([\w.-]+)", page.headers.get("content-type", ""), re.I)
+    meta = re.search(br"<meta\b[^>]*charset\s*=\s*[\"']?([\w.-]+)", page.body[:8192], re.I)
+    encoding = header[1] if header else meta[1].decode("ascii") if meta else "utf-8"
     try:
-        root = html.fromstring(page.body, parser=html.HTMLParser(no_network=True))
+        codecs.lookup(encoding)
+    except LookupError:
+        encoding = "utf-8"
+    try:
+        root = html.fromstring(page.body, parser=html.HTMLParser(no_network=True, encoding=encoding))
     except (ValueError, TypeError) as exc:
         raise WebFailure("網頁內容無法解析") from exc
     robots = " ".join(root.xpath('//meta[translate(@name,"ROBTS","robts")="robots"]/@content'))
@@ -212,17 +256,24 @@ def publish_source(title: str, url: str, evidence: list[Evidence], metadata: dic
     return report
 
 
-def research(query: str, data_dir: Path, limit: int = 3) -> dict:
+def research(query: str, data_dir: Path, limit: int = 3, *, source_url: str | None = None) -> dict:
     query = query.strip()
     if not 2 <= len(query) <= 160 or not 1 <= limit <= 5:
         raise ValueError("請輸入 2～160 字的搜尋主題，匯入上限為 1～5 筆")
-    result = {"query": query, "status": "no_match", "provider": "網路搜尋（Bing／Brave／DuckDuckGo）",
-              "items": [], "index": {"status": "not_updated"}, "reason": ""}
+    result = {"query": query, "status": "no_match", "provider": "網路搜尋（Brave／DuckDuckGo／Yahoo）",
+              "search_attempts": [], "items": [], "index": {"status": "not_updated"}, "reason": ""}
     if not web_enabled():
         result.update(status="disabled", reason="網路搜尋已關閉")
         return result
     try:
-        candidates = search_sources(query)
+        if source_url:
+            result["provider"] = "指定公開網址（未使用搜尋引擎）"
+            candidates = [{"title": query, "url": normalize_url(source_url.strip())}]
+        else:
+            candidates = search_sources(query, attempts=result["search_attempts"])
+            successful = next((a for a in result["search_attempts"] if a["status"] == "ok"), None)
+            if successful:
+                result["provider"] = f"網路搜尋（{successful['provider']}）"
     except WebFailure as exc:
         result.update(status="unavailable", reason=str(exc))
         return result
@@ -250,5 +301,5 @@ def research(query: str, data_dir: Path, limit: int = 3) -> dict:
         result["status"] = "ready" if result["index"]["status"] == "ready" else "stored"
         result["reason"] = f"已取得 {count} 份來源" + ("，並更新知識庫" if result["status"] == "ready" else "，但索引尚未就緒")
     else:
-        result["reason"] = "未取得可匯入的公開正文，請換較短的主題或改用檔案匯入"
+        result["reason"] = "未取得可匯入的公開正文，請查看各來源的原因，或改用公開網址／檔案匯入"
     return result

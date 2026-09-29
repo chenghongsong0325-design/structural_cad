@@ -19,6 +19,72 @@ def test_missing_search_dependency_explains_server_deployment(monkeypatch):
     assert "不需要在自己的電腦安裝" in str(error.value)
 
 
+def fake_search(monkeypatch, responses):
+    import sys
+    from types import SimpleNamespace
+    calls = []
+    class Search:
+        def __init__(self, **kwargs):
+            assert kwargs == {"timeout": 8, "verify": True}
+        def text(self, query, **kwargs):
+            backend = kwargs["backend"]
+            assert "," not in backend and backend != "bing"
+            calls.append(backend)
+            response = responses[backend]
+            if isinstance(response, Exception):
+                raise response
+            return response
+    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS=Search))
+    return calls
+
+
+def test_independent_fallback_retains_success_after_provider_failure(monkeypatch):
+    calls = fake_search(monkeypatch, {
+        "brave": RuntimeError("HTTP 429 private-query secret-token"),
+        "duckduckgo": [{"href": "https://design.example/garage", "title": "住宅車庫"}],
+    })
+    attempts = []
+    result = web.search_sources("住宅 車庫 玄關 動線", attempts=attempts)
+    assert calls == ["brave", "duckduckgo"]
+    assert result == [{"url": "https://design.example/garage", "title": "住宅車庫"}]
+    assert attempts == [{"provider": "brave", "status": "limited"}, {"provider": "duckduckgo", "status": "ok"}]
+    assert "secret" not in str(attempts)
+
+
+def test_unusable_results_try_next_provider_and_normalize_rank(monkeypatch):
+    calls = fake_search(monkeypatch, {
+        "brave": [None, {"href": "file:///secret"}, {"href": "https://facebook.com/post"}],
+        "duckduckgo": [],
+        "yahoo": [{"href": "https://design.example/house#x", "title": "住宅"},
+                  {"href": "https://design.example/house#y", "title": "重複"},
+                  {"href": "https://housing.gov.tw/design", "title": "住宅設計"}],
+    })
+    result = web.search_sources("住宅")
+    assert calls == list(web.SEARCH_BACKENDS)
+    assert [r["title"] for r in result] == ["住宅設計", "住宅"]
+
+
+def test_all_provider_failures_have_safe_diagnostics_no_index_writes(tmp_path, monkeypatch, caplog):
+    calls = fake_search(monkeypatch, {
+        "brave": RuntimeError("403 secret-query"),
+        "duckduckgo": TimeoutError("timed out secret-token"),
+        "yahoo": RuntimeError("TLS private-proxy-password"),
+    })
+    result = web.research("住宅", tmp_path / "rag")
+    assert calls == list(web.SEARCH_BACKENDS) and result["status"] == "unavailable"
+    assert [a["status"] for a in result["search_attempts"]] == ["limited", "timeout", "connection_error"]
+    assert result["index"]["status"] == "not_updated" and not list(tmp_path.iterdir())
+    assert "較短" not in result["reason"]
+    assert all(value not in str(result) + caplog.text for value in ("secret-query", "secret-token", "private-proxy-password"))
+
+
+def test_all_empty_is_no_match_instead_of_connection_failure(tmp_path, monkeypatch):
+    fake_search(monkeypatch, {"brave": [], "duckduckgo": RuntimeError("No results found."), "yahoo": []})
+    result = web.research("住宅", tmp_path / "rag")
+    assert result["status"] == "no_match"
+    assert all(a["status"] == "empty" for a in result["search_attempts"])
+
+
 @pytest.mark.parametrize("url", ["file:///secret", "ftp://example.com/x", "http://localhost/x",
                                  "http://machine.local/x", "https://user:pass@example.com", "https://example.com:8080",
                                  "https://example.com/\nsecret"])
@@ -92,6 +158,21 @@ def test_html_real_body_metadata_and_robot_optout():
         web.html_evidence(html_page(body="搜尋摘要很短"))
 
 
+@pytest.mark.parametrize("encoding,header,meta", [
+    ("utf-8", "text/html; charset=utf-8", ""),
+    ("utf-8", "text/html", '<meta charset="utf-8">'),
+    ("utf-8", "text/html", ""),
+    ("big5", "text/html; charset=big5", ""),
+    ("big5", "text/html", '<meta http-equiv="Content-Type" content="text/html; charset=big5">'),
+])
+def test_html_chinese_encoding_is_preserved(encoding, header, meta):
+    text = f'<html><head>{meta}<title>住宅車庫</title></head><body><p>{"住宅車庫玄關動線設計。" * 20}</p></body></html>'
+    page = net.WebPage("https://design.example/house", 200, {"content-type": header}, text.encode(encoding))
+    title, evidence, _ = web.html_evidence(page)
+    assert title == "住宅車庫" and "玄關動線" in evidence[0].text
+    assert web.relevant("住宅 車庫 玄關 動線", title, evidence)
+
+
 def test_robots_disallow_and_unknown_status_fail_closed(monkeypatch):
     monkeypatch.setattr(web, "public_get", lambda url, **k: net.WebPage(url, 200, {}, b"User-agent: *\nDisallow: /private"))
     with pytest.raises(net.WebFailure, match="不允許"):
@@ -136,7 +217,7 @@ def test_search_fetch_publish_dedup_and_partial_failure(store, monkeypatch):
     candidates = [{"url": "https://a.example/blocked", "title": "搜尋摘要不入庫"},
                   {"url": "https://b.example/house", "title": "住宅採光"},
                   {"url": "https://b.example/another", "title": "同站重複"}]
-    monkeypatch.setattr(web, "search_sources", lambda _: candidates)
+    monkeypatch.setattr(web, "search_sources", lambda _, **kwargs: candidates)
     def read(item, cache):
         if item["url"].startswith("https://a."): raise net.WebFailure("網站不允許")
         title, evidence, metadata = web.html_evidence(html_page())
@@ -162,7 +243,7 @@ def test_search_fetch_publish_dedup_and_partial_failure(store, monkeypatch):
 def test_disabled_empty_search_and_api_auth(store, monkeypatch):
     from src.web.app import create_app
     calls = []
-    monkeypatch.setattr(web, "search_sources", lambda query: calls.append(query) or [])
+    monkeypatch.setattr(web, "search_sources", lambda query, **kwargs: calls.append(query) or [])
     monkeypatch.setenv("ACCESS_CODE", "test")
     client = TestClient(create_app())
     assert client.post("/api/rag/research", json={"query": "住宅採光"}).status_code == 403
@@ -173,3 +254,51 @@ def test_disabled_empty_search_and_api_auth(store, monkeypatch):
     monkeypatch.setenv("RAG_WEB_ENABLED", "0")
     assert web.research("住宅採光", store[0])["status"] == "disabled"
     assert calls == ["住宅採光"]
+
+
+def test_direct_source_api_auth_and_real_evidence(store, monkeypatch):
+    from src.web.app import create_app
+    monkeypatch.setenv("ACCESS_CODE", "test")
+    monkeypatch.setattr(web, "search_sources", lambda *a, **k: pytest.fail("direct URL must not call search"))
+    reads = []
+    def read(candidate, cache):
+        reads.append(candidate["url"])
+        title, evidence, metadata = web.html_evidence(html_page())
+        return title, candidate["url"], evidence, metadata
+    monkeypatch.setattr(web, "read_source", read)
+    client = TestClient(create_app())
+    body = {"query": "住宅車庫", "source_url": "https://design.example/house"}
+    assert client.post("/api/rag/research", json=body).status_code == 403
+    assert reads == []
+    response = client.post("/api/rag/research", json={**body, "code": "test"})
+    assert response.status_code == 200
+    result = response.json()
+    assert result["status"] == "ready" and result["search_attempts"] == [], result
+    assert "未使用搜尋引擎" in result["provider"]
+    assert reads == [body["source_url"]]
+    assert result["items"][0]["report"]["evidence"][0]["method"] == "web_text"
+    assert client.post("/api/rag/research", json={**body, "source_url": "x" * 2049, "code": "test"}).status_code == 422
+
+
+@pytest.mark.parametrize("url", ["https://127.0.0.1/", "http://localhost/", "https://user:pass@example.com/", "file:///secret"])
+def test_direct_source_keeps_public_url_guards(tmp_path, monkeypatch, url):
+    monkeypatch.setattr(web, "search_sources", lambda *a, **k: pytest.fail("must not search"))
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(0, 0, 0, "", ("127.0.0.1", 443))])
+    result = web.research("住宅", tmp_path / "rag", source_url=url)
+    assert result["status"] in {"no_match", "unavailable"}
+    assert result["index"]["status"] == "not_updated" and not list(tmp_path.iterdir())
+
+
+def test_direct_source_respects_opt_out_relevance_and_feature_toggle(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "search_sources", lambda *a, **k: pytest.fail("must not search"))
+    monkeypatch.setattr(web, "allow_crawl", lambda *a: None)
+    monkeypatch.setattr(web, "public_get", lambda *a, **k: html_page('<meta name="robots" content="noindex">'))
+    result = web.research("住宅", tmp_path, source_url="https://design.example/house")
+    assert "不索引" in result["items"][0]["reason"]
+    monkeypatch.setattr(web, "public_get", lambda *a, **k: html_page())
+    result = web.research("巧克力蛋糕", tmp_path, source_url="https://design.example/house")
+    assert "關聯不足" in result["items"][0]["reason"]
+    monkeypatch.setenv("RAG_WEB_ENABLED", "0")
+    monkeypatch.setattr(web, "read_source", lambda *a, **k: pytest.fail("disabled"))
+    assert web.research("住宅", tmp_path, source_url="https://design.example/house")["status"] == "disabled"
+    assert not list(tmp_path.iterdir())

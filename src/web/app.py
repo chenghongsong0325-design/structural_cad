@@ -127,6 +127,7 @@ class RagSearchRequest(BaseModel):
 
 class WebResearchRequest(BaseModel):
     query: str = Field(min_length=2, max_length=160)
+    source_url: str | None = Field(default=None, max_length=2048)
     limit: int = Field(default=3, ge=1, le=5)
     code: str = ""
 
@@ -610,7 +611,7 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
         from src.knowledge.rag import paths
         from src.knowledge.web_research import research
         try:
-            return research(req.query, paths()[1].parent, req.limit)
+            return research(req.query, paths()[1].parent, req.limit, source_url=req.source_url)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 

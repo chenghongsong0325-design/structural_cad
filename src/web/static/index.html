@@ -123,6 +123,14 @@
             <button id="research-btn" class="btn quiet" type="button">自動找資料並加入 RAG</button>
             <p class="import-note">一次最多加入 3 個不同網站的公開網頁或文字 PDF，保留來源網址。只會送出這裡的搜尋主題，不會傳送你的本機檔案；網路資料仍需核對。</p>
             <div id="research-status" role="status" aria-live="polite"></div>
+            <p id="research-diagnostics" class="import-note"></p>
+            <details class="research-direct">
+              <summary>已有網址？直接匯入公開資料</summary>
+              <p class="import-note">搜尋暫時不可用時，可填寫上方主題並貼上資料網址。系統仍會核對正文、來源存取規則與主題相關性。</p>
+              <label for="research-url">公開網頁或文字 PDF 網址</label>
+              <input id="research-url" type="url" maxlength="2048" placeholder="https://…">
+              <button id="research-url-btn" class="btn quiet" type="button">讀取網址並加入 RAG</button>
+            </details>
             <div id="research-results"></div>
           </div>
         </details>
@@ -268,6 +276,6 @@
 
 <script src="spatial.js?v=20260922-spatial"></script>
 <script src="sketch.js?v=20260924-sketch"></script>
-<script src="app.js?v=20260924-sketch"></script>
+<script src="app.js?v=20260924-search2"></script>
 </body>
 </html>
