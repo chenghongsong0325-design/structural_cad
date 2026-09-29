@@ -10,6 +10,92 @@ from fastapi.testclient import TestClient
 
 from src.knowledge import public_web as net, rag, web_research as web
 
+REAL_REFERENCE_CATALOG = web.REFERENCE_CATALOG
+
+
+@pytest.fixture(autouse=True)
+def isolated_catalog(monkeypatch):
+    # Existing unit scenarios exercise search alone; catalog tests opt in below.
+    monkeypatch.setattr(web, "REFERENCE_CATALOG", ())
+
+
+def test_irrelevant_provider_results_continue_fallback(monkeypatch):
+    calls = fake_search(monkeypatch, {
+        "brave": [{"href": "https://who.int/covid", "title": "Coronavirus disease COVID-19"}],
+        "duckduckgo": [{"href": "https://drugs.com/baclofen", "title": "Baclofen uses"}],
+        "yahoo": [{"href": "https://design.example/garage", "title": "案例", "body": "住宅車庫動線"}],
+    })
+    attempts = []
+    result = web.search_sources("住宅 車庫 玄關 動線", attempts=attempts)
+    assert calls == list(web.SEARCH_BACKENDS)
+    assert [a["status"] for a in attempts] == ["unrelated", "unrelated", "ok"]
+    assert result == [{"url": "https://design.example/garage", "title": "案例"}]
+
+
+def test_catalog_is_topic_limited(monkeypatch):
+    monkeypatch.setattr(web, "REFERENCE_CATALOG", REAL_REFERENCE_CATALOG)
+    assert len(web.reference_sources("住宅 車庫 玄關 動線")) == 2
+    assert web.reference_sources("透天住宅 採光 平面圖")
+    assert web.reference_sources("巧克力蛋糕") == []
+    assert web.reference_sources("COVID Baclofen") == []
+
+
+@pytest.mark.parametrize("failure", ["unavailable", "unrelated", "unreadable"])
+def test_catalog_fetches_real_body_and_records_discovery(store, monkeypatch, failure):
+    monkeypatch.setattr(web, "REFERENCE_CATALOG", REAL_REFERENCE_CATALOG)
+    def search(query, **kwargs):
+        if failure == "unavailable":
+            raise net.WebFailure("搜尋連線失敗")
+        if failure == "unreadable":
+            return [{"url": "https://design.example/blocked", "title": "住宅"}]
+        return []
+    monkeypatch.setattr(web, "search_sources", search)
+    reads = []
+    def read(candidate, cache):
+        reads.append(candidate["url"])
+        if candidate["url"].endswith("blocked"):
+            raise net.WebFailure("網站不允許")
+        title, evidence, metadata = web.html_evidence(html_page())
+        return title, candidate["url"], evidence, metadata
+    monkeypatch.setattr(web, "read_source", read)
+    monkeypatch.setattr(web, "update_index", lambda: {"status": "unavailable"})
+    result = web.research("住宅 車庫 玄關 動線", store[0], limit=1)
+    assert result["status"] == "stored" and result["catalog_used"]
+    assert "非即時搜尋" in result["provider"]
+    assert result["search_attempts"][-1] == {"provider": "reference_catalog", "status": "catalog"}
+    assert reads[-1] == REAL_REFERENCE_CATALOG[0]["url"]
+    manifest = json.loads(next((store[0] / "imports").glob("*/manifest.json")).read_text(encoding="utf-8"))
+    assert manifest["origin"]["discovery"] == "reference_catalog"
+    assert manifest["origin"]["url"] == reads[-1]
+    assert "行人動線" in manifest["report"]["evidence"][0]["text"]
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_catalog_cannot_import_unrelated_or_opted_out_body(tmp_path, monkeypatch, blocked):
+    monkeypatch.setattr(web, "REFERENCE_CATALOG", REAL_REFERENCE_CATALOG)
+    monkeypatch.setattr(web, "search_sources", lambda *a, **k: [])
+    monkeypatch.setattr(web, "allow_crawl", lambda *a: None)
+    page = html_page('<meta name="robots" content="noindex">' if blocked else "",
+                     body="Coronavirus disease treatment and Baclofen drug information. " * 20)
+    monkeypatch.setattr(web, "public_get", lambda *a, **k: page)
+    monkeypatch.setattr(web, "update_index", lambda: pytest.fail("must not index rejected sources"))
+    result = web.research("住宅 採光", tmp_path)
+    assert result["status"] == "no_match" and len(result["items"]) == 2
+    assert all("不索引" in i["reason"] if blocked else "關聯不足" in i["reason"] for i in result["items"])
+    assert not list(tmp_path.iterdir())
+
+
+def test_direct_url_does_not_use_catalog_after_fetch_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "REFERENCE_CATALOG", REAL_REFERENCE_CATALOG)
+    reads = []
+    def read(candidate, cache):
+        reads.append(candidate["url"])
+        raise net.WebFailure("來源拒絕讀取")
+    monkeypatch.setattr(web, "read_source", read)
+    result = web.research("住宅", tmp_path, source_url="https://design.example/blocked")
+    assert reads == ["https://design.example/blocked"]
+    assert "catalog_used" not in result and not list(tmp_path.iterdir())
+
 
 def test_missing_search_dependency_explains_server_deployment(monkeypatch):
     import sys

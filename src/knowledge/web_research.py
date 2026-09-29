@@ -23,6 +23,16 @@ MAX_TEXT = 12_000
 MAX_CANDIDATES = 8
 SEARCH_BACKENDS = ("brave", "duckduckgo", "yahoo")
 LOGGER = logging.getLogger(__name__)
+# Discovery links only, never evidence. These pages were readable on 2026-09-29;
+# every use still fetches current robots rules and current, relevant source text.
+REFERENCE_CATALOG = (
+    {"title": "車庫空間怎麼規劃？採光設計、動線與收納一次看懂",
+     "url": "https://www.acd-design.org.tw/article-info.asp?id=416",
+     "topics": "住宅 車庫 採光 動線 收納"},
+    {"title": "HOUSE OF ORDER 律之宅 — Yuan Architects 行一建築",
+     "url": "https://yuanarch.com/new-page-17/",
+     "topics": "住宅 透天 採光 通風 動線 平面圖"},
+)
 BLOCKED_DOMAINS = {"facebook.com", "instagram.com", "pinterest.com", "youtube.com", "tiktok.com",
                    "x.com", "twitter.com", "accounts.google.com"}
 
@@ -55,21 +65,22 @@ def search_sources(query: str, limit: int = MAX_CANDIDATES, *, attempts: list | 
         try:
             rows = DDGS(timeout=8, verify=True).text(query, region="tw-tzh", safesearch="moderate",
                                                    max_results=limit, backend=backend)
-            candidates = _search_candidates(rows, limit)
+            valid = _search_candidates(rows, limit)
+            candidates = _search_candidates(rows, limit, query=query)
         except Exception as exc:
             code = _search_failure_code(exc)
             attempts.append({"provider": backend, "status": code})
             LOGGER.warning("Web search provider=%s status=%s", backend, code)
             continue
-        attempts.append({"provider": backend, "status": "ok" if candidates else "empty"})
+        attempts.append({"provider": backend, "status": "ok" if candidates else "unrelated" if valid else "empty"})
         if candidates:
             return candidates
-    if attempts and all(item["status"] == "empty" for item in attempts):
+    if attempts and all(item["status"] in {"empty", "unrelated"} for item in attempts):
         return []
     raise WebFailure("網站目前無法從搜尋來源取得結果，已嘗試備援搜尋。你可以貼上公開資料網址直接匯入，或稍後再試。")
 
 
-def _search_candidates(rows: list[dict], limit: int) -> list[dict]:
+def _search_candidates(rows: list[dict], limit: int, *, query: str = "") -> list[dict]:
     candidates, seen = [], set()
     for row in rows:
         if not isinstance(row, dict):
@@ -80,6 +91,9 @@ def _search_candidates(rows: list[dict], limit: int) -> list[dict]:
             continue
         host = urlsplit(url).hostname
         if url in seen or any(host == domain or host.endswith("." + domain) for domain in BLOCKED_DOMAINS):
+            continue
+        # Snippets may reject unrelated search hits, but never become RAG evidence.
+        if query and _topic_ratio(query, str(row.get("title", "")) + " " + str(row.get("body", ""))) < .2:
             continue
         seen.add(url)
         candidates.append({"title": str(row.get("title", host))[:240], "url": url})
@@ -209,14 +223,23 @@ def read_source(candidate: dict, robots_cache: dict) -> tuple[str, str, list[Evi
     return title, page.url, evidence, metadata
 
 
-def relevant(query: str, title: str, evidence: list[Evidence]) -> bool:
+def _topic_ratio(query: str, text: str) -> float:
     query = query.lower()
     terms = re.findall(r"[a-z0-9]{3,}", query)
     for group in re.findall(r"[\u3400-\u9fff]+", query):
         terms.extend(group[i:i + 2] for i in range(len(group) - 1))
     terms = set(terms)
-    text = (title + "\n" + "\n".join(item.text for item in evidence)).lower()
-    return bool(terms) and sum(term in text for term in terms) / len(terms) >= .2
+    return sum(term in text.lower() for term in terms) / len(terms) if terms else 0.0
+
+
+def relevant(query: str, title: str, evidence: list[Evidence]) -> bool:
+    # A matching title/snippet alone must never admit an unrelated response body.
+    return _topic_ratio(query, "\n".join(item.text for item in evidence)) >= .2
+
+
+def reference_sources(query: str) -> list[dict]:
+    return [{"title": entry["title"], "url": entry["url"], "discovery": "reference_catalog"}
+            for entry in REFERENCE_CATALOG if _topic_ratio(query, entry["topics"]) >= .5]
 
 
 def publish_source(title: str, url: str, evidence: list[Evidence], metadata: dict,
@@ -265,6 +288,7 @@ def research(query: str, data_dir: Path, limit: int = 3, *, source_url: str | No
     if not web_enabled():
         result.update(status="disabled", reason="網路搜尋已關閉")
         return result
+    search_error = None
     try:
         if source_url:
             result["provider"] = "指定公開網址（未使用搜尋引擎）"
@@ -275,18 +299,34 @@ def research(query: str, data_dir: Path, limit: int = 3, *, source_url: str | No
             if successful:
                 result["provider"] = f"網路搜尋（{successful['provider']}）"
     except WebFailure as exc:
-        result.update(status="unavailable", reason=str(exc))
+        if source_url:
+            result.update(status="unavailable", reason=str(exc))
+            return result
+        search_error = str(exc)
+        candidates = []
+    # Queue a small, explicitly named catalog after live results. Stop at the
+    # normal import limit; no results are invented when search engines fail.
+    if not source_url:
+        urls = {c["url"] for c in candidates}
+        candidates += [c for c in reference_sources(query) if c["url"] not in urls]
+    if not candidates and search_error:
+        result.update(status="unavailable", reason=search_error)
         return result
     robots_cache, hosts, count = {}, set(), 0
     for candidate in candidates:
         host = urlsplit(candidate["url"]).hostname
         if host in hosts:
             continue
+        if candidate.get("discovery") == "reference_catalog" and not result.get("catalog_used"):
+            result["catalog_used"] = True
+            result["provider"] += "；建築參考清單備援（非即時搜尋）"
+            result["search_attempts"].append({"provider": "reference_catalog", "status": "catalog"})
         item = {**candidate, "status": "skipped", "reason": ""}
         try:
             title, url, evidence, metadata = read_source(candidate, robots_cache)
             if not relevant(query, title, evidence):
                 raise WebFailure("取得的正文與主題關聯不足，已跳過")
+            metadata = {**metadata, "discovery": candidate.get("discovery", "direct_url" if source_url else "search")}
             report = publish_source(title, url, evidence, metadata, query, data_dir)
             item.update(title=title, url=url, status=report.status, report=report.to_dict())
             count += 1

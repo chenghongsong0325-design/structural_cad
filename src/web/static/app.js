@@ -34,14 +34,14 @@ async function researchWeb(direct = false) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || `伺服器錯誤 (${response.status})`);
     $("research-status").textContent = data.reason || "處理完成";
-    const searchLabels = {ok:"取得結果", empty:"無可用結果", limited:"來源限制存取", timeout:"連線逾時", connection_error:"連線或服務異常"};
+    const searchLabels = {ok:"取得相關候選", empty:"無可用結果", unrelated:"結果與主題無關", limited:"來源限制存取", timeout:"連線逾時", connection_error:"連線或服務異常", catalog:"改查既有建築來源（非即時搜尋）"};
     $("research-diagnostics").textContent = (data.search_attempts || [])
-      .map(a => `${a.provider}：${searchLabels[a.status] || "未完成"}`).join("；");
+      .map(a => `${a.provider === "reference_catalog" ? "建築參考清單" : a.provider}：${searchLabels[a.status] || "未完成"}`).join("；");
     if (data.index && data.index.reason) $("research-status").textContent += `。${data.index.reason}`;
     for (const item of (data.items || [])) {
       const card = document.createElement("details");
       const title = document.createElement("summary");
-      const labels = {imported:"已加入", duplicate:"已在知識庫", skipped:"已跳過"};
+      const labels = {imported: data.index.status === "ready" ? "已可檢索" : "已保存文字", duplicate:"已保存過", skipped:"已跳過"};
       title.textContent = `${item.title} · ${labels[item.status] || item.status}`;
       card.appendChild(title);
       const link = document.createElement("a");
@@ -55,6 +55,7 @@ async function researchWeb(direct = false) {
         card.appendChild(link);
       } catch (_) { /* Untrusted URLs never become executable links. */ }
       const add = (value) => { const p = document.createElement("p"); p.textContent = value; card.appendChild(p); };
+      if (item.discovery === "reference_catalog") add("來源：建築參考清單（非即時搜尋）；本次重新讀取正文並檢查相關性。");
       if (item.reason) add(item.reason);
       if (item.report) {
         add(`${item.report.chunks} 段文字${data.index.status === "ready" ? "已可檢索" : "已保存，索引尚未就緒"}。`);
