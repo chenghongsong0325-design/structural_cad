@@ -74,6 +74,19 @@ class RetrievalReport(JsonReport):
     revision: str = REVISION
     filters: dict = field(default_factory=dict)
     excluded: list = field(default_factory=list)
+    query: str = ""
+    embedding_signature: str = MODEL_SIGNATURE
+    chunk_size: int = CHUNK_SIZE
+    chunk_overlap: int = CHUNK_OVERLAP
+    min_score: float = MIN_SCORE
+    candidates: list = field(default_factory=list)
+    sent_chunk_ids: list = field(default_factory=list)
+    vector_definition: dict = field(default_factory=lambda: {
+        "purpose": "text_semantics_not_geometry", "pooling": "attention_mask_mean", "normalization": "L2",
+        "query_prefix": "query: ", "passage_prefix": "passage: ", "max_tokens": 512,
+        "similarity": "dot_product_of_unit_vectors_equals_cosine"})
+    candidate_limit: int = 20
+    candidate_total: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -263,7 +276,8 @@ class Retriever:
         if stage not in STAGES or not 1 <= top_k <= 5 or not 0 <= min_score <= 1:
             raise ValueError("invalid retrieval parameters")
         if not query.strip():
-            return RetrievalReport(stage, "no_match", reason="查詢內容是空的")
+            return RetrievalReport(stage, "no_match", reason="查詢內容是空的", query=query[:2000],
+                                   embedding_signature=self.embedder.signature, min_score=min_score)
         with self._lock:
             self._refresh()
             positions, excluded, notes, seen_excluded = [], [], {}, set()
@@ -279,15 +293,22 @@ class Retriever:
                     seen_excluded.add(chunk.document_id)
             if not positions:
                 return RetrievalReport(stage, "no_match", reason="此階段沒有符合條件的參考資料",
-                                       fingerprint=self._fingerprint, filters=filters, excluded=excluded)
+                                       fingerprint=self._fingerprint, filters=filters, excluded=excluded,
+                                       query=query[:2000], embedding_signature=self.embedder.signature, min_score=min_score)
             vector = _vectors(self.embedder.encode([query[:2000]], query=True), 1)[0]
             scores = self._matrix[positions] @ vector
             ranked = sorted(zip(positions, scores), key=lambda x: (-float(x[1]), self._chunks[x[0]].id))
             sources, sections = [], set()
+            candidates = []
             for i, score in ranked:
                 chunk = self._chunks[i]
                 section_key = (chunk.document_id, chunk.section)
-                if score < min_score or section_key in sections:
+                reason = ("below_threshold" if score < min_score else "same_section" if section_key in sections
+                          else "top_k_limit" if len(sources) >= top_k else "selected")
+                if len(candidates) < 20:
+                    candidates.append({"id": chunk.id, "title": chunk.title, "source": chunk.source,
+                                       "score": round(float(score), 6), "decision": reason})
+                if reason != "selected":
                     continue
                 sections.add(section_key)
                 source = asdict(chunk)
@@ -295,10 +316,10 @@ class Retriever:
                 source["score"] = round(float(score), 6)
                 source["applicability"] = notes[i]
                 sources.append(source)
-                if len(sources) == top_k:
-                    break
             return RetrievalReport(stage, "ready" if sources else "no_match", sources,
-                                   fingerprint=self._fingerprint, filters=filters, excluded=excluded)
+                                   fingerprint=self._fingerprint, filters=filters, excluded=excluded,
+                                   query=query[:2000], embedding_signature=self.embedder.signature,
+                                   min_score=min_score, candidates=candidates, candidate_total=len(ranked))
 
     def status(self) -> dict:
         with self._lock:
@@ -308,6 +329,7 @@ class Retriever:
                 self.embedder.check_ready()
             return {"status": "ready" if self._chunks else "empty", "model": MODEL,
                     "revision": REVISION,
+                    "embedding_signature": self.embedder.signature,
                     "dimensions": DIMENSIONS, "chunks": len(self._chunks),
                     "documents": len({c.document_id for c in self._chunks}),
                     "fingerprint": self._fingerprint}
@@ -316,16 +338,24 @@ class Retriever:
 def paths() -> tuple[Path, Path, Path]:
     corpus = Path(os.environ.get("RAG_KNOWLEDGE_DIR", str(ROOT / "knowledge")))
     data = Path(os.environ.get("RAG_DATA_DIR", str(ROOT / "output" / "rag")))
-    return corpus, data / "index.sqlite3", data / "model"
+    default_model = data / ("model-onnx" if os.environ.get("RAG_BACKEND") == "onnx" else "model")
+    return corpus, data / "index.sqlite3", Path(os.environ.get("RAG_MODEL_DIR", str(default_model)))
 
 
 @lru_cache(maxsize=4)
-def _retriever(corpus: str, index: str, model: str) -> Retriever:
-    return Retriever(Path(corpus), Path(index), E5Embedder(Path(model)))
+def _retriever(corpus: str, index: str, model: str, backend: str = "sentence_transformers") -> Retriever:
+    if backend == "onnx":
+        from .onnx_e5 import OnnxE5Embedder
+        embedder = OnnxE5Embedder(Path(model))
+    elif backend == "sentence_transformers":
+        embedder = E5Embedder(Path(model))
+    else:
+        raise ValueError("unknown RAG_BACKEND")
+    return Retriever(Path(corpus), Path(index), embedder)
 
 
 def get_retriever() -> Retriever:
-    return _retriever(*(str(p.resolve()) for p in paths()))
+    return _retriever(*(str(p.resolve()) for p in paths()), os.environ.get("RAG_BACKEND", "sentence_transformers"))
 
 
 def enabled() -> bool:
@@ -336,14 +366,14 @@ def retrieve(query: str, stage: str = "townhouse", top_k: int = 3, *, filters: d
     if stage not in STAGES or not 1 <= top_k <= 5:
         raise ValueError("invalid retrieval parameters")
     if not enabled():
-        return RetrievalReport(stage, "disabled", reason="知識檢索已關閉")
+        return RetrievalReport(stage, "disabled", reason="知識檢索已關閉", query=query[:2000], embedding_signature="not_loaded")
     try:
         from .case_metadata import current_query
         return get_retriever().search(query, stage, top_k, filters=filters if filters is not None else current_query())
     except Exception as exc:
         # This fallback only concerns optional knowledge; geometric gates are untouched.
         LOGGER.warning("RAG unavailable (%s)", type(exc).__name__)
-        return RetrievalReport(stage, "unavailable", reason="知識檢索未就緒，請執行 python -m src.knowledge prepare")
+        return RetrievalReport(stage, "unavailable", reason="知識檢索未就緒，請準備目前使用的向量模型", query=query[:2000], embedding_signature="not_loaded")
 
 
 _TRACE: ContextVar[list | None] = ContextVar("rag_trace", default=None)
@@ -370,6 +400,10 @@ def augment_prompt(contents: str, stage: str, *, query: str | None = None,
         selected.append(source)
         size += len(serialized)
     report.sources = selected
+    report.sent_chunk_ids = [source["id"] for source in selected]
+    for candidate in report.candidates:
+        if candidate["decision"] == "selected" and candidate["id"] not in report.sent_chunk_ids:
+            candidate["decision"] = "context_budget"
     if report.status == "ready" and not selected:
         report.status = "no_match"
     events = _TRACE.get()

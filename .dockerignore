@@ -10,3 +10,5 @@ ErrorReports
 tests
 scripts
 *.err
+
+work

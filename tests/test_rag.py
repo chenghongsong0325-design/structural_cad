@@ -64,6 +64,24 @@ def test_stage_filter_and_ranked_sources(engine):
     assert engine.search(" ").status == "no_match"
 
 
+def test_trace_records_query_candidates_and_only_actual_prompt_chunks(engine, monkeypatch):
+    monkeypatch.setattr(rag, 'CONTEXT_LIMIT', 10)
+    with rag.retrieval_session():
+        original = '住宅車庫'
+        assert rag.augment_prompt(original, 'townhouse') == original
+        report = rag.trace_report()['events'][0]
+    assert report['query'] == original
+    assert report['embedding_signature'] == engine.embedder.signature
+    assert report['sent_chunk_ids'] == [] and report['sources'] == []
+    assert report['candidates'][0]['decision'] == 'context_budget'
+    monkeypatch.setattr(rag, 'CONTEXT_LIMIT', 3600)
+    with rag.retrieval_session():
+        prompt = rag.augment_prompt(original, 'townhouse')
+        report = rag.trace_report()['events'][0]
+    assert report['sent_chunk_ids'] == [s['id'] for s in report['sources']]
+    assert all(s['id'] in prompt for s in report['sources'])
+
+
 def test_chunk_boundaries_unique_ids_and_line_numbers(tmp_path):
     path = document(tmp_path, body="## 重複\n\n車庫\n## 重複\n車庫\n## 長段\n" + "長" * 800)
     chunks = rag.read_corpus(tmp_path)

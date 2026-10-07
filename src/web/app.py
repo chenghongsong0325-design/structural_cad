@@ -40,13 +40,14 @@ import sys
 import uuid
 import zipfile
 import tempfile
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -97,6 +98,7 @@ class GenerateRequest(BaseModel):
     # 多輪修改(E4):帶上一輪的需求 dict(回應裡的 brief_data)→ text 視為
     # 「修改指令」,以 base 為底合併;不帶 = 全新需求。
     base: Optional[dict] = None
+    parent_job_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{12}$")
     # AI 設計師模式:走「LLM 設計拓撲 → 搜尋落實 → 挑毛病回饋重設計」的混合式
     # 收斂管線(design_loop),而非既有規則產生器。目前限窄面寬透天(建築 5~7m 寬)。
     ai_design: bool = False
@@ -130,6 +132,19 @@ class WebResearchRequest(BaseModel):
     source_url: str | None = Field(default=None, max_length=2048)
     limit: int = Field(default=3, ge=1, le=5)
     code: str = ""
+
+
+class AuditRequest(BaseModel):
+    code: str = ""
+    format: Literal["json", "html"] = "json"
+
+
+class HumanReviewRequest(BaseModel):
+    code: str = ""
+    decision: Literal["accepted", "revision_needed", "not_applicable"]
+    reviewer: str = Field(min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=2000)
+    request_id: str = Field(pattern=r"^[0-9a-f-]{32,36}$")
 
 
 def _has_api_key() -> bool:
@@ -533,7 +548,52 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
     def generate(req: GenerateRequest) -> dict:
         # ContextVar is scoped to this sync request, including errors and concurrent jobs.
         with retrieval_session():
-            return generate_with_context(req)
+            try:
+                return generate_with_context(req)
+            except HTTPException as exc:
+                if exc.status_code in {422, 502, 503} and isinstance(exc.detail, dict):
+                    from .design_audit import build_report
+                    detail = dict(exc.detail) if isinstance(exc.detail, dict) else {"message": exc.detail}
+                    failure_parent = audit_job(req.parent_job_id, req.code)[1] if req.parent_job_id else None
+                    detail["design_audit"] = build_report({**detail, "rag": trace_report()}, text=req.text,
+                        base=req.base, parent=failure_parent, outcome="not_delivered", revision=os.environ.get("RENDER_GIT_COMMIT", "local"))
+                    exc.detail = detail
+                raise
+
+    def audit_job(job_id, code):
+        if os.environ.get("ACCESS_CODE") and code != os.environ["ACCESS_CODE"]:
+            raise HTTPException(403, "通行碼錯誤")
+        if not _JOB_ID_RE.fullmatch(job_id):
+            raise HTTPException(404, "找不到方案")
+        directory = JOBS_DIR / job_id
+        if not (directory / "result.json").is_file():
+            raise HTTPException(404, "方案不存在，請使用已下載的報告或重新生成")
+        saved = json.loads((directory / "result.json").read_text(encoding="utf-8"))
+        from .design_audit import build_report
+        report = saved.get("design_audit") or build_report(saved, outcome="legacy_record_incomplete")
+        return directory, saved, report
+
+    @app.post("/api/jobs/{job_id}/audit")
+    def audit_export(job_id: str, req: AuditRequest):
+        from .design_audit import read_reviews, render_html
+        directory, _, report = audit_job(job_id, req.code)
+        reviews = read_reviews(directory)
+        if req.format == "html":
+            return Response(render_html(report, reviews), media_type="text/html",
+                            headers={"Content-Disposition": 'attachment; filename="design-report.html"'})
+        return {**report, "human_reviews": reviews}
+
+    @app.post("/api/jobs/{job_id}/reviews")
+    def review_save(job_id: str, req: HumanReviewRequest):
+        from .design_audit import append_review
+        directory, _, report = audit_job(job_id, req.code)
+        if not req.reviewer.strip() or not req.reason.strip():
+            raise HTTPException(422, "請填寫核對者與具體原因")
+        try:
+            return append_review(directory, report=report, decision=req.decision, reviewer=req.reviewer.strip(),
+                                 reason=req.reason.strip(), request_id=req.request_id)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @app.post("/api/rag/search")
     def rag_search(req: RagSearchRequest) -> dict:
@@ -620,6 +680,12 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
         if access_code and req.code != access_code:
             raise HTTPException(403, "通行碼錯誤")
 
+        parent = None
+        if req.parent_job_id:
+            _, parent, _ = audit_job(req.parent_job_id, req.code)
+            req.base = parent.get("brief_data")
+            if not req.base:
+                raise HTTPException(422, "此舊方案缺少需求資料，不能作為修改依據")
         client = client_factory() if client_factory else None
         if client is None and not _has_api_key():
             raise HTTPException(
@@ -733,6 +799,10 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             "pdf": f"/api/jobs/{job_id}/pdf",            # 點了才產生(懶生成)
             **ai_extra,                                  # AI 模式:收斂軌跡/剩餘問題
         }
+
+        from .design_audit import build_report
+        result["design_audit"] = build_report({**result, "geometry_snapshot": asdict(building)}, text=req.text, base=req.base, parent=parent,
+            revision=os.environ.get("RENDER_GIT_COMMIT", "local"))
 
         # 4) 歷史方案(E4):整包回應存 result.json(重新載入用)、
         #    摘要存 meta.json(列表用;files = PDF 懶生成的頁序)。

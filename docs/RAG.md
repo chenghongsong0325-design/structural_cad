@@ -127,3 +127,16 @@ DWG 安裝命令只支援 Windows x64：從 [GNU LibreDWG 官方發行頁](https
 自動測試預設關閉外部向量模型，RAG 專用測試注入向量器驗證索引和呼叫契約；另可用上述 CLI 進行真實模型檢索驗證。
 
 實作入口：`src/knowledge/rag.py`；網路搜尋：`src/knowledge/web_research.py`；管理命令：`src/knowledge/__main__.py`。網路測試見 `tests/test_web_research.py`，測試使用假搜尋結果，不依賴外網。
+
+## 部署用 ONNX 模型
+
+Docker 已包含 requirements-rag-onnx.txt，並於建置時執行 prepare-onnx；RAG_MODEL_DIR=/opt/rag/model，不與暫存匯入資料混放。本機可選擇此後端：
+
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements-rag-onnx.txt
+$env:RAG_BACKEND = "onnx"
+.venv\Scripts\python.exe -m src.knowledge prepare-onnx
+.venv\Scripts\python.exe -m src.knowledge search "車庫與玄關行人動線"
+```
+
+固定同一官方模型版本的 int8 ONNX artifact，驗證模型與 tokenizer 的 SHA-256。每次一段文字、CPU 單執行緒推論；與 Torch 後端使用不同簽名，不混用向量索引。這不保證所有雲端主機記憶體皆足夠，仍需部署驗證。真實檢索、候選去除與人工回饋操作見 [設計證據](DESIGN_EVIDENCE.md)。

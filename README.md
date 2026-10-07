@@ -16,7 +16,11 @@
 
 **2026-09-23：** 新增房間／動線互動分析、逐房檢查證據與衝突定位，以及窄透天既有區塊的指定臥室數分配。操作與範圍見 [空間分析與房數配置](docs/SPATIAL_REASONING.md)。
 
+**專題定位（2026-10-03）：** 研究「文字住宅需求 → 可核對的透天配置初稿」，協助需求轉換、配置及現有檢查。見 [問題定義與人工設計流程](docs/PROBLEM_DEFINITION.md) 及 [人工案例訪談表](docs/DESIGN_WORKFLOW_CASE_TEMPLATE.md)；流程效益仍待真實案例確認。
+
 ---
+
+**設計證據（2026-10-07）：** 新增報告下載、修改差異、人工回饋、RAG 檢索檢查及 10 項固定案例。操作與能力邊界見 [設計證據說明](docs/DESIGN_EVIDENCE.md)。
 
 ## 快速開始
 
@@ -150,9 +154,7 @@ Dockerfile 會安裝 `requirements-web.txt`，並在建置階段確認搜尋、H
 套件可匯入，也會包含 `knowledge/` 內建知識文件。如果舊網站顯示「請先安裝
 requirements-web.txt」，應在 Render 重新部署最新提交，不是在使用者電腦安裝。
 
-網路搜尋和向量檢索是不同步驟。預設輕量容器可搜尋並儲存正文；完整語意 RAG
-仍需 `requirements-rag.txt` 與 `python -m src.knowledge prepare` 準備模型及索引
-（詳見 `docs/RAG.md`）。未完成時介面會顯示索引未就緒，不能視為已加入檢索。
+網路搜尋和向量檢索是不同步驟。Docker 現在於建置時下載並驗證固定 E5 int8 ONNX 模型、建立種子索引；執行時不下載模型。部署後請在「RAG 狀態與檢索驗證」確認已就緒，詳細安裝見 [RAG 說明](docs/RAG.md)。未就緒時不能視為已加入檢索。
 雲端匯入資料放在 `output/rag/`；沒有持久儲存的部署不保證重啟後保留。
 
 RAG 可在網頁「匯入參考資料」加入 PDF、DWG、DXF 或圖片，也可執行

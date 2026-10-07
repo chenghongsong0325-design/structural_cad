@@ -14,6 +14,7 @@ def main():
     parser = argparse.ArgumentParser(description="本機建築知識庫：建索引／檢索")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("prepare", help="下載公開向量模型並建立索引（只需第一次）")
+    sub.add_parser("prepare-onnx", help="下載並驗證固定 E5 int8 模型（部署用，不呼叫 Gemini）")
     sub.add_parser("index", help="重新檢查資料並更新索引（離線）")
     sub.add_parser("prepare-dwg", help="安裝固定版本的本機 DWG 轉檔工具（Windows x64）")
     search = sub.add_parser("search", help="檢查檢索結果，不呼叫 Gemini")
@@ -25,6 +26,13 @@ def main():
     web.add_argument("query")
     web.add_argument("--limit", type=int, choices=range(1, 6), default=3)
     args = parser.parse_args()
+    if args.command == "prepare-onnx":
+        import os
+        os.environ["RAG_BACKEND"] = "onnx"
+        from .onnx_e5 import prepare
+        prepare(paths()[2])
+        print(json.dumps(get_retriever().status(), ensure_ascii=False, indent=2))
+        return
     if args.command == "research":
         from .web_research import research
         result = research(args.query, paths()[1].parent, args.limit)

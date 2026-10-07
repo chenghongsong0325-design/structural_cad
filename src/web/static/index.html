@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>自動建築平面圖生成器</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2316181c'/><g stroke='%23f7f6f3' stroke-width='2' fill='none'><rect x='8' y='8' width='16' height='16'/><path d='M8 18h7M15 18v6'/></g></svg>">
-<link rel="stylesheet" href="style.css?v=20260924-sketch">
+<link rel="stylesheet" href="style.css?v=20261007-evidence">
 </head>
 <body>
 
@@ -69,6 +69,21 @@
       </section>
 
       <div id="error" class="error hidden"></div>
+      <section id="audit-panel" class="block hidden">
+        <h2 class="block-title">設計證據與人工回饋</h2>
+        <p id="audit-summary"></p>
+        <div class="btn-row"><button id="audit-html" class="btn quiet">下載設計報告 HTML</button><button id="audit-json" class="btn quiet">下載完整紀錄 JSON</button></div>
+        <p class="import-note">HTML 可用瀏覽器列印成 PDF。報告保存程式紀錄；請下載備份，雲端重新部署後暫存資料可能消失。</p>
+        <details><summary>查看本次設計證據</summary><pre id="audit-preview" style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:400px;overflow:auto"></pre></details>
+        <details id="human-review-form"><summary>人工接受或退回初稿</summary>
+          <label for="review-decision">核對結果</label><select id="review-decision"><option value="revision_needed">需要修改</option><option value="accepted">接受初稿</option><option value="not_applicable">不適用</option></select>
+          <label for="reviewer">核對者或代號</label><input id="reviewer" maxlength="80">
+          <label for="review-reason">具體原因、核對依據與待處理事項</label><textarea id="review-reason" maxlength="2000" rows="3"></textarea>
+          <button id="review-save" class="btn quiet">保存人工回饋</button>
+          <p class="import-note">這是對初稿的意見，不等於施工核准，也不會自動加入已核實的 RAG 案例。</p>
+        </details>
+        <div id="review-history"></div><p id="audit-status" role="status"></p>
+      </section>
       <section id="requirements-panel" class="block hidden" aria-live="polite"></section>
       <div id="history" class="history hidden"></div>
 
@@ -82,6 +97,14 @@
           <p class="import-note">掃描檔會使用 OCR，請核對辨識文字。這項功能不會自動還原房間幾何；命中的參考文字會隨需求傳給 AI。</p>
           <div id="import-status" role="status" aria-live="polite"></div>
           <div id="import-results"></div>
+          <details><summary>RAG 狀態與檢索驗證</summary>
+            <button id="rag-check" class="btn quiet">檢查向量索引</button><p id="rag-check-status" role="status"></p>
+            <label for="rag-inspect-query">檢索文字（不生成圖面）</label><input id="rag-inspect-query" maxlength="2000" placeholder="例：住宅車庫與玄關的動線">
+            <label for="rag-inspect-stage">資料用途</label><select id="rag-inspect-stage"><option value="townhouse">透天配置</option><option value="graph">房間關係圖</option><option value="parse">需求術語</option></select>
+            <button id="rag-inspect" class="btn quiet">檢視檢索結果</button>
+            <p class="import-note">此處是獨立查詢；設計時實際送入提示的段落請看設計報告。相似度不是可信度。</p>
+            <pre id="rag-inspect-result" style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto"></pre>
+          </details>
 
           <details class="case-editor">
             <summary>核對參考資料與適用條件</summary>
@@ -276,6 +299,7 @@
 
 <script src="spatial.js?v=20260922-spatial"></script>
 <script src="sketch.js?v=20260924-sketch"></script>
-<script src="app.js?v=20260930-search3"></script>
+<script src="audit.js?v=20261007-evidence"></script>
+<script src="app.js?v=20261007-evidence"></script>
 </body>
 </html>

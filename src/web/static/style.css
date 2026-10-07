@@ -648,3 +648,11 @@ body.has-result .empty { display: none; }
 #spatial-conflicts { margin-top:22px; }
 @media(max-width:1100px) { .spatial-layout { grid-template-columns:minmax(230px,1fr) 255px; } .stage-hint { display:none; } }
 @media(max-width:800px) { .spatial-inspector { overflow:auto; min-height:600px; } .spatial-layout { display:block; } .spatial-graph svg { height:450px; flex:none; } .spatial-details { overflow:visible; margin-top:16px; } }
+
+/* Evidence tools use the same stacked field layout as the requirement form. */
+#audit-panel label { display:block; margin:12px 0 5px; }
+#audit-panel input, #audit-panel select { display:block; width:100%; padding:10px; border:1px solid #d8d5ce; border-radius:8px; background:#fff; font:inherit; box-sizing:border-box; }
+#audit-panel details { margin:12px 0; }
+#audit-summary, #rag-check-status, #review-history { overflow-wrap:anywhere; }
+#rag-inspect-stage { display:block; width:100%; padding:10px; margin-bottom:12px; font:inherit; }
+#audit-panel h2.block-title { color:var(--ink,#17191c); font-size:17px; }

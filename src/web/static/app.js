@@ -253,6 +253,7 @@ async function modify() {
     text: instruction,
     code: $("code").value,
     base: lastBriefData,
+    parent_job_id: lastJobId,
     seed: lastSeed,
   }, $("modify"), lastText + "(" + instruction + ")");
   if (ok) $("modify-text").value = "";
@@ -301,6 +302,7 @@ async function requestPlan(body, btn, textForRedesign) {
     const data = await resp.json();
     if (!resp.ok) {
       const detail = data.detail;
+      window.renderDesignAudit({design_audit: detail?.design_audit});
       renderRequirements(detail?.requirement_check, detail?.validation);
       window.renderSpatialInspector(detail?.spatial_report, detail?.conflicts || [], true);
       const message = typeof detail === "string" ? detail : detail?.message || `伺服器錯誤 (${resp.status})`;
@@ -321,6 +323,7 @@ async function requestPlan(body, btn, textForRedesign) {
 
 // 把一包生成結果(新生成或歷史載入)渲染到畫面。
 function applyResult(data) {
+  window.renderDesignAudit(data);
   const keepLabel = current >= 0 && sheets[current] ? sheets[current].label : "1F";
   sheets = data.sheets;
   lastJobId = data.job_id || null;
