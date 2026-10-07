@@ -139,4 +139,4 @@ $env:RAG_BACKEND = "onnx"
 .venv\Scripts\python.exe -m src.knowledge search "車庫與玄關行人動線"
 ```
 
-固定同一官方模型版本的 int8 ONNX artifact，驗證模型與 tokenizer 的 SHA-256。每次一段文字、CPU 單執行緒推論；與 Torch 後端使用不同簽名，不混用向量索引。這不保證所有雲端主機記憶體皆足夠，仍需部署驗證。真實檢索、候選去除與人工回饋操作見 [設計證據](DESIGN_EVIDENCE.md)。
+固定同一官方模型版本的 int8 ONNX artifact，驗證模型與 SentencePiece 分詞檔的 SHA-256。每次一段文字、CPU 單執行緒推論；與 Torch 後端使用不同簽名，不混用向量索引。這不保證所有雲端主機記憶體皆足夠，仍需部署驗證。真實檢索、候選去除與人工回饋操作見 [設計證據](DESIGN_EVIDENCE.md)。

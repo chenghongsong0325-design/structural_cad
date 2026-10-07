@@ -3,14 +3,16 @@ import hashlib
 import json
 from pathlib import Path
 import threading
+import re
+from types import SimpleNamespace
 import numpy as np
 
 MODEL = "intfloat/multilingual-e5-small"
 REVISION = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
-SIGNATURE = f"{MODEL}@{REVISION}:onnx-qint8:mean:query-passage:l2:512:v1"
+SIGNATURE = f"{MODEL}@{REVISION}:onnx-qint8:mean:query-passage:l2:512:sentencepiece:v2"
 FILES = {
     "model.onnx": ("onnx/model_qint8_avx512_vnni.onnx", "dd476dd0c2514e9b9be83aeb3853fac0763e0bdf4a71645407587d77c48a2d88"),
-    "tokenizer.json": ("tokenizer.json", "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39"),
+    "sentencepiece.bpe.model": ("sentencepiece.bpe.model", "cfc8146abe2a0488e9e2a0c56de7952f7c11ab059eca145a0a727afce0db2865"),
 }
 
 
@@ -48,6 +50,30 @@ def prepare(directory: Path):
     (directory / "rag_model.json").write_text(json.dumps({"signature": SIGNATURE}), encoding="utf-8")
 
 
+class SentencePieceTokenizer:
+    """XLM-R token alignment and single-sequence special tokens, without the JSON vocab copy."""
+    SPECIAL = {"<s>": 0, "<pad>": 1, "</s>": 2, "<unk>": 3, "<mask>": 250001}
+    PATTERN = re.compile(r"(<s>|<pad>|</s>|<unk>|<mask>)")
+
+    def __init__(self, path):
+        import sentencepiece
+        self.processor = sentencepiece.SentencePieceProcessor(model_proto=Path(path).read_bytes())
+        if self.processor.vocab_size() != 250000:
+            raise ValueError("unexpected XLM-R vocabulary")
+
+    def encode(self, text):
+        pieces, ids = self.PATTERN.split(text), []
+        for piece in pieces:
+            if piece in self.SPECIAL:
+                ids.append(self.SPECIAL[piece])
+            elif piece:
+                ids.extend(3 if token == 0 else token + 1 for token in self.processor.encode(piece, out_type=int))
+                if piece[-1].isspace():
+                    ids.append(6)  # JSON Metaspace retains one trailing whitespace marker.
+        ids = [0] + ids[:510] + [2]
+        return SimpleNamespace(ids=ids, attention_mask=[1] * len(ids), type_ids=[0] * len(ids))
+
+
 class OnnxE5Embedder:
     signature = SIGNATURE
 
@@ -63,9 +89,7 @@ class OnnxE5Embedder:
         if manifest.get("signature") != self.signature:
             raise ValueError("ONNX model signature mismatch; run prepare-onnx")
         import onnxruntime as ort
-        from tokenizers import Tokenizer
-        tokenizer = Tokenizer.from_file(str(self.model_dir / "tokenizer.json"))
-        tokenizer.enable_truncation(max_length=512)
+        tokenizer = SentencePieceTokenizer(self.model_dir / "sentencepiece.bpe.model")
         options = ort.SessionOptions()
         options.intra_op_num_threads = 1
         options.inter_op_num_threads = 1

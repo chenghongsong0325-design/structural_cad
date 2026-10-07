@@ -1,4 +1,4 @@
 # CPU-only E5 inference; avoids installing PyTorch on the web server.
 onnxruntime>=1.22,<2
-tokenizers>=0.21,<1
+sentencepiece>=0.2,<1
 requests>=2.32,<3

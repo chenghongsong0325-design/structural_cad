@@ -37,3 +37,5 @@ ONNX int8 與原本 Torch 浮點模型具有不同的簽名，索引會重建；
 ## 仍需真人完成
 
 問題定義與人工流程見 PROBLEM_DEFINITION.md。使用 DESIGN_WORKFLOW_CASE_TEMPLATE.md 訪談／觀察真實人工案例，留下來源、需求、判斷及修改原因；功能測試不替代這項研究。系統產出配置初稿，尚不提供完整施工或建照設計。
+
+雲端首次載入發現分詞器記憶體負擔，因此改用同一官方 SentencePiece 檔，以 XLM-R 特殊 token 對齊方式編碼，簽名升級 v2 並重建索引。已比對中文、日文、英文、emoji、空白、特殊 token 與長文本截斷等 9 個樣例的編碼；這些樣例不能代表任意 Unicode 皆完全一致。對齊依據見 [Hugging Face XLM-R 原始碼](https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/xlm_roberta/tokenization_xlm_roberta.py)。

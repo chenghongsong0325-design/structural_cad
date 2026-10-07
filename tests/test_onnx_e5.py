@@ -61,3 +61,25 @@ def test_backend_changes_signature_and_does_not_reuse_torch_index(tmp_path, monk
     (tmp_path / 'rag_model.json').write_text(json.dumps({'signature': rag.MODEL_SIGNATURE}))
     with pytest.raises(ValueError, match='signature'):
         onnx.OnnxE5Embedder(tmp_path).check_ready()
+
+
+def test_sentencepiece_alignment_special_tokens_whitespace_and_limit(tmp_path, monkeypatch):
+    import sys
+    model = tmp_path / '分詞模型.model'
+    model.write_bytes(b'checked model')
+    class Processor:
+        def __init__(self, *, model_proto):
+            assert model_proto == b'checked model'
+        def vocab_size(self): return 250000
+        def encode(self, text, out_type):
+            assert out_type is int
+            return [0, 3] if text.strip() else []
+    monkeypatch.setitem(sys.modules, 'sentencepiece', NS(SentencePieceProcessor=Processor))
+    tokenizer = onnx.SentencePieceTokenizer(model)
+    encoded = tokenizer.encode('unknown <mask> ')
+    assert encoded.ids == [0, 3, 4, 6, 250001, 6, 2]
+    assert encoded.attention_mask == [1] * 7
+    assert encoded.type_ids == [0] * 7
+    assert tokenizer.encode('<s><pad></s><unk>').ids == [0, 0, 1, 2, 3, 2]
+    tokenizer.processor.encode = lambda *a, **k: [3] * 900
+    assert tokenizer.encode('long').ids == [0] + [4] * 510 + [2]
