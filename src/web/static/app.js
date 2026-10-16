@@ -294,6 +294,7 @@ async function requestPlan(body, btn, textForRedesign) {
   startProgress();
   hideError();
   try {
+    body.drawing = window.DrawingProfile.read();
     const resp = await fetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -305,7 +306,8 @@ async function requestPlan(body, btn, textForRedesign) {
       window.renderDesignAudit({design_audit: detail?.design_audit});
       renderRequirements(detail?.requirement_check, detail?.validation);
       window.renderSpatialInspector(detail?.spatial_report, detail?.conflicts || [], true);
-      const message = typeof detail === "string" ? detail : detail?.message || `伺服器錯誤 (${resp.status})`;
+      const message = typeof detail === "string" ? detail : Array.isArray(detail)
+        ? detail.map(item => item.msg).join("；") : detail?.message || `伺服器錯誤 (${resp.status})`;
       throw new Error(message + (sheets.length ? "（畫布保留的是前次成功方案。）" : ""));
     }
     lastText = textForRedesign;
@@ -323,6 +325,7 @@ async function requestPlan(body, btn, textForRedesign) {
 
 // 把一包生成結果(新生成或歷史載入)渲染到畫面。
 function applyResult(data) {
+  window.DrawingProfile.render(data);
   window.renderDesignAudit(data);
   const keepLabel = current >= 0 && sheets[current] ? sheets[current].label : "1F";
   sheets = data.sheets;

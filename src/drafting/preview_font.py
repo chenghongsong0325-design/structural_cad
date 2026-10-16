@@ -39,16 +39,14 @@ def preview_font(doc, font: str = PREVIEW_FONT):
 
     文件裡沒有 STRUCT 樣式(例如手寫的小測試檔)就什麼都不做,不要炸掉。
     """
-    try:
-        style = doc.styles.get(STYLE_NAME)
-    except Exception:
-        style = None
-
-    original = style.dxf.font if style is not None else None
-    if style is not None:
-        style.dxf.font = font
+    originals = []
+    for name in (STYLE_NAME, "CJ-FONT"):
+        if name in doc.styles:
+            style = doc.styles.get(name)
+            originals.append((style, style.dxf.font))
+            style.dxf.font = font
     try:
         yield
     finally:
-        if style is not None:
+        for style, original in originals:
             style.dxf.font = original

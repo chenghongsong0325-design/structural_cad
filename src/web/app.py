@@ -91,6 +91,9 @@ HISTORY_LIMIT = 20            # /api/history 最多回幾筆(新→舊)
 INLINE_DXF_BUDGET = 8 * 1024 * 1024
 
 
+from src.design.drawing_profile import DrawingOptions
+
+
 class GenerateRequest(BaseModel):
     text: str
     code: str = ""
@@ -102,6 +105,7 @@ class GenerateRequest(BaseModel):
     # AI 設計師模式:走「LLM 設計拓撲 → 搜尋落實 → 挑毛病回饋重設計」的混合式
     # 收斂管線(design_loop),而非既有規則產生器。目前限窄面寬透天(建築 5~7m 寬)。
     ai_design: bool = False
+    drawing: DrawingOptions | None = None
 
 
 class ScoreRequest(BaseModel):
@@ -686,6 +690,12 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             req.base = parent.get("brief_data")
             if not req.base:
                 raise HTTPException(422, "此舊方案缺少需求資料，不能作為修改依據")
+        try:
+            drawing = req.drawing
+            if drawing is None and req.base and req.base.get("_drawing"):
+                drawing = DrawingOptions.model_validate(req.base["_drawing"])
+        except ValueError as exc:
+            raise HTTPException(422, "儲存的製圖設定無效，請重新選擇製圖設定") from exc
         client = client_factory() if client_factory else None
         if client is None and not _has_api_key():
             raise HTTPException(
@@ -704,6 +714,8 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
                 data = parse_brief_data(req.text, client=client)
             from src.design.requirements import prepare_data
             data = prepare_data(data, req.text, req.base)
+            if drawing is not None:
+                data["_drawing"] = drawing.model_dump()
             brief = building_brief_from_data(data, seed=seed)
             from src.design.bedroom_program import requested_bedrooms
             brief.bedroom_target = requested_bedrooms(data["_requirements"])
@@ -726,7 +738,24 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             with case_context(query):
                 building, ai_extra = _generate_auto(req.text, brief, client,
                     force_ai=req.ai_design, requirements=data["_requirements"])
-            sheets = build_sheets(building)
+            drawing_report = None
+            if drawing is not None and drawing.enabled:
+                from src.design.drawing_profile import apply_profile, build_report as drawing_build_report
+                from src.design.validation import validate_building
+                from src.design.requirements import check_requirements
+                from src.design.spatial_report import build_spatial_report
+                from src.design.layout.door_rules import door_table
+                building = apply_profile(building, drawing)
+                ai_extra.update(validate_building(building))
+                ai_extra["requirement_check"] = check_requirements(building, data["_requirements"]).to_dict()
+                ai_extra["spatial_report"] = build_spatial_report(building, ai_extra, ai_extra["requirement_check"]).to_dict()
+                ai_extra["conflicts"] = ai_extra["spatial_report"]["conflicts"]
+                ai_extra["door_table"] = door_table([(f.label, f.spec) for f in building.floors]).to_dict()
+                _reject_if_broken(ai_extra, brief)
+                drawing_report = drawing_build_report(building, drawing).to_dict()
+                ai_extra["drawing_report"] = drawing_report
+            sheets = (build_sheets(building, drawing_report=drawing_report) if drawing_report
+                      else build_sheets(building))
         except ValueError as exc:
             conflict = getattr(exc, "conflict", None)
             detail = {"message": str(exc), "conflicts": [conflict]} if conflict else str(exc)
@@ -762,6 +791,9 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
                              zipfile.ZIP_DEFLATED) as zf:
             for s in sheets:
                 zf.write(job_dir / s.filename, s.filename)
+            if drawing_report:
+                zf.writestr("drawing_report.json", json.dumps(drawing_report, ensure_ascii=False, indent=2))
+                zf.writestr("README.txt", "澄跡智庫製圖流程\n模型單位：cm\nLayout1／PDF 比例：1:50；列印請選實際大小／100%。\n" + "\n".join(drawing_report["notes"]))
 
         try:
             metrics = building_metrics(building)          # 關鍵數字(E4)

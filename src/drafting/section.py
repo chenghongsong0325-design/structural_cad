@@ -233,7 +233,7 @@ def draw_section(msp, building, layers: dict[str, str], *,
 # ---------------------------------------------------------------------------
 def draw_elevation(msp, building, layers: dict[str, str], *,
                    side: str = "south", origin: Point = (0.0, 0.0),
-                   title: str = "立面圖") -> None:
+                   title: str = "立面圖", opening_sizes: dict | None = None) -> None:
     """畫某一外牆的立面(僅地上層)。side = south/north/east/west。"""
     if side not in ("south", "north", "east", "west"):
         raise ValueError(f"side 需為 south/north/east/west,收到 {side!r}")
@@ -266,13 +266,17 @@ def draw_elevation(msp, building, layers: dict[str, str], *,
     # (3) 該面外牆的門窗,投影到立面對應高度。
     for f in lv:
         extent = building_extent(f.spec)
-        for w in f.spec.walls:
+        for wi, w in enumerate(f.spec.walls):
             if wall_side(w, extent) != side:
                 continue
-            for op in w.openings:
+            for oi, op in enumerate(w.openings):
                 px, py = w.point_at(op.position)
                 u = px if axis == "x" else py
-                if op.kind == "window":
+                custom = (opening_sizes or {}).get((f.label, wi, oi))
+                if custom:
+                    sill, height = custom
+                    v0, v1 = f.elevation + sill, f.elevation + sill + height
+                elif op.kind == "window":
                     v0, v1 = f.elevation + WINDOW_SILL, f.elevation + WINDOW_SILL + WINDOW_HEIGHT
                 else:  # door
                     v0, v1 = f.elevation, f.elevation + DOOR_HEIGHT

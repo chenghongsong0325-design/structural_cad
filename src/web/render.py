@@ -67,8 +67,11 @@ def _new_doc():
     return doc, apply_standard(doc, load_standard())
 
 
-def build_sheets(building: BuildingSpec) -> list[Sheet]:
+def build_sheets(building: BuildingSpec, *, drawing_report=None) -> list[Sheet]:
     """整棟樓 → 圖紙清單(由下層到上層,多層樓附剖面+立面)。"""
+    if drawing_report is not None:
+        from src.drafting.chengji import build_profile_sheets
+        return build_profile_sheets(building, drawing_report)
     sheets: list[Sheet] = []
     for fl in building.floors:
         doc, layers = _new_doc()
@@ -153,13 +156,27 @@ def docs_to_pdf(docs: list, path) -> None:
 
     with PdfPages(path) as pdf:
         for doc in docs:
-            fig = plt.figure(figsize=_A3_INCHES)
+            from src.drafting.chengji import PROFILE_MARKER
+            profile = doc.header.get("$USERI1") == PROFILE_MARKER
+            if profile:
+                width, height = doc.header["$USERI2"], doc.header["$USERI3"]
+                size = (width/25.4, height/25.4)
+            else:
+                size = _A3_INCHES
+            fig = plt.figure(figsize=size)
             ax = fig.add_axes([0, 0, 1, 1])
             ax.set_axis_off()
             with preview_font(doc):
-                Frontend(RenderContext(doc), MatplotlibBackend(ax),
-                         config=_PDF_CONFIG).draw_layout(
+                Frontend(RenderContext(doc), MatplotlibBackend(ax, adjust_figure=not profile),
+                         config=Configuration(background_policy=BackgroundPolicy.WHITE,
+                                              lineweight_scaling=1) if profile else _PDF_CONFIG).draw_layout(
                     doc.modelspace(), finalize=True)
+            if profile:
+                # 1 model cm = 0.2 paper mm at 1:50, including after save/reload.
+                cx, cy = doc.header["$USERR1"], doc.header["$USERR2"]
+                ax.set_xlim(cx-width*2.5, cx+width*2.5)
+                ax.set_ylim(cy-height*2.5, cy+height*2.5)
+                ax.set_aspect("equal", adjustable="box")
             pdf.savefig(fig, facecolor="white")
             plt.close(fig)
 

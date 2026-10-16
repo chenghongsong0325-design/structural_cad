@@ -656,3 +656,19 @@ body.has-result .empty { display: none; }
 #audit-summary, #rag-check-status, #review-history { overflow-wrap:anywhere; }
 #rag-inspect-stage { display:block; width:100%; padding:10px; margin-bottom:12px; font:inherit; }
 #audit-panel h2.block-title { color:var(--ink,#17191c); font-size:17px; }
+.drawing-settings { margin: 14px 0; padding: 12px; border: 1px solid var(--line, #d8d6d1); border-radius: 8px; }
+.drawing-settings summary, #drawing-result summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
+.drawing-enable { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+.drawing-enable input { width: auto; }
+.drawing-settings fieldset { border: 0; padding: 0; margin: 10px 0; min-width: 0; }
+.drawing-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+.drawing-grid label { display: grid; gap: 4px; font-size: 12px; }
+.drawing-grid input, .drawing-settings select { width: 100%; min-width: 0; box-sizing: border-box; padding: 8px; border: 1px solid #c9c7c2; border-radius: 5px; background: #fff; color: #222; }
+.drawing-room { margin: 12px 0; padding: 10px; border: 1px solid #d8d6d1; border-radius: 6px; }
+#drawing-result { font-size: 12px; margin: 16px 0; }
+#drawing-result p { line-height: 1.65; }
+.drawing-downloads { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.drawing-table-scroll { overflow-x: auto; margin: 10px 0; }
+.drawing-table { border-collapse: collapse; min-width: 520px; font-size: 11px; }
+.drawing-table th, .drawing-table td { border: 1px solid #d8d6d1; padding: 7px; text-align: left; }
+.drawing-table th { background: #eeede9; }

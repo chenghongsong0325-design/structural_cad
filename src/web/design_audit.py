@@ -11,7 +11,7 @@ from functools import lru_cache
 LOCK = threading.RLock()
 EVIDENCE_FIELDS = ("job_id", "seed", "summary", "demo", "brief_data", "engine", "ai_design",
                    "engine_fallback", "ai_trajectory", "ai_fitness", "ai_problems", "requirement_check",
-                   "validation", "plan_check", "code_check", "spatial_report", "conflicts", "rag", "layout_score", "geometry_snapshot")
+                   "validation", "plan_check", "code_check", "spatial_report", "conflicts", "rag", "layout_score", "geometry_snapshot", "drawing_report")
 
 
 @lru_cache(maxsize=1)

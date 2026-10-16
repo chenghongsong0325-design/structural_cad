@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>自動建築平面圖生成器</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2316181c'/><g stroke='%23f7f6f3' stroke-width='2' fill='none'><rect x='8' y='8' width='16' height='16'/><path d='M8 18h7M15 18v6'/></g></svg>">
-<link rel="stylesheet" href="style.css?v=20261007-evidence">
+<link rel="stylesheet" href="style.css?v=20261015-chengji">
 </head>
 <body>
 
@@ -50,6 +50,24 @@
         </div>
 
         <p class="import-note">明確指定的條件視為必要。可退讓項目請寫「最好」或「可取消」；房數預設按指定數量核對，也可寫「至少三房」。</p>
+        <details id="drawing-settings" class="drawing-settings">
+          <summary>澄跡智庫製圖與數量表</summary>
+          <label class="drawing-enable"><input type="checkbox" id="drawing-enabled">啟用清單流程（cm／1:50）</label>
+          <p class="import-note">依清單產出彩色平面、柱牆表、裝修數量與門窗立面。設定會套用到實際圖面，檢核不符時停止出圖。</p>
+          <fieldset id="drawing-fields" disabled>
+            <legend>基本尺寸（公分）</legend>
+            <div id="drawing-inputs" class="drawing-grid"></div>
+            <label for="drawing-window-style">窗型</label>
+            <select id="drawing-window-style"><option value="sliding">橫拉窗</option><option value="awning">上懸窗</option><option value="fixed">固定窗</option></select>
+            <details><summary>指定房間淨尺寸與位置（選填）</summary>
+              <p class="import-note">先在上方描述需求。這裡核對生成結果，不會直接拖動房間；未符合條件就停止出圖。前＝圖面下方，左＝圖面左方，尺寸容差 1cm。凹形房間不能當成指定寬深的矩形。</p>
+              <div id="drawing-rooms"></div>
+              <button type="button" id="drawing-add-room" class="btn quiet">＋新增房間條件</button>
+            </details>
+          </fieldset>
+          <p class="import-note">流程：尺寸 → 軸柱 → 牆 → 窗 → 門 → 家具 → 室名 → 尺寸標註 → 數量表 → 門窗立面。</p>
+        </details>
+        <section id="drawing-result" class="hidden" aria-live="polite"></section>
         <div class="actions">
           <input id="code" type="password" placeholder="通行碼" class="hidden">
           <button id="generate" class="btn solid block">生成平面圖</button>
@@ -300,6 +318,7 @@
 <script src="spatial.js?v=20260922-spatial"></script>
 <script src="sketch.js?v=20260924-sketch"></script>
 <script src="audit.js?v=20261007-evidence"></script>
-<script src="app.js?v=20261007-evidence"></script>
+<script src="drawing.js?v=20261015"></script>
+<script src="app.js?v=20261015-chengji"></script>
 </body>
 </html>
