@@ -32,7 +32,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from src.knowledge.rag import RAG_POLICY, augment_prompt
 
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 # 房間種類:對齊產生器已認得的 kind(living/dining/kitchen/bedroom/bathroom/
 # stair/storage/study…),多幾個生活化的(elder_room/garage/balcony)。

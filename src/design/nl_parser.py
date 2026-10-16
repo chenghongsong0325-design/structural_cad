@@ -48,7 +48,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from src.design.layout_generator import Brief, CorridorBrief, HouseBrief
 
 # 模型:2.5 flash(快、便宜,解析一句話綽綽有餘);可用 GEMINI_MODEL 覆寫。
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 # ---------------------------------------------------------------------------
 # JSON schema:LLM 的「填空表格」——結構化輸出保證回傳長這樣
