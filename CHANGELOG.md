@@ -262,3 +262,5 @@ v0.5 之前的進度(畫圖元素 → 規則式格局 → 自然語言 → 網�
 - ????? AI ????????? `gemini-3.8-flash`????????????? 404??? `GEMINI_MODEL` ?????
 
 - Default model: `gemini-3.1-pro-preview` for requirement parsing and AI room graphs; `GEMINI_MODEL` remains configurable.
+
+- 2026-10-18: Restore `gemini-3.8-flash` as the default model for free-tier availability; retain `GEMINI_MODEL` override.
