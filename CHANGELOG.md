@@ -264,3 +264,10 @@ v0.5 之前的進度(畫圖元素 → 規則式格局 → 自然語言 → 網�
 - Default model: `gemini-3.1-pro-preview` for requirement parsing and AI room graphs; `GEMINI_MODEL` remains configurable.
 
 - 2026-10-18: Restore `gemini-3.8-flash` as the default model for free-tier availability; retain `GEMINI_MODEL` override.
+
+### 2026-10-18 臥室床位與拉門通行
+
+- 床頭優先靠遠離公共入口的牆，讓房門側保留通道；左右鏡射的格局採相反方向，仍以碰撞與通行檢查為準。
+- 初次擺床就核對房內動線，避免後續修復把雙人床刪除或換成單人床。
+- 拉門保留與室內通行檢查相同的雙側通行空間，不再套用平開門的迴轉深度。
+- 新增 4.5×14m 主臥、鏡射格局及拉門通行的回歸測試。

@@ -95,14 +95,26 @@ def wall_obstacles(spec) -> list[Obstacle]:
 
 
 def door_swing_polygon(spec, dp) -> Polygon:
-    """一扇門的迴轉方塊(width×width,朝 swing 側)。
+    """平開門的迴轉方塊，或拉門兩側的通行留空區。
 
-    ⚠️ 與 validate_spec 原本 inline 的算法完全一致(單一來源)。"""
+    平開門為 width×width、朝 swing 側；拉門沒有迴轉，仍保留進出空間。
+    """
     w = spec.walls[dp.wall_index]
     op = w.openings[dp.opening_index]
     cx, cy = w.point_at(op.position)
     ux, uy = w.unit_vector
     nx, ny = w.normal_vector
+    if getattr(dp.door, "sliding", False):
+        # A sliding door needs an approach on both sides, not a width-deep
+        # hinged-door swing. Use the same indoor access width as circulation.
+        from src.design.layout.room_circulation import PASSAGE_WIDTH
+        h, dep = op.width / 2, PASSAGE_WIDTH
+        return Polygon([
+            (cx - ux * h - nx * dep, cy - uy * h - ny * dep),
+            (cx + ux * h - nx * dep, cy + uy * h - ny * dep),
+            (cx + ux * h + nx * dep, cy + uy * h + ny * dep),
+            (cx - ux * h + nx * dep, cy - uy * h + ny * dep),
+        ])
     s = 1.0 if dp.door.swing == "out" else -1.0
     h, e = op.width / 2, op.width
     return Polygon([

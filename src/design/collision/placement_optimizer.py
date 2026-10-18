@@ -268,6 +268,40 @@ class FurniturePlacementOptimizer:
         d = min(poly.distance(o.poly) for o in self.doors)
         return _clamp(100.0 * d / WALKWAY_IDEAL_MM)
 
+    def _score_bed_approach(self, placement, room) -> float | None:
+        """Prefer a headboard away from the public entrance, leaving the entry side open.
+
+        This is a soft preference among collision-valid beds, not a fixed west/east
+        orientation. Closet and balcony doors are not public bedroom entrances.
+        """
+        if placement.name not in ("bed_single", "bed_double"):
+            return None
+        from src.design.semantic.room_semantic import canonical_room
+
+        poly = Polygon(room.points)
+        public = [Polygon(r.points) for r in self.spec.rooms
+                  if canonical_room(r.kind) in ("corridor", "stair_hall", "living", "foyer")]
+        entrances = []
+        for wall in self.spec.walls:
+            for op in wall.openings:
+                if op.kind != "door":
+                    continue
+                p = SPoint(*wall.point_at(op.position))
+                if (poly.distance(p) <= max(WALL_HUG_MM, wall.thickness / 2 + 5)
+                        and any(p.distance(r) < 1 for r in public)):
+                    entrances.append(p)
+        if not entrances:
+            return None
+        x0, y0, x1, y1 = poly.bounds
+        # Measure along the bed's depth: the head should be on the far wall,
+        # rather than merely sliding further along the same entrance-side wall.
+        th = math.radians(placement.rotation)
+        nx, ny = -math.sin(th), math.cos(th)
+        span = abs(nx) * (x1 - x0) + abs(ny) * (y1 - y0)
+        hx, hy = placement.insert
+        distance = min(abs((p.x - hx) * nx + (p.y - hy) * ny) for p in entrances)
+        return _clamp(100.0 * distance / max(span, 1.0))
+
     def _score_symmetry(self, poly, room, rotation) -> float:
         """沿牆置中的程度:家具中心投影到牆軸,離牆中點越近越對稱。"""
         x0, y0, x1, y1 = _room_rect(room)
@@ -384,10 +418,14 @@ class FurniturePlacementOptimizer:
             return cand
         poly = Polygon(fixture_footprint(placement))
         cand.valid = True
+        walkway = self._score_walkway(poly)
+        bed_approach = self._score_bed_approach(placement, room)
+        if bed_approach is not None:
+            walkway = (walkway + bed_approach) / 2.0
         cand.scores = {
             "wall_distance": self._score_wall_distance(poly, room_poly),
             "window_distance": self._score_window(placement.name, poly),
-            "walkway": self._score_walkway(poly),
+            "walkway": walkway,
             "symmetry": self._score_symmetry(poly, room, placement.rotation),
             "room_usability": self._score_usability(poly, room_poly),
             "constraint": self._score_constraint(placement, room),

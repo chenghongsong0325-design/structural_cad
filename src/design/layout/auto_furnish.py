@@ -398,7 +398,7 @@ def _room_walkable(spec, room) -> bool:
 
 
 def _walkable_placement(spec, room, inner, opt, name, weights):
-    """照分數由高到低找**第一個放了仍走得通**的擺位;都不行回 None。
+    """照分數找放了仍走得通的擺位；床另優先保留兩側床頭櫃空間。
 
     ⚠️ 這是「補了等於沒補」的解:`settle_after_declutter` 補完會再跑一次動線
     修復器,而修復器只認動線 —— 補在擋路的位置就會被它原封不動地再移掉一次。
@@ -416,12 +416,29 @@ def _walkable_placement(spec, room, inner, opt, name, weights):
             continue
         cand.total = sum(cand.scores[k] * wmap[k] for k in wmap) / wsum
         scored.append(cand)
+    best_bed = None
+    best_stands = -1
     for cand in sorted(scored, key=lambda c: -c.total):
         fx = cand.placement()
+        before = len(spec.fixtures)
         spec.fixtures.append(fx)
         if _room_walkable(spec, room):
-            return fx
-        spec.fixtures.remove(fx)
+            if name not in BEDS:
+                return fx
+            # Choose the bed and its bedside space together. A high-scoring
+            # headboard position must not needlessly cost a bedside table.
+            stands = _add_nightstands(spec, room, weights)
+            del spec.fixtures[before:]
+            if stands > best_stands:
+                best_bed, best_stands = fx, stands
+            if stands == 2:
+                spec.fixtures.append(fx)
+                return fx
+        else:
+            del spec.fixtures[before:]
+    if best_bed is not None:
+        spec.fixtures.append(best_bed)
+        return best_bed
     return None
 
 
@@ -744,11 +761,17 @@ def furnish_spec(spec, *, weights: PlacementWeights | None = None):
                 opt = FurniturePlacementOptimizer(spec)
                 if kind in DOOR_DODGES_KINDS:       # 門閃設備,見上面那段
                     opt.engine.doors = []
+                if name in BEDS:
+                    # Pick a bed that preserves access to every bedroom door
+                    # before the circulation repair can remove or shrink it.
+                    if _walkable_placement(spec, room, inner, opt, name, weights):
+                        _add_nightstands(spec, room, weights)
+                        break
                 res = opt.place(name, inner, weights=weights)
                 if res.found:
                     spec.fixtures.append(res.best.placement())
+                    if name in BEDS:
+                        _add_nightstands(spec, room, weights)
                     break                        # 這個位置的家具已定,換下一項
-        if kind == "bedroom":                    # 床定位之後才擺得了床頭櫃
-            _add_nightstands(spec, room, weights)
     _drop_furniture_in_walls(spec)               # 最後防線:畫出來不能穿牆
     return spec
