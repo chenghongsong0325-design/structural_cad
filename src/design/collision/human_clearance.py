@@ -172,15 +172,17 @@ def clearance_regions(placement, rule: HumanClearanceRule) -> list[tuple[str, Po
 
 
 def _counter_regions(counter: Counter, rule: HumanClearanceRule):
-    """流理台的活動區:走道在檯面「深度反向」那側(人站的地方)。"""
+    """流理台的活動區:從檯面外緣朝室內延伸，不占用背牆側。"""
     if rule.front_clearance <= 0:
         return []
     (x1, y1), (x2, y2) = counter.start, counter.end
     length = counter.length
     ux, uy = (x2 - x1) / length, (y2 - y1) / length
     nx, ny = -uy, ux                             # 左手側 = 檯面深度方向
-    ax, ay = uy, -ux                             # 走道側 = 深度反向
+    ax, ay = nx, ny                             # 工作區延伸至檯面外緣之外
     c = rule.front_clearance
+    x1, y1 = x1 + nx * counter.depth, y1 + ny * counter.depth
+    x2, y2 = x2 + nx * counter.depth, y2 + ny * counter.depth
     poly = Polygon([(x1, y1), (x2, y2),
                     (x2 + ax * c, y2 + ay * c), (x1 + ax * c, y1 + ay * c)])
     return [("front", poly)]

@@ -773,5 +773,7 @@ def furnish_spec(spec, *, weights: PlacementWeights | None = None):
                     if name in BEDS:
                         _add_nightstands(spec, room, weights)
                     break                        # 這個位置的家具已定,換下一項
+        from src.design.layout.furniture_refine import refine_room
+        refine_room(spec, room)
     _drop_furniture_in_walls(spec)               # 最後防線:畫出來不能穿牆
     return spec

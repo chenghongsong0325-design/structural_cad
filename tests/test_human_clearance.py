@@ -172,7 +172,7 @@ def test_kitchen_counter_aisle_clear_vs_blocked():
         Counter(start=(1000, 2000), end=(3000, 2000), depth=600),
         _Room(0, 0, 5000, 5000, kind="kitchen"), [])
     blocked = EV.evaluate_human_clearance(
-        Counter(start=(1000, 300), end=(3000, 300), depth=600),
+        Counter(start=(1000, 4300), end=(3000, 4300), depth=600),
         _Room(0, 0, 5000, 5000, kind="kitchen"), [])
     assert clear.score == 100.0 and blocked.score < clear.score
 

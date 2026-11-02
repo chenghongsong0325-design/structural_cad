@@ -318,8 +318,21 @@ class FurniturePairEvaluator:
                 if not targets:                  # 沒有 target → 跳過、不扣分
                     continue
                 # 多個同類目標時取「最滿足這條規則」的那個
-                score = max(_score_rule(rule, src_pt, src_rot, point_of(t))
-                            for t in targets)
+                if src_type == "bed" and rule.target_type == "nightstand":
+                    from src.drafting.fixtures import fixture_footprint
+                    head = placement.insert
+                    angle = math.radians(src_rot)
+                    def bedside_score(t):
+                        dx, dy = t.insert[0] - head[0], t.insert[1] - head[1]
+                        depth_offset = abs(-math.sin(angle) * dx + math.cos(angle) * dy)
+                        gap = Polygon(fixture_footprint(placement)).distance(Polygon(fixture_footprint(t)))
+                        return min(_score_near(gap, rule.ideal_distance, rule.max_distance),
+                                   _score_near(depth_offset, 100.0, 600.0))
+                    score = max(bedside_score(t) if hasattr(t, "name") else
+                                _score_rule(rule, src_pt, src_rot, point_of(t)) for t in targets)
+                else:
+                    score = max(_score_rule(rule, src_pt, src_rot, point_of(t))
+                                for t in targets)
 
             res.matched_rules.append(rule.rid)
             res.reasons.append(f"{rule.rid}: {score:.0f}")
