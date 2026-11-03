@@ -121,7 +121,7 @@ def _stair(bx0, bx1, y0, y1, label):
 
 
 def _floor_rooms(level, top, bx0, by0, bx1, by1, no_split=False,
-                 bath_west=None, bath_cap=True):
+                 bath_west=None, bath_cap=True, repartition=False):
     """一層的房間矩形 + 樓梯。北=梯帶(樓梯[+浴廁]),南=居室帶。
 
     no_split:樓上不分兩間臥室(由 _build_floor 量過發現第二間的門開不到動線上時
@@ -164,6 +164,10 @@ def _floor_rooms(level, top, bx0, by0, bx1, by1, no_split=False,
         #        那是合法的,擋的是廚房不是客廳。反過來擺的話 5m 面寬的客廳
         #        兩塊地板都貼不到,樓梯間只接得到浴廁(`stair_wrapped`)。
         bath_w = min(max(BATH_MIN_W, (W - MIN_LIVING_W) / 2.0), BATH_MAX_W)
+        # Keep enough of a wide upper floor for two double-bed rooms.
+        # Reallocate the service strip, without changing the building outline.
+        if repartition and level > 1 and W >= 7800:
+            bath_w = min(bath_w, 2100.0)
         west = (W - bath_w >= MIN_LIVING_W + MIN_KITCHEN_W
                 if bath_west is None else bool(bath_west))
         # ⚠️ 浴廁**貼南(前緣)**、而且深度要有上限:居室帶一深(進深大的案子有
@@ -176,7 +180,10 @@ def _floor_rooms(level, top, bx0, by0, bx1, by1, no_split=False,
             xf = bx0 + bath_w
             rooms.append(("bathroom", bath_name,
                           _rect(bx0, by0, xf, by0 + bath_d)))
-            front = _front_rooms(level, xf, by0, bx1, yb, xs, no_split)
+            front = _front_rooms(level, xf, by0, bx1, yb, xs, no_split,
+                                 # Keep the entry on the stair's floor landing;
+                                 # equal division would move it behind a flight.
+                                 master_bias=150 if repartition and level > 1 and W >= 7800 else 0)
             rooms += _absorb_bath_spare(front, bx0, xf, by0 + bath_d, yb,
                                         west=True)
             return rooms, stair
@@ -216,7 +223,7 @@ def _absorb_bath_spare(front, sx0, sx1, sy0, sy1, *, west: bool):
     return out
 
 
-def _front_rooms(level, x0, y0, x1, y1, hall_x1, no_split=False):
+def _front_rooms(level, x0, y0, x1, y1, hall_x1, no_split=False, master_bias=0):
     """前段(居室帶)的分間:寬得下就分兩間,不夠寬就一間(廚房開放在客廳裡)。
 
     5 米面寬的小透天硬切廚房只會生出 2 米寬的走廊狀廚房;真實的小宅就是開放式
@@ -234,7 +241,7 @@ def _front_rooms(level, x0, y0, x1, y1, hall_x1, no_split=False):
                 ("kitchen", "廚房", _rect(xm, y0, x1, y1))]
     if no_split or w < 2 * MIN_BEDROOM_W:
         return [("bedroom", f"臥室{level}F", _rect(x0, y0, x1, y1))]
-    xm = min(x0 + w / 2.0, hall_x1 - MIN_HALL_FRONTAGE)
+    xm = min(x0 + w / 2.0 + master_bias, hall_x1 - MIN_HALL_FRONTAGE)
     if xm - x0 < MIN_BEDROOM_W:                     # 讓不出來就不分間(一大間)
         return [("bedroom", f"臥室{level}F", _rect(x0, y0, x1, y1))]
     return [("bedroom", f"主臥室{level}F", _rect(x0, y0, xm, y1)),
@@ -274,7 +281,8 @@ def _build_floor(level, top, W, D, floor_label, furnish=True, cap=None,
     site_w, site_d = W + 2 * SETBACK, D + 2 * SETBACK
 
     rooms, stair = _floor_rooms(level, top, bx0, by0, bx1, by1, no_split,
-                                bath_west=bath_west, bath_cap=bath_cap)
+                                bath_west=bath_west, bath_cap=bath_cap,
+                                repartition=D >= 8500)
     spec = rooms_to_spec(rooms, (bx0, by0, bx1, by1), site_w, site_d,
                          setback=SETBACK)
     spec.stairs = [stair]                           # 先掛樓梯:開口收尾才避得開梯段
@@ -313,6 +321,9 @@ def _build_floor(level, top, W, D, floor_label, furnish=True, cap=None,
         from src.design.layout.auto_furnish import settle_after_declutter
         settle_after_declutter(spec)                # 補回被移掉的床/洗澡設備
         repair_doors(spec, bx0, by0, bx1, level)    # 家具擺完再修一次門(弧線會不會撞家具)
+        from src.design.layout.furniture_refine import refine_spec
+        refine_spec(spec)
+        repair_doors(spec, bx0, by0, bx1, level)
     return spec
 
 

@@ -1269,6 +1269,9 @@ def _house_finishing_pass(spec: FloorPlanSpec) -> None:
     from src.design.layout.auto_furnish import settle_after_declutter
     settle_after_declutter(spec)        # 補回被移掉的床/洗澡設備
 
+    from src.design.layout.furniture_refine import refine_spec
+    refine_spec(spec)
+    repair_doors(spec, ex0, ey0, ex1, level)
 
 def _slot(desired: float, widths: list[float], lo: float, hi: float,
           blocked: list[tuple[float, float]], what: str) -> tuple[float, float]:

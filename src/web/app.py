@@ -810,7 +810,13 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             actual_score["job_id"] = job_id
         except Exception:
             actual_score = None
+        from src.design.layout.furniture_refine import usage_issues
+        furniture_issues = usage_issues(building)
+        if furniture_issues:
+            items = [f"{i['floor']} {i['room']}的{i['furniture']}" for i in furniture_issues[:3]]
+            note += "；家具操作空間仍待調整：" + "、".join(items) + f"（共{len(furniture_issues)}項）"
         result = {
+            "furniture_review": furniture_issues,
             "layout_score": actual_score,
             "job_id": job_id,
             "seed": seed,

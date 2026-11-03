@@ -99,11 +99,11 @@ def test_place_unit_mirror_x_room_flips() -> None:
     spec = _empty_spec()
     unit = one_room_unit()
     place_unit(spec, unit, origin=(0, 0), mirror_x=True)
-    # 浴廁原在西南角(x 0..1800)→ 鏡射後在東南角(x 2200..4000)。
+    # 浴廁原在西南角(x 0..1900)→ 鏡射後在東南角(x 2100..4000)。
     bath = next(r for r in spec.rooms if r.name == "浴廁")
     xs = [p[0] for p in bath.points]
-    assert (min(xs), max(xs)) == (2200, 4000)
-    assert bath.area_m2 == pytest.approx(3.6)       # 面積不變
+    assert (min(xs), max(xs)) == (2100, 4000)
+    assert bath.area_m2 == pytest.approx(4.37)       # 面積不變
 
 
 def test_place_unit_counter_swaps_on_mirror() -> None:

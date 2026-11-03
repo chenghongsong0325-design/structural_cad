@@ -3556,6 +3556,9 @@ def _build_floor(level, top, W, D, floor_label, furnish=True,
         #    會撞到東西的位置,要留一次修門在後面收。
         shift_openings_off_columns(spec)
         repair_doors(spec, bx0, by0, bx1, level)    # 家具擺完再修一次門(弧線會不會撞家具)
+        from src.design.layout.furniture_refine import refine_spec
+        refine_spec(spec)
+        repair_doors(spec, bx0, by0, bx1, level)
         # 更衣室害得床擺不下、或害得浴室要穿過它才進得去 → 退掉它。
         if closet and (not _beds_ok(spec)
                        or _closet_blocks_bath(spec, level)):
