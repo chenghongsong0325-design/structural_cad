@@ -49,6 +49,8 @@ from src.design.layout_generator import Brief, CorridorBrief, HouseBrief
 
 # 模型:2.5 flash(快、便宜,解析一句話綽綽有餘);可用 GEMINI_MODEL 覆寫。
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+# 高流量時改用同系列的輕量模型；可在 Render 以 GEMINI_FALLBACK_MODEL 覆寫。
+FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.8-flash-lite")
 
 # ---------------------------------------------------------------------------
 # JSON schema:LLM 的「填空表格」——結構化輸出保證回傳長這樣
@@ -371,23 +373,28 @@ def _call_llm(text: str, client: object, system: str = SYSTEM_PROMPT) -> dict:
     text = augment_prompt(text, "parse")
     system += RAG_POLICY
     last: Optional[Exception] = None
-    for attempt in range(len(_RETRY_DELAYS) + 1):
-        try:
-            response = client.models.generate_content(
-                model=MODEL,
-                contents=text,
-                config={
-                    "system_instruction": system,
-                    "response_mime_type": "application/json",
-                    "response_schema": BRIEF_SCHEMA,
-                },
-            )
-            return json.loads(response.text)
-        except Exception as exc:                     # noqa: BLE001
-            if not _is_transient(exc) or attempt >= len(_RETRY_DELAYS):
-                raise
-            last = exc
-            time.sleep(_RETRY_DELAYS[attempt])
+    models = [MODEL] if FALLBACK_MODEL == MODEL else [MODEL, FALLBACK_MODEL]
+    for model in models:
+        for attempt in range(len(_RETRY_DELAYS) + 1):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=text,
+                    config={
+                        "system_instruction": system,
+                        "response_mime_type": "application/json",
+                        "response_schema": BRIEF_SCHEMA,
+                    },
+                )
+                return json.loads(response.text)
+            except Exception as exc:                 # noqa: BLE001
+                if not _is_transient(exc) or attempt >= len(_RETRY_DELAYS):
+                    if model == models[-1] or not _is_transient(exc):
+                        raise
+                    last = exc
+                    break
+                last = exc
+                time.sleep(_RETRY_DELAYS[attempt])
     raise last                                        # pragma: no cover(防禦)
 
 
