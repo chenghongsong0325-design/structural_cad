@@ -91,7 +91,8 @@ def test_generation_persists_actual_trace_and_does_not_leak_across_jobs(referenc
     monkeypatch.setattr(web, "building_brief_from_data", lambda *a, **k: SimpleNamespace(typical=None))
     def generate(text, brief, client, **kwargs):
         townhouse_options.propose_options(text, width=5000, depth=15000, client=client)
-        return object(), {}
+        from src.design.building_generator import BuildingSpec
+        return BuildingSpec(), {}
     monkeypatch.setattr(web, "_generate_auto", generate)
     monkeypatch.setattr(web, "build_sheets", lambda _: [])
     monkeypatch.setattr(web, "building_metrics", lambda _: {})
@@ -106,4 +107,6 @@ def test_generation_persists_actual_trace_and_does_not_leak_across_jobs(referenc
         assert [e["stage"] for e in data["rag"]["events"]] == ["parse", "townhouse"]
         saved = json.loads((tmp_path / data["job_id"] / "result.json").read_text(encoding="utf-8"))
         assert saved["rag"] == data["rag"]
+        assert saved["design_audit"]["snapshot"]["rag"] == data["rag"]
+        assert saved["design_audit"]["snapshot"]["geometry_snapshot"]["floors"] == []
     assert rag.trace_report()["events"] == []

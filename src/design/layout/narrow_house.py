@@ -1277,11 +1277,11 @@ def _floor_rooms(level, top, bx0, by0, bx1, by1, variant=DEFAULT_VARIANT,
         if xm is None or not _split_clears_passage(xm, av):
             big_rear = False                    # → 走下面的開放餐廚那條路
         # ── 開放式餐廚(使用者 2026-08-26 指著參考平面圖:「餐廳/廚房」是一間)──
-        # 真實透天的 1F 後段就是一間開放餐廚,不是隔成兩間 —— 4.5m 面寬硬切,
-        # 廚房只剩 2m 寬(走廊狀),而且中間那道牆在生活上沒有意義。
+        # 預設開放餐廚；明確選擇分間且切點能避開通道時，保留分間變體。
+        # 窄到無法切出兩間可進出的房間時，仍退回開放餐廚。
         # 併起來的上限是**兩間相加**(plan_check.MERGED_ROOM_PARTS 已經這樣算),
         # 所以只有大到連併合上限都撐不住的後段(8×18m 那種 44㎡)才切成兩間。
-        if ((variant.open_kitchen or not big_rear)
+        if ((variant.open_kitchen or xm is None or not _split_clears_passage(xm, av))
                 and (bx1 - bx0) * d_rear <= _room_area_cap("餐廚")):
             rooms = [front_1f, *core,
                      ("dining", "餐廚",
@@ -3655,6 +3655,9 @@ def generate_narrow_building(building_w_mm: float, building_d_mm: float, *,
     反推基地)。⚠️ 給 lot 時 `building_w_mm` 要等於 `lot.building_w`(=基地面寬),
     `building_d_mm` 要給**基地**進深 —— 建築進深由建蔽率與骨架上限一起決定。"""
     W, D = float(building_w_mm), float(building_d_mm)
+    # Explicit design alternatives must use a core that supports their choices.
+    if core_style is None and variant is not None and (variant.bath_north or not variant.open_kitchen):
+        core_style = "default"
     auto_core = core_style is None           # None = 讓 _fit_core_style 挑
     core_style = core_style or CORE_STYLE_STEPS[0]
     floors = max(1, int(floors))

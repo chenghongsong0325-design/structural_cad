@@ -162,7 +162,8 @@ def narrow_options(building_w_mm: float, building_d_mm: float, *,
             continue
         plan = check_building(fl)           # 外框由 spec 自推(深基地會封頂留院子)
         code = check_code_building(fl)
-        opt = PlanOption(v, fl, plan, code, _signature(fl[0][1], env))
+        from src.design.layout.plan_check import building_env
+        opt = PlanOption(v, fl, plan, code, _signature(fl[0][1], building_env(fl[0][1])))
         if plan.ok and code.ok:
             passed.append(opt)
         elif fallback is None or (len(opt.plan.errors) + len(opt.code.violations)
