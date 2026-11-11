@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>自動建築平面圖生成器</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2316181c'/><g stroke='%23f7f6f3' stroke-width='2' fill='none'><rect x='8' y='8' width='16' height='16'/><path d='M8 18h7M15 18v6'/></g></svg>">
-<link rel="stylesheet" href="style.css?v=20261015-chengji">
+<link rel="stylesheet" href="style.css?v=20261111-readable">
 </head>
 <body>
 
@@ -265,7 +265,7 @@
   <main class="stage">
     <div class="stage-bar">
       <div class="tabs" id="tabs"></div>
-      <span class="stage-hint">滾輪縮放 · 拖曳平移 · 雙擊還原</span>
+      <span class="stage-hint">整張圖自動置中 · 滾輪放大看細節 · 雙擊還原</span>
       <button id="spatial-toggle" class="btn quiet" disabled aria-expanded="false" aria-controls="spatial-inspector">房間與動線分析</button>
     </div>
 
@@ -308,8 +308,9 @@
 
       <div class="viewer-tools">
         <button class="zoom" id="zoom-out" title="縮小">−</button>
-        <button class="zoom" id="zoom-reset" title="還原">⤢</button>
+        <button class="zoom zoom-label" id="zoom-reset" title="整張圖適合視窗">整張圖</button>
         <button class="zoom" id="zoom-in" title="放大">+</button>
+        <button class="zoom zoom-label" id="viewer-fullscreen" title="全螢幕看圖" aria-pressed="false">全螢幕</button>
       </div>
     </div>
   </main>
@@ -317,10 +318,11 @@
 </div>
 
 <script src="spatial.js?v=20260922-spatial"></script>
-<script src="sketch.js?v=20260924-sketch"></script>
+<script src="sketch.js?v=20261111-readable"></script>
 <script src="audit.js?v=20261007-evidence"></script>
 <script src="drawing.js?v=20261015"></script>
 <script src="ergonomics.js?v=20261111"></script>
-<script src="app.js?v=20261111-ergonomics"></script>
+<script src="viewport.js?v=20261111"></script>
+<script src="app.js?v=20261111-readable"></script>
 </body>
 </html>

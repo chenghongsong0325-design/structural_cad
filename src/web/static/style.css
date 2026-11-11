@@ -498,7 +498,7 @@ textarea:focus, .modify-bar input:focus, #code:focus {
   transition: background .35s ease, box-shadow .35s ease;
 }
 body.has-result .viewer {
-  background: #0b0b0c;
+  background: #fff;
   border-color: transparent;
   box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 18px 40px -24px rgba(0,0,0,.5);
 }
@@ -510,7 +510,7 @@ body:not(.has-result) .stage-hint { display: none; }
   overflow: hidden; cursor: grab; touch-action: none;
 }
 .canvas:active { cursor: grabbing; }
-.canvas .pane { position: absolute; inset: 0; transform-origin: 0 0; }
+.canvas .pane { position: absolute; inset: 12px; transform-origin: 0 0; }
 .canvas svg { width: 100%; height: 100%; display: block; }
 .canvas .sketch-copy { position: absolute; inset: 0; pointer-events: none; }
 body.has-result .viewer.is-sketching { background: #faf8f2; }
@@ -544,20 +544,23 @@ body.has-result .empty { display: none; }
   position: absolute; right: 14px; bottom: 14px;
   display: flex; gap: 2px;
   padding: 3px;
-  background: rgba(255,255,255,.09);
+  background: rgba(248,247,243,.96);
   backdrop-filter: blur(12px);
-  border: 1px solid rgba(255,255,255,.12);
+  border: 1px solid #d4d0c8;
   border-radius: 9px;
 }
 .zoom {
   width: 28px; height: 28px;
   display: grid; place-items: center;
-  background: none; color: #cfd3d8;
+  background: none; color: #242830;
   border: 0; border-radius: 6px;
   font-size: 17px; line-height: 1; cursor: pointer;
   transition: .13s;
 }
-.zoom:hover { background: rgba(255,255,255,.14); color: #fff; }
+.zoom:hover { background: #e5e2da; color: #111; }
+.zoom-label { width:auto; padding:0 10px; font-size:13px; white-space:nowrap; }
+.viewer:fullscreen, .viewer.is-expanded { border-radius:0; border:0; background:#fff; }
+.viewer.is-expanded { position:fixed; inset:0; z-index:1000; }
 
 .rag-panel { margin-top: 12px; font-size: 12px; line-height: 1.65; }
 .rag-panel summary { cursor: pointer; font-weight: 600; }

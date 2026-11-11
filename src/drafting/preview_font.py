@@ -25,9 +25,10 @@ AutoCAD 顯示與競賽出圖用的,不能改。
 from __future__ import annotations
 
 from contextlib import contextmanager
+import os
 
 #: 轉向量路徑時拿來頂替標楷體的字型(微軟正黑體,Windows 內建)。
-PREVIEW_FONT = "msjh.ttc"
+PREVIEW_FONT = os.environ.get("CAD_PREVIEW_FONT", "msjh.ttc" if os.name == "nt" else "NotoSansCJK-Regular.ttc")
 
 #: 要被頂替的文字樣式名(default.yaml 裡唯一帶中文字型的那個)。
 STYLE_NAME = "STRUCT"

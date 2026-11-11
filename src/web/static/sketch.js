@@ -43,10 +43,10 @@ window.PlanSketch = (() => {
         if (node.closest("defs,clipPath,mask,pattern,marker,symbol")) return;
         const target = clones[i], style = getComputedStyle(node);
         if (style.display === "none" || style.visibility === "hidden") return;
-        const isPaper = node.tagName.toLowerCase() === "rect"
+        const isPaper = node.hasAttribute("data-preview-paper") || (node.tagName.toLowerCase() === "rect"
           && node.parentElement === svg && node.x.baseVal.value === box.x
           && node.y.baseVal.value === box.y && node.width.baseVal.value >= box.width
-          && node.height.baseVal.value >= box.height;
+          && node.height.baseVal.value >= box.height);
         if (isPaper) {
           target.style.fill = "#faf8f2";
           target.style.stroke = "none";

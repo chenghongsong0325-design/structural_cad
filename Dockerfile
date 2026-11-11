@@ -4,9 +4,15 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# SVG/PDF render Chinese labels to vector paths; install a real CJK font.
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+ENV CAD_PREVIEW_FONT=NotoSansCJK-Regular.ttc
+
 # 先只複製套件清單再安裝——之後改程式碼不用重新下載套件(Docker 快取層)
 COPY requirements.txt requirements-web.txt requirements-rag-onnx.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -r requirements-web.txt -r requirements-rag-onnx.txt
+RUN python -c "from ezdxf.fonts import fonts; assert fonts.font_manager.has_font('NotoSansCJK-Regular.ttc'); cmap=fonts.font_manager.get_ttf_font('NotoSansCJK-Regular.ttc').getBestCmap(); assert all(ord(c) in cmap for c in '樓梯間主臥室浴廁尺寸')"
 # 建置時直接確認搜尋、網頁與文字 PDF 擷取可用，避免部署後才發現漏裝。
 RUN python -c "from ddgs import DDGS; from lxml import html; import urllib3, certifi, pymupdf"
 

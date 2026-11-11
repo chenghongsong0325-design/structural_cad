@@ -33,7 +33,8 @@ def main():
                 body, mime = result["sheets"][0]["svg"], "image/svg+xml"
             elif route == "/":
                 body, mime = (root / "tests/sketch_browser.html").read_text(encoding="utf-8"), "text/html; charset=utf-8"
-            elif route in {"/preview", "/index.html", "/style.css", "/app.js", "/spatial.js", "/sketch.js"}:
+            elif route in {"/preview", "/index.html", "/style.css", "/app.js", "/spatial.js", "/sketch.js",
+                           "/audit.js", "/drawing.js", "/ergonomics.js", "/viewport.js"}:
                 name = "index.html" if route == "/preview" else route[1:]
                 body = (static / name).read_text(encoding="utf-8")
                 if name == "index.html":

@@ -585,8 +585,6 @@ function buildTabs() {
   });
 }
 
-const sketchedSheets = new WeakSet();
-
 function playSheetSketch() {
   const svg = $("canvas").querySelector(".pane > svg");
   if (!svg || !window.PlanSketch) return;
@@ -630,10 +628,6 @@ function showSheet(i) {
   resetView();
   $("sketch-controls").classList.remove("hidden");
   $("sketch-status").textContent = `${sheets[i].label} · 圖面已完成`;
-  if (!sketchedSheets.has(sheets[i])) {
-    sketchedSheets.add(sheets[i]);
-    playSheetSketch();
-  }
 }
 
 // DXF 下載:優先用回應裡內嵌的檔案(dxf_b64)。
@@ -658,7 +652,11 @@ function setDxfLink(sheet) {
 }
 
 // ── 縮放/平移(滾輪縮放、拖曳平移、雙擊還原)───────────────────────
-function resetView() { view = { x: 0, y: 0, k: 1 }; applyView(); }
+function resetView() {
+  window.PlanViewport.fit($("canvas").querySelector(".pane > svg"));
+  view = { x: 0, y: 0, k: 1 };
+  applyView();
+}
 function applyView() {
   const pane = $("canvas").querySelector(".pane");
   if (pane) pane.style.transform =
@@ -678,6 +676,31 @@ function zoomBy(factor) {
 $("zoom-in").addEventListener("click", () => zoomBy(1.3));
 $("zoom-out").addEventListener("click", () => zoomBy(1 / 1.3));
 $("zoom-reset").addEventListener("click", resetView);
+function updateFullscreenLabel() {
+  const expanded = document.fullscreenElement === $("viewer") || $("viewer").classList.contains("is-expanded");
+  $("viewer-fullscreen").textContent = expanded ? "退出全螢幕" : "全螢幕";
+  $("viewer-fullscreen").setAttribute("aria-pressed", String(expanded));
+}
+$("viewer-fullscreen").addEventListener("click", async () => {
+  window.PlanSketch?.finish();
+  if ($("viewer").classList.contains("is-expanded")) {
+    $("viewer").classList.remove("is-expanded"); updateFullscreenLabel(); resetView(); return;
+  }
+  try {
+    if (document.fullscreenElement === $("viewer")) await document.exitFullscreen();
+    else await $("viewer").requestFullscreen();
+  } catch (_) { $("viewer").classList.add("is-expanded"); updateFullscreenLabel(); resetView(); }
+});
+document.addEventListener("fullscreenchange", () => {
+  updateFullscreenLabel();
+  resetView();
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && $("viewer").classList.contains("is-expanded")) {
+    $("viewer").classList.remove("is-expanded"); updateFullscreenLabel(); resetView();
+  }
+});
+new ResizeObserver(resetView).observe($("canvas"));
 
 $("canvas").addEventListener("wheel", (e) => {
   e.preventDefault();

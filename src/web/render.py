@@ -28,8 +28,9 @@ from ezdxf.addons.drawing.config import (
     BackgroundPolicy,
     ColorPolicy,
     Configuration,
+    LineweightPolicy,
 )
-from ezdxf.addons.drawing.layout import Page
+from ezdxf.addons.drawing.layout import Page, Settings
 from ezdxf.addons.drawing.svg import SVGBackend
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -80,7 +81,14 @@ def build_sheets(building: BuildingSpec, *, drawing_report=None) -> list[Sheet]:
         # 預覽:同一份平面圖但拿掉 A3 圖框/標題欄 → 平面本身填滿畫面看得更清楚。
         pdoc, players = _new_doc()
         draw_floor_plan(pdoc.modelspace(),
-                        replace(fl.spec, sheet=False, title_block=None), players)
+                        replace(fl.spec, sheet=False, title_block=None,
+                                schedules=False, floor_label="", lot_note=None,
+                                dim_chains=False, north_arrow=False), players)
+        # The preview focuses on the floor, rather than scaling it down to fit
+        # long front/back yards. The downloaded drawing retains the lot lines.
+        for entity in list(pdoc.modelspace()):
+            if entity.dxf.layer in {players["BORDER"], players["ARCH"]}:
+                pdoc.modelspace().delete_entity(entity)
         sheets.append(Sheet(label=fl.label, kind="floor",
                             filename=f"{fl.label}.dxf", doc=doc, preview_doc=pdoc))
 
@@ -99,14 +107,13 @@ def build_sheets(building: BuildingSpec, *, drawing_report=None) -> list[Sheet]:
     return sheets
 
 
-# 預覽用繪圖設定:把「出圖線粗」放大顯示。真實建築線粗(牆 0.35mm、尺寸線
-# 0.15mm…)是給印在 A3 紙上看的,瀏覽器把整張圖縮到螢幕時,那些線只剩不到
-# 半個像素 → 糊成看不見(使用者反映「看不清楚」)。AutoCAD 靠「線寬顯示」補償,
-# 這裡用 lineweight_scaling 做同一件事:等比例放大線粗(牆仍比尺寸線粗),
-# 黑底貼近 CAD 深色畫面。40 倍是實測「清楚但不糊成一團」的值。
+# 網頁閱讀用白底深色線；保留不同線寬，下載的 CAD 圖層顏色不受影響。
+# 相對線寬以畫面大小決定，避免 mm/cm 模型或長基地讓線縮到不到一個像素。
 _SVG_CONFIG = Configuration(
-    lineweight_scaling=40,
-    background_policy=BackgroundPolicy.BLACK,
+    lineweight_scaling=6,
+    background_policy=BackgroundPolicy.WHITE,
+    color_policy=ColorPolicy.BLACK,
+    lineweight_policy=LineweightPolicy.RELATIVE,
 )
 
 # 預覽用替代字型:標楷體轉向量路徑會破碎,轉圖時暫時換成正黑體。
@@ -114,7 +121,7 @@ _SVG_CONFIG = Configuration(
 
 
 def doc_to_svg(doc) -> str:
-    """ezdxf 文件 → SVG 字串(黑底、線粗放大,像 AutoCAD 那樣清楚可讀)。
+    """ezdxf 文件 → 高對比白底 SVG，保留原始 DXF 的圖層與出圖設定。
 
     Page(0, 0) = 紙張大小自動貼合圖面內容,瀏覽器端再自由縮放。
 
@@ -126,7 +133,8 @@ def doc_to_svg(doc) -> str:
         backend = SVGBackend()
         Frontend(RenderContext(doc), backend, config=_SVG_CONFIG).draw_layout(
             doc.modelspace(), finalize=True)
-        return backend.get_string(Page(0, 0))
+        return backend.get_string(Page(0, 0), settings=Settings(max_stroke_width=.002,
+                                                              min_stroke_width=.35))
 
 
 # PDF 出圖設定:白底黑線(印表機/正式交件慣例——紙是白的,線要黑才清楚),
