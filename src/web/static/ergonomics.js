@@ -17,6 +17,27 @@
     }
     add("p", `已檢查 ${report.checked} 件家具／廚具，${report.warnings} 件需要核對。`, panel);
     add("p", report.scope, panel).className = "import-note";
+    const repair = report.repair;
+    if (repair) {
+      if (repair.status === "unverified") {
+        add("p", "家具自動修正未完成驗證，已保留原配置；請核對下方尺寸。", panel);
+      } else {
+        add("p", `自動修正 ${repair.changes.length} 次，待核對家具 ${repair.before} → ${repair.after} 件。${repair.limit_reached ? "已達本次搜尋上限。" : ""}`, panel);
+      }
+      const history = add("details", "", panel);
+      add("summary", "查看家具修正紀錄與未解項目", history);
+      add("p", repair.scope, history).className = "import-note";
+      for (const change of repair.changes || []) {
+        const pose = p => `(${p.insert.map(v => (v/10).toFixed(1)).join(", ")} cm)，方向 ${p.rotation}°`;
+        add("p", `${change.floor} ${change.room}・${change.furniture}：${pose(change.before)} → ${pose(change.after)}；連同配套共移動 ${change.moved_count} 件。`, history);
+        for (const m of change.measurements || []) {
+          add("p", `${m.furniture} ${m.label}：淨深 ${(m.before_mm/10).toFixed(1)} → ${(m.after_mm/10).toFixed(1)} cm／建議 ${(m.target_mm/10).toFixed(1)} cm。`, history);
+        }
+      }
+      for (const item of repair.remaining || []) {
+        add("p", `${item.floor} ${item.room}・${item.furniture}：${item.reason}`, history);
+      }
+    }
     const details = add("details", "", panel);
     add("summary", "查看各側尺寸與來源", details);
     add("p", report.method, details).className = "import-note";

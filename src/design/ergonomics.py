@@ -139,7 +139,7 @@ def analyze_ergonomics(building):
                 target = rule.side_clearance if side in ("left", "right") else getattr(rule, side+"_clearance")
                 regions.append(measure_region(zone, side, target, free))
             items.append({"id": f"f{fi}-fixture{index}", "floor": floor.label,
-                          "room_id": f"f{fi}-room{ri}", "room": room.name,
+                          "room_id": f"f{fi}-room{ri}", "room_index": ri, "fixture_index": index, "room": room.name,
                           "furniture": LABELS.get(name, name), "name": name,
                           "status": "needs_review" if any(z["status"] == "needs_review" for z in regions) else "meets_target",
                           "regions": regions, "basis": rule_basis(kind)})

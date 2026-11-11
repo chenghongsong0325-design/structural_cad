@@ -448,9 +448,23 @@ def test_index_page_served() -> None:
 # ---------------------------------------------------------------------------
 # 5) E4:關鍵數字 / PDF 圖冊 / 歷史方案 / 多輪修改
 # ---------------------------------------------------------------------------
-def test_generate_returns_metrics_and_brief_data() -> None:
+def test_generate_returns_metrics_and_brief_data(monkeypatch) -> None:
     """回應要帶關鍵數字(建蔽/容積/造價)與 brief_data(多輪修改的底)。"""
     # 窄透天三層實際四房；不能再要求地下室卻驗收沒有地下室的結果。
+    from dataclasses import asdict
+    import src.design.ergonomics_repair as repair_module
+    import src.web.app as web_module
+    repaired, exported = [], []
+    real_repair, real_sheets = repair_module.repair_building, web_module.build_sheets
+    def repair(building):
+        report = real_repair(building)
+        repaired.append(asdict(building))
+        return report
+    def sheets(building, **kwargs):
+        exported.append(asdict(building))
+        return real_sheets(building, **kwargs)
+    monkeypatch.setattr(repair_module,"repair_building",repair)
+    monkeypatch.setattr(web_module,"build_sheets",sheets)
     c = _client(_payload(site_width_m=11, site_depth_m=16,
                          floors_above=3, bedrooms=4))
     data = c.post("/api/generate",
@@ -466,6 +480,14 @@ def test_generate_returns_metrics_and_brief_data() -> None:
     assert ergonomics["status"] in {"needs_review", "meets_checked_targets"}
     assert data["design_audit"]["snapshot"]["ergonomics"] == ergonomics
     assert any(item["basis"]["source_url"] for item in ergonomics["items"])
+    repair = ergonomics["repair"]
+    assert repair["status"] != "unverified"
+    assert repair["after"] == ergonomics["warnings"] <= repair["before"]
+    assert repair["attempts"] <= repair["candidate_limit"]
+    assert c.get(f"/api/jobs/{data['job_id']}/result").json()["ergonomics"] == ergonomics
+    assert c.post("/api/score",json={"job_id":data["job_id"]}).json() == data["layout_score"]
+    # JSON normalises tuples to lists; compare the actual final exported geometry.
+    assert json.loads(json.dumps(repaired[0])) == json.loads(json.dumps(exported[0])) == data["design_audit"]["snapshot"]["geometry_snapshot"]
 
 
 def test_pdf_booklet_lazy_generated() -> None:

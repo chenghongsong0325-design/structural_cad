@@ -1,5 +1,9 @@
 # AGENTS.md — 給 AI 助手的專案說明
 
+2026-11-11：網頁最終出圖前 `design/ergonomics_repair.py` 以實際各側淨距做有限次家具移位／轉向。
+只接受不惡化其他側、不新增硬錯誤並保留配套的候選；任何驗證例外須全部還原並回報 unverified。
+改動後的驗證、SVG/DXF/PDF、評分與設計快照必須是同一份幾何。測試見 `tests/test_ergonomics_repair.py`。
+
 這份檔案給任何在這個 repo 工作的 AI coding agent（Codex / Claude Code / 其他）看。
 先讀完再動手，可以省掉重新摸索的時間，也避免踩到已經解過的坑。
 

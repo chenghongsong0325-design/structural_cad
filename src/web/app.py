@@ -741,17 +741,22 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             drawing_report = None
             if drawing is not None and drawing.enabled:
                 from src.design.drawing_profile import apply_profile, build_report as drawing_build_report
+                building = apply_profile(building, drawing)
+            from src.design.ergonomics_repair import repair_building
+            repair_report = repair_building(building)
+            # Validate and report the same final geometry that is exported below.
+            if repair_report.changes or (drawing is not None and drawing.enabled):
                 from src.design.validation import validate_building
                 from src.design.requirements import check_requirements
                 from src.design.spatial_report import build_spatial_report
                 from src.design.layout.door_rules import door_table
-                building = apply_profile(building, drawing)
                 ai_extra.update(validate_building(building))
                 ai_extra["requirement_check"] = check_requirements(building, data["_requirements"]).to_dict()
                 ai_extra["spatial_report"] = build_spatial_report(building, ai_extra, ai_extra["requirement_check"]).to_dict()
                 ai_extra["conflicts"] = ai_extra["spatial_report"]["conflicts"]
                 ai_extra["door_table"] = door_table([(f.label, f.spec) for f in building.floors]).to_dict()
                 _reject_if_broken(ai_extra, brief)
+            if drawing is not None and drawing.enabled:
                 drawing_report = drawing_build_report(building, drawing).to_dict()
                 ai_extra["drawing_report"] = drawing_report
             sheets = (build_sheets(building, drawing_report=drawing_report) if drawing_report
@@ -817,6 +822,7 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             ergonomics = analyze_ergonomics(building).to_dict()
         except Exception as exc:
             ergonomics = {"status": "unverified", "error_type": type(exc).__name__}
+        ergonomics["repair"] = repair_report.to_dict()
         if furniture_issues:
             items = [f"{i['floor']} {i['room']}的{i['furniture']}" for i in furniture_issues[:3]]
             note += "；家具操作空間仍待調整：" + "、".join(items) + f"（共{len(furniture_issues)}項）"
