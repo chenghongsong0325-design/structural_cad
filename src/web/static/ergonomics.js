@@ -1,0 +1,45 @@
+"use strict";
+(() => {
+  const panel = document.getElementById("ergonomics-panel");
+  function add(tag, text, parent) {
+    const el = document.createElement(tag);
+    el.textContent = text;
+    parent.appendChild(el);
+    return el;
+  }
+  window.renderErgonomics = report => {
+    panel.replaceChildren();
+    panel.classList.remove("hidden");
+    add("h2", "人因工學・家具操作空間", panel).className = "block-title";
+    if (!report || report.status === "unverified") {
+      add("p", "本方案的人因操作空間尚未完成檢查；舊方案請重新生成。", panel);
+      return;
+    }
+    add("p", `已檢查 ${report.checked} 件家具／廚具，${report.warnings} 件需要核對。`, panel);
+    add("p", report.scope, panel).className = "import-note";
+    const details = add("details", "", panel);
+    add("summary", "查看各側尺寸與來源", details);
+    add("p", report.method, details).className = "import-note";
+    // Put shortfalls first without mutating the saved response.
+    const items = [...(report.items || [])].sort((a,b) =>
+      Number(b.status === "needs_review") - Number(a.status === "needs_review"));
+    for (const item of items) {
+      const row = add("details", "", details);
+      add("summary", `${item.floor} ${item.room}・${item.furniture}：${item.status === "needs_review" ? "待調整" : "達本次目標"}`, row);
+      for (const z of (item.regions || [])) {
+        add("p", `${z.label}：淨深 ${(z.available_mm/10).toFixed(1)} cm／建議 ${(z.target_mm/10).toFixed(1)} cm${z.status === "needs_review" ? "（不足）" : "（達標，上限為建議值）"}`, row);
+      }
+      add("p", item.basis?.reference || "專題設計目標", row).className = "import-note";
+      const source = item.basis?.source_url;
+      if (source) {
+        try {
+          const url = new URL(source);
+          if (url.protocol !== "https:") continue;
+          const a = add("a", "查看原始指引", row);
+          a.href = url.href; a.target = "_blank"; a.rel = "noopener noreferrer";
+        } catch (_) { /* Invalid source URLs remain non-interactive. */ }
+      }
+    }
+    add("p", `未檢查：${(report.not_checked || []).join("、")}。另有 ${(report.unchecked_furniture || []).length} 件家具尚無活動尺寸規則。`, details).className = "import-note";
+  };
+})();

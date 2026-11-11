@@ -461,6 +461,11 @@ def test_generate_returns_metrics_and_brief_data() -> None:
     assert m["far_pct"] > m["coverage_pct"]      # 三層 → 容積率 > 建蔽率
     assert m["est_cost_wan"] > 0
     assert data["brief_data"]["brief_type"] == "house"
+    ergonomics = data["ergonomics"]
+    assert ergonomics["checked"] > 0
+    assert ergonomics["status"] in {"needs_review", "meets_checked_targets"}
+    assert data["design_audit"]["snapshot"]["ergonomics"] == ergonomics
+    assert any(item["basis"]["source_url"] for item in ergonomics["items"])
 
 
 def test_pdf_booklet_lazy_generated() -> None:

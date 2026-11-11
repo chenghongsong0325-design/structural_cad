@@ -11,7 +11,7 @@ from functools import lru_cache
 LOCK = threading.RLock()
 EVIDENCE_FIELDS = ("job_id", "seed", "summary", "demo", "brief_data", "engine", "ai_design",
                    "engine_fallback", "ai_trajectory", "ai_fitness", "ai_problems", "requirement_check",
-                   "validation", "plan_check", "code_check", "spatial_report", "conflicts", "rag", "layout_score", "geometry_snapshot", "drawing_report", "furniture_review")
+                   "validation", "plan_check", "code_check", "spatial_report", "conflicts", "rag", "layout_score", "geometry_snapshot", "drawing_report", "furniture_review", "ergonomics")
 
 
 @lru_cache(maxsize=1)
@@ -101,6 +101,7 @@ def render_html(report, reviews):
     for label, keys in [("輸入解析與修改差異", ["brief_data", "previous_brief", "changes", "previous_requirement_check", "base_source", "parent_job_id"]),
                         ("配置路徑與候選紀錄", ["engine", "ai_design", "engine_fallback", "seed", "demo", "code_revision", "implementation_sha256", "ai_trajectory"]),
                         ("幾何、動線與檢查", ["spatial_report", "validation", "plan_check", "code_check", "conflicts"]),
+                        ("人因工學與家具操作空間", ["ergonomics", "furniture_review"]),
                         ("RAG 實際送入提示的紀錄", ["rag"]), ("輔助評分", ["layout_score"])]:
         parts.append(f"<h2>{label}</h2><details><summary>展開詳細證據</summary><pre>{esc(json.dumps({k: snapshot.get(k) for k in keys}, ensure_ascii=False, indent=2))}</pre></details>")
     parts.append(f"<h2>人工回饋（不等於法規核准）</h2><pre>{esc(json.dumps(reviews, ensure_ascii=False, indent=2))}</pre></html>")

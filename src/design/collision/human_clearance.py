@@ -34,10 +34,13 @@ import math
 from dataclasses import dataclass, field
 
 from shapely.geometry import Polygon
+from shapely.ops import unary_union
 
 from src.design.report import JsonReport
 from src.drafting.fixtures import (
     FIXTURE_SIZES,
+    TABLE4_TOP,
+    TABLE2_TOP,
     Counter,
     FixturePlacement,
     counter_footprint,
@@ -53,12 +56,15 @@ VIOLATION_THRESHOLD = 0.50   # 進 violations(過半被擋)
 HUMAN_TYPE = {
     "bed_single": "bed", "bed_double": "bed",
     "wardrobe": "wardrobe",
+    "closet_rail": "wardrobe",
     "desk": "desk",
     "sofa3": "sofa", "sofa2": "sofa", "armchair": "sofa",
     "table4": "dining_table",
+    "table2": "wall_dining_table",
     "toilet": "toilet",
     "bathtub": "shower",
     "basin": "sink",
+    "basin_small": "sink",
     "fridge": "fridge",
 }
 
@@ -114,6 +120,8 @@ HUMAN_CLEARANCE_RULES: dict[str, HumanClearanceRule] = {
     "dining_table": HumanClearanceRule("dining_table", front_clearance=900.0,
                                        side_clearance=900.0,
                                        back_clearance=900.0),         # 四面坐人
+    # 靠牆二人桌只在兩端坐人；由桌面邊量，不在背牆假設有座位。
+    "wall_dining_table": HumanClearanceRule("wall_dining_table", side_clearance=900.0),
     "toilet": HumanClearanceRule("toilet", front_clearance=600.0,
                                  side_clearance=200.0),
     "shower": HumanClearanceRule("shower", front_clearance=600.0),
@@ -149,6 +157,12 @@ def clearance_regions(placement, rule: HumanClearanceRule) -> list[tuple[str, Po
     if name not in FIXTURE_SIZES:
         return []
     w, d = FIXTURE_SIZES[name]
+    # Activity starts at the TABLE edge. The drawing footprint already includes
+    # chairs, so starting there would count their depth twice.
+    if name == "table4":
+        w, d = TABLE4_TOP
+    elif name == "table2":
+        w, d = TABLE2_TOP
     hw = w / 2
     if name in CENTER_ORIGIN:                    # 原點=中心:±d/2 / ±w/2
         yf0, yf1 = d / 2, d / 2 + rule.front_clearance
@@ -261,6 +275,7 @@ class HumanClearanceEvaluator:
             if fp is not None and not fp.is_empty:
                 others.append(fp)
 
+        occupied_union = unary_union(others) if others else None
         zone_scores = []
         for name, zone in regions:
             za = zone.area
@@ -268,10 +283,7 @@ class HumanClearanceEvaluator:
                 continue
             inside = zone.intersection(room_poly)
             outside_area = za - inside.area       # 落在房間外的部分
-            occupied = 0.0
-            for o in others:
-                occupied += inside.intersection(o).area
-            occupied = min(occupied, inside.area)  # 多件重疊時不重複計
+            occupied = inside.intersection(occupied_union).area if occupied_union is not None else 0.0
             frac = max(0.0, min(1.0, (outside_area + occupied) / za))
             zone_scores.append(100.0 * (1.0 - frac))
 
@@ -295,5 +307,7 @@ class HumanClearanceEvaluator:
 # 2. 活動區以「矩形」近似:實際開門是扇形、拉椅是局部,矩形略保守但穩定可算。
 # 3. 佔用只算 FixturePlacement / Counter 的佔地;門迴轉/柱/窗等由 collision 與
 #    其他 Phase 6 模組負責,不在人體淨空的扣分範圍(避免與硬閘門重複判定)。
-# 4. kitchen_counter 走道取檯面深度反向側;L 型雙段各自算,交由呼叫端分段傳入。
+# 4. kitchen_counter 走道從檯面前緣往室內延伸;L 型雙段各自算。
+# 5. 有來源的住宅舒適建議值由 ergonomics.planning_rules 提供；本表保留既有
+#    基本評分目標。兩者皆非台灣法規或無障礙核准。
 # =============================================================================

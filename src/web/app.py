@@ -812,10 +812,16 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
             actual_score = None
         from src.design.layout.furniture_refine import usage_issues
         furniture_issues = usage_issues(building)
+        from src.design.ergonomics import analyze_ergonomics
+        try:
+            ergonomics = analyze_ergonomics(building).to_dict()
+        except Exception as exc:
+            ergonomics = {"status": "unverified", "error_type": type(exc).__name__}
         if furniture_issues:
             items = [f"{i['floor']} {i['room']}的{i['furniture']}" for i in furniture_issues[:3]]
             note += "；家具操作空間仍待調整：" + "、".join(items) + f"（共{len(furniture_issues)}項）"
         result = {
+            "ergonomics": ergonomics,
             "furniture_review": furniture_issues,
             "layout_score": actual_score,
             "job_id": job_id,

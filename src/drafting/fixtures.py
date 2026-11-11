@@ -122,6 +122,7 @@ def _build_bed(blk, width: float, pillows: int) -> None:
 #: 四人方桌本體(使用者 2026-09-03 給的〈空間最適尺寸〉:四人方桌 135×85cm)。
 #: ⚠️ 舊值是 800×800 —— 那比書上的**二人桌**(70×85)大不了多少,四個人坐不下。
 TABLE4_TOP = (1350.0, 850.0)
+TABLE2_TOP = (1200.0, 750.0)
 DINING_CHAIR = 380.0            # 椅子見方
 #: 拉開椅子起身的活動距離(書上:餐廳範圍 = 桌子大小 + 每側 80cm)。
 DINING_PULL_OUT = 800.0
@@ -155,10 +156,11 @@ def _build_table2(blk) -> None:
     這張桌子**貼牆**(原點=貼牆邊中點),走的是「沿四面牆找位置」那條路;而真實
     1.8m 寬的餐廳本來擺的也就是靠牆餐桌、兩端各坐一人。
     """
-    blk.add_lwpolyline([(-600, 0), (600, 0), (600, 750), (-600, 750)],
+    tw, td = TABLE2_TOP[0] / 2, TABLE2_TOP[1]
+    blk.add_lwpolyline([(-tw, 0), (tw, 0), (tw, td), (-tw, td)],
                        close=True, dxfattribs={"layer": "0"})            # 桌面
     for sx in (-1, 1):                                                   # 兩端椅子
-        cx = sx * 825
+        cx = sx * (tw + 225)
         blk.add_lwpolyline(
             [(cx - 225, 150), (cx + 225, 150), (cx + 225, 600), (cx - 225, 600)],
             close=True, dxfattribs={"layer": "0"})
@@ -356,7 +358,7 @@ FIXTURE_SIZES = {
     # 四人方桌:桌 1350×850(書上的四人方桌尺寸)+ 長邊各一排椅子 380。
     # ⚠️ 這是**繪圖**佔地;椅子拉開起身要的空間在 COLLISION_SIZES(見下面)。
     "table4": (1350, 1610),
-    "table2": (2100, 750),       # 二人靠牆餐桌:桌 1200 + 兩端椅子;窄餐廳用
+    "table2": (TABLE2_TOP[0] + 900, TABLE2_TOP[1]),
     "sofa3": (2000, 850),
     "sofa2": (1500, 850),   # 二人沙發:書上「座面總長 60×人數」+兩扶手;窄客廳用
     "wardrobe": (1500, 600),

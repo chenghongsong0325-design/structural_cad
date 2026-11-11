@@ -305,6 +305,7 @@ async function requestPlan(body, btn, textForRedesign) {
       const detail = data.detail;
       window.renderDesignAudit({design_audit: detail?.design_audit});
       renderRequirements(detail?.requirement_check, detail?.validation);
+      window.renderErgonomics(detail?.ergonomics);
       window.renderSpatialInspector(detail?.spatial_report, detail?.conflicts || [], true);
       const message = typeof detail === "string" ? detail : Array.isArray(detail)
         ? detail.map(item => item.msg).join("；") : detail?.message || `伺服器錯誤 (${resp.status})`;
@@ -338,6 +339,7 @@ function applyResult(data) {
   $("design-note").textContent = data.design_note
     ? "本案設計:" + data.design_note : "";
   renderRequirements(data.requirement_check, data.validation);
+  window.renderErgonomics(data.ergonomics);
   window.renderSpatialInspector(data.spatial_report, data.conflicts || [], false);
   renderAiPanel(data);
   renderDecisionTrace(data);

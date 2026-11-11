@@ -3,10 +3,14 @@ import math
 
 from shapely.geometry import Polygon
 
-from src.drafting.fixtures import FixturePlacement, fixture_footprint
+from src.drafting.fixtures import Counter, FixturePlacement, counter_footprint, fixture_footprint
 from src.design.collision.human_clearance import HumanClearanceEvaluator
 from src.design.collision.furniture_pair_constraint import point_of
 from src.design.collision.placement_optimizer import FurniturePlacementOptimizer
+
+ACTIVITY_FIXTURES = {'toilet', 'basin', 'basin_small', 'table4', 'table2',
+                     'wardrobe', 'fridge', 'bed_double', 'bed_single',
+                     'desk', 'closet_rail', 'shower', 'bathtub'}
 
 
 def _facing(a, b):
@@ -26,11 +30,15 @@ def _valid(opt, placement, ignore=None):
 
 def refine_room(spec, room):
     from src.design.layout.auto_furnish import _inner_room, _room_walkable
+    from src.design.ergonomics import planning_rules
 
     poly = Polygon(room.points)
     here = [f for f in spec.fixtures if isinstance(f, FixturePlacement)
             and poly.covers(Polygon(fixture_footprint(f)).centroid)]
-    human = HumanClearanceEvaluator()
+    human = HumanClearanceEvaluator(planning_rules())
+    activity = [f for f in here if f.name in ACTIVITY_FIXTURES]
+    activity += [f for f in spec.fixtures if isinstance(f, Counter)
+                 and poly.covers(Polygon(counter_footprint(f)).centroid)]
     saved = [(f, f.insert, f.rotation) for f in here]
     inward_before = _inward_options(spec, room)
     if inward_before and not all(inward_before.values()):
@@ -39,17 +47,14 @@ def refine_room(spec, room):
         return
 
     def quality():
-        rows = [human.evaluate_human_clearance(f, room, spec.fixtures).score
-                for f in here if f.name in ('toilet', 'basin', 'basin_small', 'table4', 'table2',
-                                            'wardrobe', 'fridge', 'bed_double', 'bed_single')]
+        rows = [human.evaluate_human_clearance(f, room, spec.fixtures).score for f in activity]
         return min(rows, default=100)
 
     def layout_quality():
         # Lexicographic minimax: improve the next bottleneck even if another
         # piece cannot move. Never worsen the room's worst activity space.
         return tuple(sorted(round(human.evaluate_human_clearance(f, room, spec.fixtures).score, 3)
-                            for f in here if f.name in ('toilet','basin','basin_small','table4','table2',
-                                                       'wardrobe','fridge','bed_double','bed_single')))
+                            for f in activity))
 
     inner = _inner_room(spec, room)
     toilet = next((f for f in here if f.name == 'toilet'), None)
@@ -111,7 +116,7 @@ def refine_room(spec, room):
 
     # Keep the existing equipment, looking for a better shared operation area.
     for f in here:
-        if f.name not in ('table4', 'table2', 'toilet', 'basin', 'basin_small', 'wardrobe', 'fridge', 'bed_double', 'bed_single'):
+        if f.name not in ACTIVITY_FIXTURES:
             continue
         best = layout_quality()
         if not best or best[0] >= 99:

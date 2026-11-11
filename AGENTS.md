@@ -2114,3 +2114,12 @@ RAG 的 `case_metadata.py` 管理適用條件，先排除已知不相容資料�
 不帶該參數維持歷史行為。幾何退讓後仍須檢查實際房數與全部硬規則。
 變更此流程須跑完整測試及 `scripts/scan_bedroom_program.py`，不得把容量拒絕列為成功。
 操作、限制與實測見 `docs/SPATIAL_REASONING.md` 和 `docs/SPATIAL_VERIFICATION.md`。
+
+## 住宅人因操作空間（2026-11-11）
+
+`design/ergonomics.py:planning_rules()` 將已核對的 NKBA 住宅設計建議交給家具整理器；
+`collision/human_clearance.py` 的基本評分表仍保留歷史目標。兩者都不是台灣法規硬閘門。
+`analyze_ergonomics` 量最終圖面，扣實牆、柱、梯段和其他家具，回報各側保守淨深，
+不能把面積平均分數當成通道淨寬。餐桌活動帶從桌緣起算，靠牆二人桌只量有座位的兩端。
+來源、適用範圍及尚未量測項目見 `docs/ERGONOMICS.md`；測試 `tests/test_ergonomics.py`。
+不得把新增建議都當硬錯誤，或把 `meets_checked_targets` 說成全部人因／無障礙／建築規範通過。
