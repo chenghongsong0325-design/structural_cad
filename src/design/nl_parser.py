@@ -38,6 +38,7 @@ import json
 import os
 import sys
 import time
+import httpx
 from pathlib import Path
 from typing import Optional
 
@@ -47,10 +48,10 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from src.design.layout_generator import Brief, CorridorBrief, HouseBrief
 
-# 模型:2.5 flash(快、便宜,解析一句話綽綽有餘);可用 GEMINI_MODEL 覆寫。
+# 需求解析模型；可用 GEMINI_MODEL 覆寫。
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
-# 高流量時改用同系列的輕量模型；可在 Render 以 GEMINI_FALLBACK_MODEL 覆寫。
-FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.8-flash-lite")
+# 官方支援的輕量備援；可在 Render 以 GEMINI_FALLBACK_MODEL 覆寫。
+FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 
 # ---------------------------------------------------------------------------
 # JSON schema:LLM 的「填空表格」——結構化輸出保證回傳長這樣
@@ -356,19 +357,25 @@ def building_brief_from_data(data: dict, seed: int = 0) -> "BuildingBrief":
 # 使用者實際遇過「503 UNAVAILABLE: This model is currently experiencing high
 # demand」——那不是需求描述有問題,不該讓使用者自己按重來。只重試「等一下
 # 會好」的錯誤,金鑰錯誤/描述違規(400/403)立刻拋出,重試也沒用。
-_RETRY_MARKERS = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED",
-                  "500", "INTERNAL", "overloaded", "high demand")
-_RETRY_DELAYS = (1.0, 3.0, 6.0)      # 三次重試的等待秒數(遞增)
+_RETRY_MARKERS = ("503", "unavailable", "429", "resource_exhausted",
+                  "500", "internal", "502", "504", "overloaded", "high demand")
+_RETRY_DELAYS = (1.0,)  # 每個模型最多重試一次，之後讓備援有機會處理。
 
 
 def _is_transient(exc: Exception) -> bool:
     """這個錯誤等一下再試會不會好?(伺服器過載/限流 → 會;金鑰錯 → 不會)"""
-    msg = str(exc)
-    return any(m in msg for m in _RETRY_MARKERS)
+    msg = str(exc).lower()
+    return isinstance(exc, (TimeoutError, httpx.TimeoutException)) or any(
+        m in msg for m in _RETRY_MARKERS)
+
+
+def _is_missing_model(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "404" in msg and "model" in msg
 
 
 def _call_llm(text: str, client: object, system: str = SYSTEM_PROMPT) -> dict:
-    """呼叫 Gemini 解析需求;伺服器暫時過載會自動重試(遞增等待)。"""
+    """有限次重試與備援；SDK 不再疊加隱藏重試，每次連線設定逾時。"""
     from src.knowledge.rag import RAG_POLICY, augment_prompt
     text = augment_prompt(text, "parse")
     system += RAG_POLICY
@@ -384,16 +391,19 @@ def _call_llm(text: str, client: object, system: str = SYSTEM_PROMPT) -> dict:
                         "system_instruction": system,
                         "response_mime_type": "application/json",
                         "response_schema": BRIEF_SCHEMA,
+                        "http_options": {"timeout": 20_000,
+                                         "retry_options": {"attempts": 1}},
                     },
                 )
                 return json.loads(response.text)
             except Exception as exc:                 # noqa: BLE001
-                if not _is_transient(exc) or attempt >= len(_RETRY_DELAYS):
-                    if model == models[-1] or not _is_transient(exc):
-                        raise
-                    last = exc
-                    break
+                transient = _is_transient(exc)
+                missing_model = _is_missing_model(exc)
+                if not transient and not missing_model:
+                    raise
                 last = exc
+                if missing_model or attempt >= len(_RETRY_DELAYS):
+                    break
                 time.sleep(_RETRY_DELAYS[attempt])
     raise last                                        # pragma: no cover(防禦)
 

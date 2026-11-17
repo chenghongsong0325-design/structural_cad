@@ -1,11 +1,8 @@
 """Gemini 金鑰:多把輪替 —— 一把用完自動換下一把。
 
-**為什麼要這個**:Gemini 免費額度是「每把金鑰、每個模型、每天 20 次請求」分開算
-的。AI 設計師模式一次請求吃 2~3 次呼叫,一把金鑰大概 7 次就見底。所以多一把金鑰
-就多一份額度,對口試 demo 是實際的差別(1 把 ≈ 7 次 / 5 把 ≈ 35 次)。
-
-⚠️ **同一個 Google 專案底下開兩把金鑰,額度是共用的、不會變兩倍** —— 要多一份額度
-   就得在**不同專案**(或不同 Google 帳號)底下開。
+Gemini 限額依專案、模型及使用層級計算，包含每分鐘請求／token 與每日請求。
+同一專案下多把金鑰共用額度；輪替不保證增加免費用量，實際限額應至 AI Studio 核對。
+官方說明：https://ai.google.dev/gemini-api/docs/rate-limits
 
 ⚠️ **金鑰絕對不可以進 git。** 這裡讀兩個來源:
 
@@ -156,7 +153,9 @@ class RotatingClient:
 
 def _default_factory(key: str) -> object:
     from google import genai
-    return genai.Client(api_key=key)
+    from google.genai import types
+    return genai.Client(api_key=key, http_options=types.HttpOptions(
+        timeout=30_000, retry_options=types.HttpRetryOptions(attempts=1)))
 
 
 def make_client(factory: Optional[Callable[[str], object]] = None

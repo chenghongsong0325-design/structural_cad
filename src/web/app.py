@@ -40,6 +40,7 @@ import sys
 import uuid
 import zipfile
 import tempfile
+import httpx
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -164,13 +165,16 @@ _QUOTA_MARKERS = ("RESOURCE_EXHAUSTED", "quota", "exceeded your current",
 
 
 def _quota_error(exc) -> Optional[HTTPException]:
-    """LLM 額度/限流類的例外 → 503 + 白話訊息;其他例外回 None(交給預設處理)。"""
+    """外部服務限流、忙碌或逾時 → 可理解的重試提示。"""
     msg = str(exc)
     if "429" in msg or any(m in msg for m in _QUOTA_MARKERS):
         return HTTPException(
-            503, "Gemini 免費額度暫時用完(免費版每日約 20 次;AI 設計師模式一次要 "
-                 "2~3 次)。請稍後再試,或在 Render 儀表板改用付費金鑰;不勾 AI 的"
-                 "一般模式較省用量,可先用。")
+            503, "Gemini 目前額度不足或請求過多。請稍後再試，並至 Google AI Studio "
+                 "核對專案與模型的目前限額；同一專案的金鑰可能共用額度。已下載的圖面仍可使用。")
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+        return HTTPException(504, "Gemini 連線逾時，請稍後再試。已下載的圖面仍可使用。")
+    if "503" in msg or "UNAVAILABLE" in msg.upper():
+        return HTTPException(503, "Gemini 服務暫時忙碌，請稍後再試。已下載的圖面仍可使用。")
     return None
 
 
@@ -186,7 +190,7 @@ def _summary(brief, building: BuildingSpec) -> str:
         bedrooms = sum(r.kind in {"bedroom", "master_bedroom"} and "孝親" not in r.name
                        for fl in building.floors for r in fl.spec.rooms)
         kind = (f"單戶住宅 {bedrooms} 房,基地 "
-                f"{t.site_width / 1000:.0f}×{t.site_depth / 1000:.0f} 米")
+                f"{t.site_width / 1000:g}×{t.site_depth / 1000:g} 米")
     else:
         kind = (f"集合住宅 每排 {t.units_per_row} 戶,"
                 f"走廊 {t.corridor_width / 1000:.1f} 米")
@@ -198,7 +202,7 @@ def _summary(brief, building: BuildingSpec) -> str:
     if isinstance(t, HouseBrief):
         spec = building.floors[-1].spec          # 任一層(外殼各層相同)
         bw, bd = sum(spec.x_spacings), sum(spec.y_spacings)
-        parts.append(f"建築 {bw / 1000:.1f}×{bd / 1000:.1f} 米")
+        parts.append(f"建築軸線 {bw / 1000:.1f}×{bd / 1000:.1f} 米")
         courtyard = next((r.name for fl in building.floors
                           for r in fl.spec.rooms if r.kind == "patio"), None)
         if courtyard:
@@ -396,14 +400,14 @@ _ERROR_HELP = {
 
 
 def _supported_sizes(setback: float = 2000.0) -> str:
-    """目前**保證生得出合格圖**的建築尺寸(從各產線常數算,不要寫死)。"""
+    """可嘗試配置的尺寸；仍須逐案通過必要需求與圖面檢查。"""
     from src.design.layout.narrow_house import (
         MAX_WIDTH as NW_MAX, MIN_WIDTH as NW_MIN, min_depth_for)
     from src.design.layout.shallow_house import (
         MAX_WIDTH as SH_MAX, MIN_DEPTH as SH_MIN_D, MIN_WIDTH as SH_MIN)
     sb = setback / 1000.0
     return (
-        "目前保證生得出合格圖的是**單戶透天**,建築尺寸:\n"
+        "目前支援嘗試配置的是**單戶透天**，仍須通過需求與圖面檢查。建築尺寸:\n"
         f"  ・淺進深型:{SH_MIN/1000:g}~{SH_MAX/1000:g} 米寬 × "
         f"{SH_MIN_D/1000:g} 米以上深\n"
         f"  ・一般透天:{NW_MIN/1000:g}~{NW_MAX/1000:g} 米寬 × "
@@ -918,7 +922,8 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
         if not _JOB_ID_RE.fullmatch(job_id):
             raise HTTPException(404, "找不到方案")
         job_dir = JOBS_DIR / job_id
-        pdf_path = job_dir / "plans.pdf"
+        # 新版紙張／線寬不得沿用舊圖冊；保留舊檔，下載名稱仍是 plans.pdf。
+        pdf_path = job_dir / "plans_a3_v2.pdf"
         if not pdf_path.is_file():
             meta_path = job_dir / "meta.json"
             if not meta_path.is_file():
@@ -929,7 +934,12 @@ def create_app(client_factory: Optional[Callable[[], object]] = None) -> FastAPI
                     if (job_dir / f).is_file()]
             if not docs:
                 raise HTTPException(404, "圖檔不存在(可能已清除,請重新生成)")
-            docs_to_pdf(docs, pdf_path)
+            temporary = job_dir / f"pdf_{uuid.uuid4().hex}.tmp"
+            try:
+                docs_to_pdf(docs, temporary)
+                temporary.replace(pdf_path)
+            finally:
+                temporary.unlink(missing_ok=True)
         return FileResponse(pdf_path, filename="plans.pdf")
 
     @app.get("/api/history")

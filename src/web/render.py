@@ -138,10 +138,10 @@ def doc_to_svg(doc) -> str:
 
 
 # PDF 出圖設定:白底黑線(印表機/正式交件慣例——紙是白的,線要黑才清楚),
-# 線粗適度放大(A3 頁面上跟瀏覽器同樣有「細線縮到看不見」的問題,取 20 倍
-# 折衷:牆線清楚、尺寸線不糊)。
+# DXF 線寬是 mm，Matplotlib 線寬是 pt；依實體單位換算，避免任意放大遮住圖面。
 _PDF_CONFIG = Configuration(
-    lineweight_scaling=20,
+    lineweight_scaling=72 / 25.4,
+    min_lineweight=.18,
     background_policy=BackgroundPolicy.WHITE,
     color_policy=ColorPolicy.BLACK,
 )
@@ -175,7 +175,7 @@ def docs_to_pdf(docs: list, path) -> None:
             ax = fig.add_axes([0, 0, 1, 1])
             ax.set_axis_off()
             with preview_font(doc):
-                Frontend(RenderContext(doc), MatplotlibBackend(ax, adjust_figure=not profile),
+                Frontend(RenderContext(doc), MatplotlibBackend(ax, adjust_figure=False),
                          config=Configuration(background_policy=BackgroundPolicy.WHITE,
                                               lineweight_scaling=1) if profile else _PDF_CONFIG).draw_layout(
                     doc.modelspace(), finalize=True)
